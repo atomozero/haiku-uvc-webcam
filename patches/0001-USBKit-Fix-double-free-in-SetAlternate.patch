@@ -1,0 +1,75 @@
+
+Subject: [PATCH] USBKit: Fix memory corruption in BUSBInterface::SetAlternate()
+
+Fix three related bugs in BUSBInterface:
+
+1. _UpdateDescriptorAndEndpoints() deleted the old endpoint array using
+   the NEW descriptor's num_endpoints instead of the old one. This caused
+   memory corruption, leaks, or double-free when switching between
+   alternates with different endpoint counts.
+
+2. SetAlternate() didn't update fAlternate before calling
+   _UpdateDescriptorAndEndpoints(), so the ioctl query used the wrong
+   alternate index.
+
+3. Constructor didn't initialize fDescriptor, so the first call to
+   _UpdateDescriptorAndEndpoints() could read garbage from num_endpoints.
+
+These bugs were particularly visible with USB Video Class (UVC) webcam
+drivers, where switching between alternate 0 (zero-bandwidth, 0 endpoints)
+and alternate N (active streaming, 1 endpoint) would crash.
+---
+ src/kits/device/USBInterface.cpp | 18 ++++++++++++++----
+ 1 file changed, 14 insertions(+), 4 deletions(-)
+
+diff --git a/src/kits/device/USBInterface.cpp b/src/kits/device/USBInterface.cpp
+--- a/src/kits/device/USBInterface.cpp
++++ b/src/kits/device/USBInterface.cpp
+@@ -26,6 +26,7 @@ BUSBInterface::BUSBInterface(BUSBConfiguration *config, uint32 index,
+ 		fAlternates(NULL),
+ 		fInterfaceString(NULL)
+ {
++	memset(&fDescriptor, 0, sizeof(fDescriptor));
+ 	_UpdateDescriptorAndEndpoints();
+ }
+
+@@ -229,6 +230,7 @@ BUSBInterface::SetAlternate(uint32 alternateIndex)
+ 		sizeof(command)) || command.alternate.status != B_USB_RAW_STATUS_SUCCESS)
+ 		return B_ERROR;
+
++	fAlternate = alternateIndex;
+ 	_UpdateDescriptorAndEndpoints();
+ 	return B_OK;
+ }
+@@ -237,6 +239,12 @@ BUSBInterface::SetAlternate(uint32 alternateIndex)
+ void
+ BUSBInterface::_UpdateDescriptorAndEndpoints()
+ {
++	// Save old endpoint count before fetching new descriptor.
++	// We need this because fDescriptor will be overwritten with the new
++	// alternate's descriptor, which may have a different endpoint count.
++	int32 oldEndpointCount = fDescriptor.num_endpoints;
++	BUSBEndpoint** oldEndpoints = fEndpoints;
++
+ 	usb_raw_command command;
+ 	command.interface_etc.descriptor = &fDescriptor;
+ 	command.interface_etc.config_index = fConfiguration->Index();
+@@ -246,10 +254,12 @@ BUSBInterface::_UpdateDescriptorAndEndpoints()
+ 		sizeof(command)) || command.interface.status != B_USB_RAW_STATUS_SUCCESS)
+ 		memset(&fDescriptor, 0, sizeof(fDescriptor));
+
+-	if (fEndpoints != NULL) {
+-		// Delete old endpoints
+-		for (int32 i = 0; i < fDescriptor.num_endpoints; i++)
+-			delete fEndpoints[i];
+-		delete[] fEndpoints;
++	// Delete old endpoints using the saved old endpoint count.
++	// This fixes a bug where we would use the NEW num_endpoints to delete
++	// the OLD endpoint array, causing memory corruption or leaks.
++	if (oldEndpoints != NULL) {
++		for (int32 i = 0; i < oldEndpointCount; i++)
++			delete oldEndpoints[i];
++		delete[] oldEndpoints;
+ 	}
+
+ 	fEndpoints = new(std::nothrow) BUSBEndpoint *[fDescriptor.num_endpoints];

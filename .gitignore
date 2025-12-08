@@ -1,0 +1,32 @@
+# Build artifacts
+*.o
+*.so
+*.media_addon
+*.d
+
+# Debug files
+*.log
+*_debug.log
+
+# Temporary files
+*~
+*.swp
+*.swo
+.DS_Store
+
+# IDE files
+.vscode/
+.idea/
+*.sublime-*
+
+# Test binaries
+test_*
+!test_*.cpp
+
+# Backup files
+*.bak
+*.orig
+
+# Build directories
+build/
+dist/
