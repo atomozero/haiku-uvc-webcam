@@ -88,6 +88,44 @@ jam -q @alpha-raw xhci
 
 ---
 
+## Pre-compiled Binaries
+
+For users who want to test the patches without compiling Haiku from source, pre-compiled USB bus drivers are available in the `bin/` folder:
+
+| File | Description |
+|------|-------------|
+| `ehci.zip` | EHCI driver with high-bandwidth isochronous support |
+| `xhci.zip` | XHCI driver with high-bandwidth isochronous support |
+
+### Installation
+
+1. **Backup existing drivers** (recommended):
+   ```bash
+   cp /boot/system/add-ons/kernel/busses/usb/ehci ~/ehci.backup
+   cp /boot/system/add-ons/kernel/busses/usb/xhci ~/xhci.backup
+   ```
+
+2. **Extract and install:**
+   ```bash
+   # Create directory if it doesn't exist
+   mkdir -p /boot/system/non-packaged/add-ons/kernel/busses/usb
+
+   # Extract the drivers
+   unzip ehci.zip -d /boot/system/non-packaged/add-ons/kernel/busses/usb/
+   unzip xhci.zip -d /boot/system/non-packaged/add-ons/kernel/busses/usb/
+   ```
+
+3. **Reboot the system** for the new drivers to take effect.
+
+**Note:** Drivers in `non-packaged` take precedence over system drivers. To revert, simply delete the files from `non-packaged`.
+
+### Compatibility
+
+- **Platform:** Haiku x86_64
+- **Tested on:** R1/beta5 (hrev57937)
+
+---
+
 ## Reference Files
 
 - `USBInterface.cpp.fixed` - Complete patched USBKit source file for reference

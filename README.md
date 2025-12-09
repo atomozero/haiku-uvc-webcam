@@ -11,7 +11,6 @@ A USB Video Class (UVC) media add-on for Haiku OS that provides webcam support f
 This driver supports **UVC-compliant USB webcams**, which includes most modern webcams. The driver has been tested with:
 
 - AUKEY PC-LM1E (1080p)
-- SunplusIT Integrated Camera
 - Most generic UVC webcams
 
 ### Supported Features
