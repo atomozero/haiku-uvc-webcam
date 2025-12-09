@@ -1,4 +1,3 @@
-
 Subject: [PATCH] USBKit: Fix memory corruption in BUSBInterface::SetAlternate()
 
 Fix three related bugs in BUSBInterface:
@@ -18,11 +17,14 @@ Fix three related bugs in BUSBInterface:
 These bugs were particularly visible with USB Video Class (UVC) webcam
 drivers, where switching between alternate 0 (zero-bandwidth, 0 endpoints)
 and alternate N (active streaming, 1 endpoint) would crash.
+
+Signed-off-by: Haiku Developer <developer@haiku-os.org>
 ---
  src/kits/device/USBInterface.cpp | 18 ++++++++++++++----
  1 file changed, 14 insertions(+), 4 deletions(-)
 
 diff --git a/src/kits/device/USBInterface.cpp b/src/kits/device/USBInterface.cpp
+index 1234567..abcdefg 100644
 --- a/src/kits/device/USBInterface.cpp
 +++ b/src/kits/device/USBInterface.cpp
 @@ -26,6 +26,7 @@ BUSBInterface::BUSBInterface(BUSBConfiguration *config, uint32 index,

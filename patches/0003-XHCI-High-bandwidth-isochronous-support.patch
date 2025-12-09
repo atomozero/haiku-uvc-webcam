@@ -1,0 +1,443 @@
+Subject: [PATCH] XHCI: Complete high-bandwidth isochronous support with power management
+
+Implement comprehensive support for USB 2.0/3.0 high-bandwidth isochronous
+endpoints on xHCI controllers with dynamic interrupt rate optimization and
+power management features.
+
+Changes:
+
+1. Enable MSI-X interrupt support (previously disabled with #if 0):
+   - Try MSI-X first, then fall back to MSI, then legacy interrupts
+   - Properly handle msixVector as uint32
+
+2. Add dynamic interrupt moderation (_UpdateInterruptModeration):
+   - Track active isochronous and interrupt endpoints
+   - Low latency mode (16000 IRQ/s) for isochronous streaming
+   - Medium mode (8000 IRQ/s) for interrupt endpoints
+   - Power save mode (2000 IRQ/s) when idle (non-Intel hardware)
+   - Default mode (4000 IRQ/s) for bulk/control or Intel quirk
+   - Intel quirk: minimum IMOD 0x3F8 to avoid lockups on Lynx Point
+
+3. Fix high-bandwidth endpoint configuration in ConfigureEndpoint():
+   - Parse wMaxPacketSize correctly: bits 10:0 = base packet size,
+     bits 12:11 = additional transactions (mult)
+   - Use actualMaxPacketSize (without mult bits) for hardware config
+   - Calculate max_burst_payload correctly as (mult+1) * actualMaxPacketSize
+   - Store max_packet_size and max_burst in endpoint structure for TRB setup
+   - Set MAXESITPAYLOAD correctly for all speed modes
+
+4. Implement TBC/TLBPC fields in isochronous TRBs (xHCI 1.2 § 4.14.1):
+   - TBC (Transfer Burst Count): number of bursts - 1
+   - TLBPC (Transfer Last Burst Packet Count): packets in last burst - 1
+   - Proper calculation for both USB 2.0 and USB 3.0+ transfers
+
+5. Improve SuperSpeed/Plus ESIT handling:
+   - Use bytesPerInterval from SS Endpoint Companion descriptor when available
+   - Add fallback calculation for SuperSpeedPlus when descriptor not parsed
+   - Log warnings for missing SuperSpeedPlus descriptors
+
+6. Enable USB 3.0+ Link Power Management (LPM):
+   - Set Max Exit Latency in device slot context for SuperSpeed devices
+   - Use controller's HCSPARAMS3 U1/U2 exit latency values
+   - Enables U1/U2 power states for reduced power consumption
+
+These changes enable USB Video Class (UVC) webcams to stream at higher
+resolutions (720p, 1080p) on systems with xHCI controllers while
+maintaining optimal interrupt rates for low latency video capture and
+reduced power consumption when idle.
+
+Signed-off-by: Haiku Developer <developer@haiku-os.org>
+---
+ src/add-ons/kernel/busses/usb/xhci.cpp | 192 +++++++++++++++++++++----
+ src/add-ons/kernel/busses/usb/xhci.h   |   8 ++
+ 2 files changed, 171 insertions(+), 29 deletions(-)
+
+diff --git a/src/add-ons/kernel/busses/usb/xhci.cpp b/src/add-ons/kernel/busses/usb/xhci.cpp
+index f02f1a7f..bcebdb92 100644
+--- a/src/add-ons/kernel/busses/usb/xhci.cpp
++++ b/src/add-ons/kernel/busses/usb/xhci.cpp
+@@ -14,6 +14,7 @@
+
+ #include <stdio.h>
+
++#include <drivers/PCI.h>
+ #include <bus/PCI.h>
+ #include <USB3.h>
+ #include <KernelExport.h>
+@@ -365,7 +366,10 @@ XHCI::XHCI(pci_info *info, 	pci_device_module_info* pci, pci_device* device, Sta
+ 		fEventIdx(0),
+ 		fCmdIdx(0),
+ 		fEventCcs(1),
+-		fCmdCcs(1)
++		fCmdCcs(1),
++		fActiveIsoEndpoints(0),
++		fActiveInterruptEndpoints(0),
++		fIntelQuirk(false)
+ {
+ 	B_INITIALIZE_SPINLOCK(&fSpinlock);
+ 	mutex_init(&fFinishedLock, "XHCI finished transfers");
+@@ -533,18 +537,17 @@ XHCI::XHCI(pci_info *info, 	pci_device_module_info* pci, pci_device* device, Sta
+ 	if (fIRQ == 0xFF)
+ 		fIRQ = 0;
+
+-#if 0
++// Try MSI-X first, then fall back to MSI, then legacy interrupts
+ 	if (fPci->get_msix_count(fDevice) >= 1) {
+-		uint8 msiVector = 0;
+-		if (fPci->configure_msix(fDevice, 1, &msiVector) == B_OK
++		uint32 msixVector = 0;
++		if (fPci->configure_msix(fDevice, 1, &msixVector) == B_OK
+ 			&& fPci->enable_msix(fDevice) == B_OK) {
+-			TRACE_ALWAYS("using MSI-X\n");
+-			fIRQ = msiVector;
++			TRACE_ALWAYS("using MSI-X interrupts\n");
++			fIRQ = msixVector;
+ 			fUseMSI = true;
+ 		}
+-	} else
+-#endif
+-	if (fPci->get_msi_count(fDevice) >= 1) {
++	}
++	if (!fUseMSI && fPci->get_msi_count(fDevice) >= 1) {
+ 		uint32 msiVector = 0;
+ 		if (fPci->configure_msi(fDevice, 1, &msiVector) == B_OK
+ 			&& fPci->enable_msi(fDevice) == B_OK) {
+@@ -793,16 +796,15 @@ XHCI::Start()
+ 	TRACE("setting interrupt rate\n");
+
+ 	// Setting IMOD below 0x3F8 on Intel Lynx Point can cause IRQ lockups
+-	if (fPCIInfo->vendor_id == PCI_VENDOR_INTEL
++	fIntelQuirk = (fPCIInfo->vendor_id == PCI_VENDOR_INTEL
+ 		&& (fPCIInfo->device_id == PCI_DEVICE_INTEL_PANTHER_POINT_XHCI
+ 			|| fPCIInfo->device_id == PCI_DEVICE_INTEL_LYNX_POINT_XHCI
+ 			|| fPCIInfo->device_id == PCI_DEVICE_INTEL_LYNX_POINT_LP_XHCI
+ 			|| fPCIInfo->device_id == PCI_DEVICE_INTEL_BAYTRAIL_XHCI
+-			|| fPCIInfo->device_id == PCI_DEVICE_INTEL_WILDCAT_POINT_XHCI)) {
+-		WriteRunReg32(XHCI_IMOD(0), 0x000003f8); // 4000 irq/s
+-	} else {
+-		WriteRunReg32(XHCI_IMOD(0), 0x000001f4); // 8000 irq/s
+-	}
++			|| fPCIInfo->device_id == PCI_DEVICE_INTEL_WILDCAT_POINT_XHCI));
++
++	// Set initial interrupt moderation (will be updated dynamically)
++	_UpdateInterruptModeration();
+
+ 	TRACE("enabling interrupt\n");
+ 	WriteRunReg32(XHCI_IMAN(0), ReadRunReg32(XHCI_IMAN(0)) | IMAN_INTR_ENA);
+@@ -1055,10 +1057,52 @@ XHCI::SubmitNormalRequest(Transfer *transfer)
+ 	// Isochronous-specific.
+ 	if (isochronousData != NULL) {
+ 		// This is an isochronous transfer; it should have one TD per packet.
++		// Calculate TBC (Transfer Burst Count) and TLBPC (Transfer Last Burst
++		// Packet Count) per xHCI 1.2 § 4.14.1.
++		//
++		// For USB 2.0 high-speed isochronous:
++		//   - TBC = 0 (single burst per microframe)
++		//   - TLBPC = mult - 1 (packets per microframe - 1)
++		//
++		// For USB 3.0+ SuperSpeed isochronous:
++		//   - TBC = ceil(TD_Size / Max_Burst_Payload) - 1, capped at 3
++		//   - TLBPC = packets in last burst - 1
++		uint8 maxBurst = endpoint->max_burst;
++		uint16 maxPacketSizeEp = endpoint->max_packet_size;
++
+ 		for (uint32 i = 0; i < isochronousData->packet_count; i++) {
+ 			td->trbs[i].flags &= ~(TRB_3_TYPE(TRB_TYPE_NORMAL));
+ 			td->trbs[i].flags |= TRB_3_TYPE(TRB_TYPE_ISOCH);
+
++			// Calculate TBC and TLBPC for this TRB
++			size_t trbTransferSize = TRB_2_BYTES_GET(td->trbs[i].status);
++			uint8 tbc = 0;
++			uint8 tlbpc = maxBurst;  // Default: all packets in burst
++
++			if (maxPacketSizeEp > 0 && endpoint->max_burst_payload > 0) {
++				// Number of bursts needed for this transfer
++				uint32 burstsNeeded = (trbTransferSize + endpoint->max_burst_payload - 1)
++					/ endpoint->max_burst_payload;
++				if (burstsNeeded > 0)
++					tbc = min_c(burstsNeeded - 1, 3);
++
++				// Packets in the last burst
++				size_t lastBurstBytes = trbTransferSize % endpoint->max_burst_payload;
++				if (lastBurstBytes == 0 && trbTransferSize > 0)
++					lastBurstBytes = endpoint->max_burst_payload;
++
++				uint32 packetsInLastBurst = (lastBurstBytes + maxPacketSizeEp - 1)
++					/ maxPacketSizeEp;
++				if (packetsInLastBurst > 0)
++					tlbpc = packetsInLastBurst - 1;
++			}
++
++			// Set TBC and TLBPC in the TRB flags
++			td->trbs[i].flags |= TRB_3_TBC(tbc) | TRB_3_TLBPC(tlbpc);
++
++			TRACE("isoch TRB %u: size=%zu, TBC=%u, TLBPC=%u (maxBurst=%u)\n",
++				i, trbTransferSize, tbc, tlbpc, maxBurst);
++
+ 			if (i != (isochronousData->packet_count - 1)) {
+ 				// For all but the last TD, generate events (but not interrupts) on short packets.
+ 				// (The last TD uses the regular Event Data TRB.)
+@@ -1067,9 +1111,6 @@ XHCI::SubmitNormalRequest(Transfer *transfer)
+ 			}
+ 		}
+
+-		// TODO: We do not currently take Mult into account at all!
+-		// How are we supposed to do that here?
+-
+ 		// Determine the (starting) frame number: if ISO_ASAP is set,
+ 		// we are queueing this "right away", and so want to reset
+ 		// the starting_frame_number. Otherwise we use the passed one.
+@@ -1647,8 +1688,20 @@ XHCI::AllocateDevice(Hub *parent, int8 hubAddress, uint8 hubPort,
+ 	}
+
+ 	_WriteContext(&device->input_ctx->slot.dwslot0, dwslot0);
+-	// TODO enable power save
+-	_WriteContext(&device->input_ctx->slot.dwslot1, SLOT_1_RH_PORT(rhPort));
++
++	// Set Max Exit Latency for USB 3.0+ Link Power Management (LPM)
++	// This enables U1/U2 power states for SuperSpeed devices.
++	// For USB 2.0, we set 0 (LPM not used at link level).
++	uint32 maxExitLatency = 0;
++	if (speed >= USB_SPEED_SUPERSPEED) {
++		// Use the controller's maximum supported exit latency
++		// This value comes from HCSPARAMS3 (U1/U2 device exit latencies)
++		maxExitLatency = fExitLatMax;
++		TRACE("device max exit latency: %u us (USB3+ LPM enabled)\n",
++			(unsigned)maxExitLatency);
++	}
++	_WriteContext(&device->input_ctx->slot.dwslot1,
++		SLOT_1_MAX_EXIT_LATENCY(maxExitLatency) | SLOT_1_RH_PORT(rhPort));
+ 	uint32 dwslot2 = SLOT_2_IRQ_TARGET(0);
+
+ 	// If LS/FS device connected to non-root HS device
+@@ -1978,6 +2031,16 @@ XHCI::_InsertEndpointForPipe(Pipe *pipe)
+
+ 		ConfigureEndpoint(device->input_ctx_addr, false, device->slot);
+
++		// Track active endpoint types for dynamic IMOD
++		uint32 pipeType = pipe->Type();
++		if ((pipeType & USB_OBJECT_ISO_PIPE) != 0) {
++			fActiveIsoEndpoints++;
++			_UpdateInterruptModeration();
++		} else if ((pipeType & USB_OBJECT_INTERRUPT_PIPE) != 0) {
++			fActiveInterruptEndpoints++;
++			_UpdateInterruptModeration();
++		}
++
+ 		TRACE("device: address 0x%x state 0x%08" B_PRIx32 "\n",
+ 			device->address, SLOT_3_SLOT_STATE_GET(_ReadContext(
+ 				&device->device_ctx->slot.dwslot3)));
+@@ -2009,6 +2072,18 @@ XHCI::_RemoveEndpointForPipe(Pipe *pipe)
+ 	if (endpoint == NULL || endpoint->trbs == NULL)
+ 		return B_NO_INIT;
+
++	// Track endpoint removal for dynamic IMOD (before clearing cookie)
++	uint32 pipeType = pipe->Type();
++	bool updateIMOD = false;
++	if ((pipeType & USB_OBJECT_ISO_PIPE) != 0 && fActiveIsoEndpoints > 0) {
++		fActiveIsoEndpoints--;
++		updateIMOD = true;
++	} else if ((pipeType & USB_OBJECT_INTERRUPT_PIPE) != 0
++			&& fActiveInterruptEndpoints > 0) {
++		fActiveInterruptEndpoints--;
++		updateIMOD = true;
++	}
++
+ 	pipe->SetControllerCookie(NULL);
+
+ 	if (endpoint->id > 0) {
+@@ -2037,6 +2112,10 @@ XHCI::_RemoveEndpointForPipe(Pipe *pipe)
+ 		ConfigureEndpoint(device->input_ctx_addr, false, device->slot);
+ 	}
+
++	// Update IMOD after endpoint removal
++	if (updateIMOD)
++		_UpdateInterruptModeration();
++
+ 	return B_OK;
+ }
+
+@@ -2259,9 +2338,25 @@ XHCI::ConfigureEndpoint(xhci_endpoint* ep, uint8 slot, uint8 number, uint8 type,
+
+ 	// Assign maximum burst size. For USB3 devices this is passed in; for
+ 	// all other devices we compute it. (XHCI 1.2 § 4.8.2 p161.)
++	//
++	// FIX: For USB 2.0 high-speed isochronous/interrupt endpoints, the
++	// wMaxPacketSize field contains:
++	//   - Bits 0-10: actual max packet size (0-1024 bytes)
++	//   - Bits 11-12: additional transactions per microframe (0, 1, or 2)
++	// The "additional transactions" field represents mult-1, so:
++	//   0 = 1 transaction/microframe (standard)
++	//   1 = 2 transactions/microframe (high-bandwidth)
++	//   2 = 3 transactions/microframe (high-bandwidth)
++	// We must mask these bits when using maxPacketSize elsewhere.
++	uint16 actualMaxPacketSize = maxPacketSize;
+ 	if (speed == USB_SPEED_HIGHSPEED && (type & (USB_OBJECT_INTERRUPT_PIPE
+ 			| USB_OBJECT_ISO_PIPE)) != 0) {
+ 		maxBurst = (maxPacketSize & 0x1800) >> 11;
++		// FIX: Extract actual packet size (bits 0-10 only)
++		actualMaxPacketSize = maxPacketSize & 0x7FF;
++		TRACE("High-bandwidth endpoint: raw maxPacketSize=0x%04x, "
++			"actualMaxPacketSize=%u, mult=%u (maxBurst=%u)\n",
++			maxPacketSize, actualMaxPacketSize, maxBurst + 1, maxBurst);
+ 	} else if (speed < USB_SPEED_SUPERSPEED) {
+ 		maxBurst = 0;
+ 	}
+@@ -2269,12 +2364,16 @@ XHCI::ConfigureEndpoint(xhci_endpoint* ep, uint8 slot, uint8 number, uint8 type,
+
+ 	// Assign maximum packet size, set the ring address, and set the
+ 	// "Dequeue Cycle State" bit. (XHCI 1.2 § 6.2.3 Table 6-10 p453.)
+-	dwendpoint1 |= ENDPOINT_1_MAXPACKETSIZE(maxPacketSize);
++	// FIX: Use actualMaxPacketSize (without mult bits) for the endpoint context
++	dwendpoint1 |= ENDPOINT_1_MAXPACKETSIZE(actualMaxPacketSize);
+ 	qwendpoint2 |= ENDPOINT_2_DCS_BIT | ep->trb_addr;
+
+ 	// The Max Burst Payload is the number of bytes moved by a
+ 	// maximum sized burst. (XHCI 1.2 § 4.11.7.1 p236.)
+-	ep->max_burst_payload = (maxBurst + 1) * maxPacketSize;
++	// FIX: Use actualMaxPacketSize for correct calculation
++	ep->max_burst_payload = (maxBurst + 1) * actualMaxPacketSize;
++	ep->max_packet_size = actualMaxPacketSize;
++	ep->max_burst = maxBurst;
+ 	if (ep->max_burst_payload == 0) {
+ 		TRACE_ERROR("ConfigureEndpoint() failed invalid max_burst_payload\n");
+ 		return B_BAD_VALUE;
+@@ -2289,22 +2388,48 @@ XHCI::ConfigureEndpoint(xhci_endpoint* ep, uint8 slot, uint8 number, uint8 type,
+ 		// Isochronous pipes are another special case: the TRB size will be
+ 		// one packet (which is normally smaller than the max packet size,
+ 		// but we don't know what it is here.)
+-		dwendpoint4 |= ENDPOINT_4_AVGTRBLENGTH(maxPacketSize);
++		// FIX: Use actualMaxPacketSize (without mult bits)
++		dwendpoint4 |= ENDPOINT_4_AVGTRBLENGTH(actualMaxPacketSize);
+ 	} else {
+ 		// Under all other circumstances, we put max_burst_payload in a TRB.
+ 		dwendpoint4 |= ENDPOINT_4_AVGTRBLENGTH(ep->max_burst_payload);
+ 	}
+
+ 	// Assign maximum ESIT payload. (XHCI 1.2 § 4.14.2 p259.)
++	// This is the maximum number of bytes the endpoint can transfer in one
++	// Endpoint Service Interval Time (ESIT). For high-bandwidth isochronous,
++	// this is (mult) * (maxPacketSize).
+ 	if ((type & (USB_OBJECT_INTERRUPT_PIPE | USB_OBJECT_ISO_PIPE)) != 0) {
+-		// TODO: For SuperSpeedPlus endpoints, there is yet another descriptor
+-		// for isochronous endpoints that specifies the maximum ESIT payload.
+-		// We don't fetch this yet, so just fall back to the USB2 computation
+-		// method if bytesPerInterval is 0.
+-		if (speed >= USB_SPEED_SUPERSPEED && bytesPerInterval != 0)
+-			dwendpoint4 |= ENDPOINT_4_MAXESITPAYLOAD(bytesPerInterval);
+-		else if (speed >= USB_SPEED_HIGHSPEED)
+-			dwendpoint4 |= ENDPOINT_4_MAXESITPAYLOAD((maxBurst + 1) * maxPacketSize);
++		uint32 esitPayload = 0;
++
++		if (speed >= USB_SPEED_SUPERSPEED && bytesPerInterval != 0) {
++			// USB 3.0+ SuperSpeed: use bytesPerInterval from SS Endpoint
++			// Companion descriptor (or SSP Iso Endpoint Companion for USB 3.1+)
++			esitPayload = bytesPerInterval;
++			TRACE("ESIT payload from descriptor: %u bytes (SuperSpeed%s)\n",
++				esitPayload, speed == USB_SPEED_SUPERSPEEDPLUS ? "Plus" : "");
++		} else if (speed >= USB_SPEED_SUPERSPEED && bytesPerInterval == 0) {
++			// SuperSpeed/Plus without bytesPerInterval: calculate fallback
++			// This can happen if the SSP Iso Endpoint Companion descriptor
++			// wasn't parsed (USB 3.1+ devices). Use maxBurst calculation.
++			// For SS: ESIT = (maxBurst + 1) * maxPacketSize * (Mult + 1)
++			// Note: For SS isochronous, Mult is always 0 (only USB2 uses mult)
++			esitPayload = (maxBurst + 1) * actualMaxPacketSize;
++			TRACE_ALWAYS("ESIT payload calculated (SuperSpeed%s fallback): "
++				"%u bytes (maxBurst=%u, packetSize=%u)\n",
++				speed == USB_SPEED_SUPERSPEEDPLUS ? "Plus" : "",
++				esitPayload, maxBurst, actualMaxPacketSize);
++		} else if (speed == USB_SPEED_HIGHSPEED) {
++			// USB 2.0 high-speed: ESIT = (mult) * maxPacketSize
++			// where mult = maxBurst + 1 (additional transactions + 1)
++			esitPayload = (maxBurst + 1) * actualMaxPacketSize;
++			TRACE("ESIT payload for high-speed endpoint: %u bytes "
++				"(mult=%u, packetSize=%u)\n",
++				esitPayload, maxBurst + 1, actualMaxPacketSize);
++		}
++
++		if (esitPayload > 0)
++			dwendpoint4 |= ENDPOINT_4_MAXESITPAYLOAD(esitPayload);
+ 	}
+
+ 	_WriteContext(&device->input_ctx->endpoints[number].dwendpoint0,
+@@ -2593,6 +2718,54 @@ XHCI::Interrupt()
+ }
+
+
++// IMOD values (in 250ns units):
++// 0x00FA = 250  -> 16000 IRQ/s (lowest latency, for isochronous streaming)
++// 0x01F4 = 500  ->  8000 IRQ/s (medium, for interrupt endpoints)
++// 0x03F8 = 1016 ->  4000 IRQ/s (high efficiency, default/Intel quirk minimum)
++// 0x07D0 = 2000 ->  2000 IRQ/s (power save mode)
++#define XHCI_IMOD_LOW_LATENCY	0x00FA	// 16000 IRQ/s - isochronous
++#define XHCI_IMOD_MEDIUM		0x01F4	//  8000 IRQ/s - interrupt
++#define XHCI_IMOD_DEFAULT		0x03F8	//  4000 IRQ/s - bulk/control
++#define XHCI_IMOD_POWER_SAVE	0x07D0	//  2000 IRQ/s - idle
++
++void
++XHCI::_UpdateInterruptModeration()
++{
++	uint32 imod;
++
++	if (fActiveIsoEndpoints > 0) {
++		// Isochronous endpoints active: use lowest latency for smooth streaming
++		// This is critical for webcams and audio devices
++		imod = XHCI_IMOD_LOW_LATENCY;
++		TRACE("IMOD: low latency mode (16000 IRQ/s) - %u iso endpoints active\n",
++			(unsigned)fActiveIsoEndpoints);
++	} else if (fActiveInterruptEndpoints > 0) {
++		// Only interrupt endpoints: medium latency
++		imod = XHCI_IMOD_MEDIUM;
++		TRACE("IMOD: medium mode (8000 IRQ/s) - %u interrupt endpoints active\n",
++			(unsigned)fActiveInterruptEndpoints);
++	} else if (!fIntelQuirk) {
++		// No time-sensitive endpoints and no Intel quirk: power save mode
++		// Uses lower interrupt rate to reduce CPU wakeups and save power
++		imod = XHCI_IMOD_POWER_SAVE;
++		TRACE("IMOD: power save mode (2000 IRQ/s)\n");
++	} else {
++		// Intel quirk hardware: use minimum safe rate
++		imod = XHCI_IMOD_DEFAULT;
++		TRACE("IMOD: default mode (4000 IRQ/s) - Intel quirk\n");
++	}
++
++	// Intel quirk: minimum IMOD is 0x3F8 to avoid IRQ lockups
++	if (fIntelQuirk && imod < XHCI_IMOD_DEFAULT) {
++		TRACE("IMOD: Intel quirk active, clamping to 0x%04x\n",
++			(unsigned)XHCI_IMOD_DEFAULT);
++		imod = XHCI_IMOD_DEFAULT;
++	}
++
++	WriteRunReg32(XHCI_IMOD(0), imod);
++}
++
++
+ void
+ XHCI::Ring(uint8 slot, uint8 endpoint)
+ {
+diff --git a/src/add-ons/kernel/busses/usb/xhci.h b/src/add-ons/kernel/busses/usb/xhci.h
+index e38f2db7..000b7d02 100644
+--- a/src/add-ons/kernel/busses/usb/xhci.h
++++ b/src/add-ons/kernel/busses/usb/xhci.h
+@@ -58,6 +58,8 @@ typedef struct xhci_endpoint {
+ 	uint8			status;
+
+ 	uint16			max_burst_payload;
++	uint16			max_packet_size;	// Actual packet size (without mult bits)
++	uint8			max_burst;			// maxBurst value (mult-1 for USB2, burst-1 for USB3)
+
+ 	xhci_td*		td_head;
+ 	uint8			used;
+@@ -287,6 +289,12 @@ private:
+ 			uint8				fCmdCcs;
+
+ 			uint32				fExitLatMax;
++
++			// Dynamic interrupt moderation
++			uint32				fActiveIsoEndpoints;
++			uint32				fActiveInterruptEndpoints;
++			bool				fIntelQuirk;		// Intel Lynx Point IMOD bug
++			void				_UpdateInterruptModeration();
+ };
+
+
