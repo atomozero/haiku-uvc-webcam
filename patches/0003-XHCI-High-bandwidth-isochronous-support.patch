@@ -41,25 +41,24 @@ Changes:
    - Use controller's HCSPARAMS3 U1/U2 exit latency values
    - Enables U1/U2 power states for reduced power consumption
 
+7. Fix endpoint initialization to prevent crashes:
+   - Initialize max_burst_payload, max_packet_size, max_burst to 0
+   - Add safety check in SubmitNormalRequest to prevent division by zero
+   - Initialize status field for all endpoints
+
 These changes enable USB Video Class (UVC) webcams to stream at higher
 resolutions (720p, 1080p) on systems with xHCI controllers while
 maintaining optimal interrupt rates for low latency video capture and
 reduced power consumption when idle.
-
-Signed-off-by: Haiku Developer <developer@haiku-os.org>
 ---
- src/add-ons/kernel/busses/usb/xhci.cpp | 192 +++++++++++++++++++++----
- src/add-ons/kernel/busses/usb/xhci.h   |   8 ++
- 2 files changed, 171 insertions(+), 29 deletions(-)
-
 diff --git a/src/add-ons/kernel/busses/usb/xhci.cpp b/src/add-ons/kernel/busses/usb/xhci.cpp
-index f02f1a7f..bcebdb92 100644
+index f02f1a7f..564c4cec 100644
 --- a/src/add-ons/kernel/busses/usb/xhci.cpp
 +++ b/src/add-ons/kernel/busses/usb/xhci.cpp
 @@ -14,6 +14,7 @@
-
+ 
  #include <stdio.h>
-
+ 
 +#include <drivers/PCI.h>
  #include <bus/PCI.h>
  #include <USB3.h>
@@ -79,7 +78,7 @@ index f02f1a7f..bcebdb92 100644
 @@ -533,18 +537,17 @@ XHCI::XHCI(pci_info *info, 	pci_device_module_info* pci, pci_device* device, Sta
  	if (fIRQ == 0xFF)
  		fIRQ = 0;
-
+ 
 -#if 0
 +// Try MSI-X first, then fall back to MSI, then legacy interrupts
  	if (fPci->get_msix_count(fDevice) >= 1) {
@@ -104,7 +103,7 @@ index f02f1a7f..bcebdb92 100644
  			&& fPci->enable_msi(fDevice) == B_OK) {
 @@ -793,16 +796,15 @@ XHCI::Start()
  	TRACE("setting interrupt rate\n");
-
+ 
  	// Setting IMOD below 0x3F8 on Intel Lynx Point can cause IRQ lockups
 -	if (fPCIInfo->vendor_id == PCI_VENDOR_INTEL
 +	fIntelQuirk = (fPCIInfo->vendor_id == PCI_VENDOR_INTEL
@@ -121,10 +120,23 @@ index f02f1a7f..bcebdb92 100644
 +
 +	// Set initial interrupt moderation (will be updated dynamically)
 +	_UpdateInterruptModeration();
-
+ 
  	TRACE("enabling interrupt\n");
  	WriteRunReg32(XHCI_IMAN(0), ReadRunReg32(XHCI_IMAN(0)) | IMAN_INTR_ENA);
-@@ -1055,10 +1057,52 @@ XHCI::SubmitNormalRequest(Transfer *transfer)
+@@ -969,6 +971,12 @@ XHCI::SubmitNormalRequest(Transfer *transfer)
+ 	if (status != B_OK)
+ 		return status;
+ 
++	// Safety check: max_burst_payload must be set by ConfigureEndpoint
++	if (endpoint->max_burst_payload == 0) {
++		TRACE_ERROR("endpoint max_burst_payload is 0, endpoint not configured!\n");
++		return B_NO_INIT;
++	}
++
+ 	// TRBs within a TD must be "grouped" into TD Fragments, which mostly means
+ 	// that a max_burst_payload boundary cannot be crossed within a TRB, but
+ 	// only between TRBs. More than one TRB can be in a TD Fragment, but we keep
+@@ -1055,10 +1063,52 @@ XHCI::SubmitNormalRequest(Transfer *transfer)
  	// Isochronous-specific.
  	if (isochronousData != NULL) {
  		// This is an isochronous transfer; it should have one TD per packet.
@@ -144,7 +156,7 @@ index f02f1a7f..bcebdb92 100644
  		for (uint32 i = 0; i < isochronousData->packet_count; i++) {
  			td->trbs[i].flags &= ~(TRB_3_TYPE(TRB_TYPE_NORMAL));
  			td->trbs[i].flags |= TRB_3_TYPE(TRB_TYPE_ISOCH);
-
+ 
 +			// Calculate TBC and TLBPC for this TRB
 +			size_t trbTransferSize = TRB_2_BYTES_GET(td->trbs[i].status);
 +			uint8 tbc = 0;
@@ -177,19 +189,19 @@ index f02f1a7f..bcebdb92 100644
  			if (i != (isochronousData->packet_count - 1)) {
  				// For all but the last TD, generate events (but not interrupts) on short packets.
  				// (The last TD uses the regular Event Data TRB.)
-@@ -1067,9 +1111,6 @@ XHCI::SubmitNormalRequest(Transfer *transfer)
+@@ -1067,9 +1117,6 @@ XHCI::SubmitNormalRequest(Transfer *transfer)
  			}
  		}
-
+ 
 -		// TODO: We do not currently take Mult into account at all!
 -		// How are we supposed to do that here?
 -
  		// Determine the (starting) frame number: if ISO_ASAP is set,
  		// we are queueing this "right away", and so want to reset
  		// the starting_frame_number. Otherwise we use the passed one.
-@@ -1647,8 +1688,20 @@ XHCI::AllocateDevice(Hub *parent, int8 hubAddress, uint8 hubPort,
+@@ -1647,8 +1694,20 @@ XHCI::AllocateDevice(Hub *parent, int8 hubAddress, uint8 hubPort,
  	}
-
+ 
  	_WriteContext(&device->input_ctx->slot.dwslot0, dwslot0);
 -	// TODO enable power save
 -	_WriteContext(&device->input_ctx->slot.dwslot1, SLOT_1_RH_PORT(rhPort));
@@ -208,12 +220,33 @@ index f02f1a7f..bcebdb92 100644
 +	_WriteContext(&device->input_ctx->slot.dwslot1,
 +		SLOT_1_MAX_EXIT_LATENCY(maxExitLatency) | SLOT_1_RH_PORT(rhPort));
  	uint32 dwslot2 = SLOT_2_IRQ_TARGET(0);
-
+ 
  	// If LS/FS device connected to non-root HS device
-@@ -1978,6 +2031,16 @@ XHCI::_InsertEndpointForPipe(Pipe *pipe)
-
+@@ -1712,6 +1771,9 @@ XHCI::AllocateDevice(Hub *parent, int8 hubAddress, uint8 hubPort,
+ 	endpoint0->device = device;
+ 	endpoint0->id = 0;
+ 	endpoint0->status = 0;
++	endpoint0->max_burst_payload = 0;
++	endpoint0->max_packet_size = 0;
++	endpoint0->max_burst = 0;
+ 	endpoint0->td_head = NULL;
+ 	endpoint0->used = 0;
+ 	endpoint0->next = 0;
+@@ -1946,6 +2008,10 @@ XHCI::_InsertEndpointForPipe(Pipe *pipe)
+ 
+ 		endpoint->device = device;
+ 		endpoint->id = id;
++		endpoint->status = 0;
++		endpoint->max_burst_payload = 0;
++		endpoint->max_packet_size = 0;
++		endpoint->max_burst = 0;
+ 		endpoint->td_head = NULL;
+ 		endpoint->used = 0;
+ 		endpoint->next = 0;
+@@ -1978,6 +2044,16 @@ XHCI::_InsertEndpointForPipe(Pipe *pipe)
+ 
  		ConfigureEndpoint(device->input_ctx_addr, false, device->slot);
-
+ 
 +		// Track active endpoint types for dynamic IMOD
 +		uint32 pipeType = pipe->Type();
 +		if ((pipeType & USB_OBJECT_ISO_PIPE) != 0) {
@@ -227,10 +260,10 @@ index f02f1a7f..bcebdb92 100644
  		TRACE("device: address 0x%x state 0x%08" B_PRIx32 "\n",
  			device->address, SLOT_3_SLOT_STATE_GET(_ReadContext(
  				&device->device_ctx->slot.dwslot3)));
-@@ -2009,6 +2072,18 @@ XHCI::_RemoveEndpointForPipe(Pipe *pipe)
+@@ -2009,6 +2085,18 @@ XHCI::_RemoveEndpointForPipe(Pipe *pipe)
  	if (endpoint == NULL || endpoint->trbs == NULL)
  		return B_NO_INIT;
-
+ 
 +	// Track endpoint removal for dynamic IMOD (before clearing cookie)
 +	uint32 pipeType = pipe->Type();
 +	bool updateIMOD = false;
@@ -244,21 +277,21 @@ index f02f1a7f..bcebdb92 100644
 +	}
 +
  	pipe->SetControllerCookie(NULL);
-
+ 
  	if (endpoint->id > 0) {
-@@ -2037,6 +2112,10 @@ XHCI::_RemoveEndpointForPipe(Pipe *pipe)
+@@ -2037,6 +2125,10 @@ XHCI::_RemoveEndpointForPipe(Pipe *pipe)
  		ConfigureEndpoint(device->input_ctx_addr, false, device->slot);
  	}
-
+ 
 +	// Update IMOD after endpoint removal
 +	if (updateIMOD)
 +		_UpdateInterruptModeration();
 +
  	return B_OK;
  }
-
-@@ -2259,9 +2338,25 @@ XHCI::ConfigureEndpoint(xhci_endpoint* ep, uint8 slot, uint8 number, uint8 type,
-
+ 
+@@ -2259,9 +2351,25 @@ XHCI::ConfigureEndpoint(xhci_endpoint* ep, uint8 slot, uint8 number, uint8 type,
+ 
  	// Assign maximum burst size. For USB3 devices this is passed in; for
  	// all other devices we compute it. (XHCI 1.2 § 4.8.2 p161.)
 +	//
@@ -283,15 +316,15 @@ index f02f1a7f..bcebdb92 100644
  	} else if (speed < USB_SPEED_SUPERSPEED) {
  		maxBurst = 0;
  	}
-@@ -2269,12 +2364,16 @@ XHCI::ConfigureEndpoint(xhci_endpoint* ep, uint8 slot, uint8 number, uint8 type,
-
+@@ -2269,12 +2377,16 @@ XHCI::ConfigureEndpoint(xhci_endpoint* ep, uint8 slot, uint8 number, uint8 type,
+ 
  	// Assign maximum packet size, set the ring address, and set the
  	// "Dequeue Cycle State" bit. (XHCI 1.2 § 6.2.3 Table 6-10 p453.)
 -	dwendpoint1 |= ENDPOINT_1_MAXPACKETSIZE(maxPacketSize);
 +	// FIX: Use actualMaxPacketSize (without mult bits) for the endpoint context
 +	dwendpoint1 |= ENDPOINT_1_MAXPACKETSIZE(actualMaxPacketSize);
  	qwendpoint2 |= ENDPOINT_2_DCS_BIT | ep->trb_addr;
-
+ 
  	// The Max Burst Payload is the number of bytes moved by a
  	// maximum sized burst. (XHCI 1.2 § 4.11.7.1 p236.)
 -	ep->max_burst_payload = (maxBurst + 1) * maxPacketSize;
@@ -302,7 +335,7 @@ index f02f1a7f..bcebdb92 100644
  	if (ep->max_burst_payload == 0) {
  		TRACE_ERROR("ConfigureEndpoint() failed invalid max_burst_payload\n");
  		return B_BAD_VALUE;
-@@ -2289,22 +2388,48 @@ XHCI::ConfigureEndpoint(xhci_endpoint* ep, uint8 slot, uint8 number, uint8 type,
+@@ -2289,22 +2401,48 @@ XHCI::ConfigureEndpoint(xhci_endpoint* ep, uint8 slot, uint8 number, uint8 type,
  		// Isochronous pipes are another special case: the TRB size will be
  		// one packet (which is normally smaller than the max packet size,
  		// but we don't know what it is here.)
@@ -313,7 +346,7 @@ index f02f1a7f..bcebdb92 100644
  		// Under all other circumstances, we put max_burst_payload in a TRB.
  		dwendpoint4 |= ENDPOINT_4_AVGTRBLENGTH(ep->max_burst_payload);
  	}
-
+ 
  	// Assign maximum ESIT payload. (XHCI 1.2 § 4.14.2 p259.)
 +	// This is the maximum number of bytes the endpoint can transfer in one
 +	// Endpoint Service Interval Time (ESIT). For high-bandwidth isochronous,
@@ -358,12 +391,12 @@ index f02f1a7f..bcebdb92 100644
 +		if (esitPayload > 0)
 +			dwendpoint4 |= ENDPOINT_4_MAXESITPAYLOAD(esitPayload);
  	}
-
+ 
  	_WriteContext(&device->input_ctx->endpoints[number].dwendpoint0,
-@@ -2593,6 +2718,54 @@ XHCI::Interrupt()
+@@ -2593,6 +2731,54 @@ XHCI::Interrupt()
  }
-
-
+ 
+ 
 +// IMOD values (in 250ns units):
 +// 0x00FA = 250  -> 16000 IRQ/s (lowest latency, for isochronous streaming)
 +// 0x01F4 = 500  ->  8000 IRQ/s (medium, for interrupt endpoints)
@@ -421,16 +454,16 @@ index e38f2db7..000b7d02 100644
 +++ b/src/add-ons/kernel/busses/usb/xhci.h
 @@ -58,6 +58,8 @@ typedef struct xhci_endpoint {
  	uint8			status;
-
+ 
  	uint16			max_burst_payload;
 +	uint16			max_packet_size;	// Actual packet size (without mult bits)
 +	uint8			max_burst;			// maxBurst value (mult-1 for USB2, burst-1 for USB3)
-
+ 
  	xhci_td*		td_head;
  	uint8			used;
 @@ -287,6 +289,12 @@ private:
  			uint8				fCmdCcs;
-
+ 
  			uint32				fExitLatMax;
 +
 +			// Dynamic interrupt moderation
@@ -439,5 +472,5 @@ index e38f2db7..000b7d02 100644
 +			bool				fIntelQuirk;		// Intel Lynx Point IMOD bug
 +			void				_UpdateInterruptModeration();
  };
-
-
+ 
+ 
