@@ -46,13 +46,18 @@ Changes:
    - Add safety check in SubmitNormalRequest to prevent division by zero
    - Initialize status field for all endpoints
 
+8. Allow zero-bandwidth alternates (UVC fix):
+   - Don't reject endpoints with maxPacketSize=0 for non-control pipes
+   - Zero-bandwidth alternates are used by UVC cameras to stop streaming
+   - Control endpoints still require non-zero maxPacketSize
+
 These changes enable USB Video Class (UVC) webcams to stream at higher
 resolutions (720p, 1080p) on systems with xHCI controllers while
 maintaining optimal interrupt rates for low latency video capture and
 reduced power consumption when idle.
 ---
 diff --git a/src/add-ons/kernel/busses/usb/xhci.cpp b/src/add-ons/kernel/busses/usb/xhci.cpp
-index f02f1a7f..564c4cec 100644
+index f02f1a7f..cc4e33d2 100644
 --- a/src/add-ons/kernel/busses/usb/xhci.cpp
 +++ b/src/add-ons/kernel/busses/usb/xhci.cpp
 @@ -14,6 +14,7 @@
@@ -316,7 +321,7 @@ index f02f1a7f..564c4cec 100644
  	} else if (speed < USB_SPEED_SUPERSPEED) {
  		maxBurst = 0;
  	}
-@@ -2269,12 +2377,16 @@ XHCI::ConfigureEndpoint(xhci_endpoint* ep, uint8 slot, uint8 number, uint8 type,
+@@ -2269,16 +2377,26 @@ XHCI::ConfigureEndpoint(xhci_endpoint* ep, uint8 slot, uint8 number, uint8 type,
  
  	// Assign maximum packet size, set the ring address, and set the
  	// "Dequeue Cycle State" bit. (XHCI 1.2 § 6.2.3 Table 6-10 p453.)
@@ -328,14 +333,26 @@ index f02f1a7f..564c4cec 100644
  	// The Max Burst Payload is the number of bytes moved by a
  	// maximum sized burst. (XHCI 1.2 § 4.11.7.1 p236.)
 -	ep->max_burst_payload = (maxBurst + 1) * maxPacketSize;
+-	if (ep->max_burst_payload == 0) {
+-		TRACE_ERROR("ConfigureEndpoint() failed invalid max_burst_payload\n");
 +	// FIX: Use actualMaxPacketSize for correct calculation
 +	ep->max_burst_payload = (maxBurst + 1) * actualMaxPacketSize;
 +	ep->max_packet_size = actualMaxPacketSize;
 +	ep->max_burst = maxBurst;
- 	if (ep->max_burst_payload == 0) {
- 		TRACE_ERROR("ConfigureEndpoint() failed invalid max_burst_payload\n");
++
++	// Allow zero-bandwidth endpoints (used by UVC alternate 0 to stop streaming).
++	// Control endpoints should always have non-zero maxPacketSize from device descriptor.
++	// Bulk/interrupt/isochronous endpoints with actual data transfers need non-zero.
++	if (ep->max_burst_payload == 0 && (type & USB_OBJECT_CONTROL_PIPE) != 0) {
++		TRACE_ERROR("ConfigureEndpoint() failed: control endpoint with zero maxPacketSize\n");
  		return B_BAD_VALUE;
-@@ -2289,22 +2401,48 @@ XHCI::ConfigureEndpoint(xhci_endpoint* ep, uint8 slot, uint8 number, uint8 type,
+ 	}
++	// For non-control endpoints, zero max_burst_payload means zero-bandwidth alternate.
++	// This is valid - transfers will be rejected in SubmitNormalRequest if attempted.
+ 
+ 	// Assign average TRB length.
+ 	if ((type & USB_OBJECT_CONTROL_PIPE) != 0) {
+@@ -2289,22 +2407,48 @@ XHCI::ConfigureEndpoint(xhci_endpoint* ep, uint8 slot, uint8 number, uint8 type,
  		// Isochronous pipes are another special case: the TRB size will be
  		// one packet (which is normally smaller than the max packet size,
  		// but we don't know what it is here.)
@@ -393,7 +410,7 @@ index f02f1a7f..564c4cec 100644
  	}
  
  	_WriteContext(&device->input_ctx->endpoints[number].dwendpoint0,
-@@ -2593,6 +2731,54 @@ XHCI::Interrupt()
+@@ -2593,6 +2737,54 @@ XHCI::Interrupt()
  }
  
  
