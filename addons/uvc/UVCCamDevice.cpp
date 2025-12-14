@@ -24,28 +24,166 @@
 
 usb_webcam_support_descriptor kSupportedDevices[] = {
 	// Specific VID/PID devices first (higher priority than generic class match)
-	{{ 0, 0, 0, 0x0c45, 0x6409, }, "Microdia",      "Motion Eye",                      "??" },
-	{{ 0, 0, 0, 0x1bcf, 0x0001, }, "AUKEY",         "PC-LM1E",                         "??" },
+	// Device list imported from Linux UVC driver (drivers/media/usb/uvc/uvc_driver.c)
+
+	// HP
+	{{ 0, 0, 0, 0x03f0, 0xe207, }, "HP",            "Webcam HD 2300",                  "??" },
+
+	// Quanta/Acer
+	{{ 0, 0, 0, 0x0408, 0x4033, }, "Quanta",        "HD User Facing Camera",           "??" },
+	{{ 0, 0, 0, 0x0408, 0x4035, }, "Quanta",        "HD User Facing Camera",           "??" },
+
+	// LogiLink
+	{{ 0, 0, 0, 0x0416, 0xa91a, }, "LogiLink",      "Wireless Webcam",                 "??" },
+
+	// Genius
+	{{ 0, 0, 0, 0x0458, 0x706e, }, "Genius",        "eFace 2025",                      "??" },
+
+	// Microsoft
 	{{ 0, 0, 0, 0x045e, 0x00f8, }, "Microsoft",     "Lifecam NX-6000",                 "??" },
+	{{ 0, 0, 0, 0x045e, 0x0721, }, "Microsoft",     "Lifecam NX-3000",                 "??" },
 	{{ 0, 0, 0, 0x045e, 0x0723, }, "Microsoft",     "Lifecam VX-7000",                 "??" },
+
+	// Logitech
+	{{ 0, 0, 0, 0x046d, 0x0821, }, "Logitech",      "HD Pro Webcam C910",              "??" },
+	{{ 0, 0, 0, 0x046d, 0x0823, }, "Logitech",      "Webcam B910",                     "??" },
+	{{ 0, 0, 0, 0x046d, 0x082d, }, "Logitech",      "HD Pro Webcam C920",              "??" },
+	{{ 0, 0, 0, 0x046d, 0x085c, }, "Logitech",      "HD Pro Webcam C922",              "??" },
+	{{ 0, 0, 0, 0x046d, 0x087c, }, "Logitech",      "Rally Bar Huddle",                "??" },
+	{{ 0, 0, 0, 0x046d, 0x089b, }, "Logitech",      "Rally Bar",                       "??" },
 	{{ 0, 0, 0, 0x046d, 0x08c1, }, "Logitech",      "QuickCam Fusion",                 "??" },
 	{{ 0, 0, 0, 0x046d, 0x08c2, }, "Logitech",      "QuickCam Orbit MP",               "??" },
 	{{ 0, 0, 0, 0x046d, 0x08c3, }, "Logitech",      "QuickCam Pro for Notebook",       "??" },
 	{{ 0, 0, 0, 0x046d, 0x08c5, }, "Logitech",      "QuickCam Pro 5000",               "??" },
 	{{ 0, 0, 0, 0x046d, 0x08c6, }, "Logitech",      "QuickCam OEM Dell Notebook",      "??" },
 	{{ 0, 0, 0, 0x046d, 0x08c7, }, "Logitech",      "QuickCam OEM Cisco VT Camera II", "??" },
-	{{ 0, 0, 0, 0x046d, 0x0821, }, "Logitech",      "HD Pro Webcam C910",              "??" },
+	{{ 0, 0, 0, 0x046d, 0x08d3, }, "Logitech",      "Rally Bar Mini",                  "??" },
+
+	// Chicony
+	{{ 0, 0, 0, 0x04f2, 0xb071, }, "Chicony",       "CNF7129 (Asus EEE 100HE)",        "??" },
+	{{ 0, 0, 0, 0x04f2, 0xb40a, }, "Chicony",       "HD UVC WebCam",                   "??" },
+
+	// Alcor Micro
+	{{ 0, 0, 0, 0x058f, 0x3820, }, "Alcor Micro",   "AU3820 PC USB Webcam",            "??" },
+
+	// OmniVision
+	{{ 0, 0, 0, 0x05a9, 0x2640, }, "OmniVision",    "Dell XPS m1530",                  "??" },
+	{{ 0, 0, 0, 0x05a9, 0x2641, }, "OmniVision",    "Dell SP2008WFP Monitor",          "??" },
+	{{ 0, 0, 0, 0x05a9, 0x2643, }, "OmniVision",    "Dell Alienware X51",              "??" },
+	{{ 0, 0, 0, 0x05a9, 0x264a, }, "OmniVision",    "Dell Studio Hybrid 140g",         "??" },
+	{{ 0, 0, 0, 0x05a9, 0x7670, }, "OmniVision",    "Dell XPS M1330",                  "??" },
+
+	// Apple
 	{{ 0, 0, 0, 0x05ac, 0x8501, }, "Apple",         "Built-In iSight",                 "??" },
+	{{ 0, 0, 0, 0x05ac, 0x8514, }, "Apple",         "FaceTime HD Camera",              "??" },
+	{{ 0, 0, 0, 0x05ac, 0x8600, }, "Apple",         "Built-In iSight via iBridge",     "??" },
+
+	// Foxlink
+	{{ 0, 0, 0, 0x05c8, 0x0403, }, "Foxlink",       "HP Webcam (HP Mini 5103)",        "??" },
+
+	// Genesys Logic
 	{{ 0, 0, 0, 0x05e3, 0x0505, }, "Genesys Logic", "USB 2.0 PC Camera",               "??" },
-	{{ 0, 0, 0, 0x0e8d, 0x0004, }, "N/A",           "MT6227",                          "??" },
-	{{ 0, 0, 0, 0x174f, 0x5212, }, "Syntek",        "(HP Spartan)",                    "??" },
-	{{ 0, 0, 0, 0x174f, 0x5931, }, "Syntek",        "(Samsung Q310)",                  "??" },
+
+	// Hercules
+	{{ 0, 0, 0, 0x06f8, 0x300c, }, "Hercules",      "Classic Silver",                  "??" },
+
+	// ViMicro
+	{{ 0, 0, 0, 0x0ac8, 0x332d, }, "ViMicro",       "Vega",                            "??" },
+	{{ 0, 0, 0, 0x0ac8, 0x3410, }, "ViMicro",       "Minoru3D",                        "??" },
+	{{ 0, 0, 0, 0x0ac8, 0x3420, }, "ViMicro",       "Venus Minoru3D",                  "??" },
+
+	// Ophir Optronics
+	{{ 0, 0, 0, 0x0bd3, 0x0555, }, "Ophir Optronics", "SPCAM 620U",                    "??" },
+
+	// Microdia/Sonix
+	{{ 0, 0, 0, 0x0c45, 0x6366, }, "Sonix",         "292A IPC AR0330",                 "??" },
+	{{ 0, 0, 0, 0x0c45, 0x6409, }, "Microdia",      "Motion Eye",                      "??" },
+	{{ 0, 0, 0, 0x0c45, 0x6720, }, "Microdia",      "Integrated Webcam HD",            "??" },
+
+	// MediaTek
+	{{ 0, 0, 0, 0x0e8d, 0x0004, }, "MediaTek",      "MT6227",                          "??" },
+
+	// IMC Networks
+	{{ 0, 0, 0, 0x13d3, 0x5103, }, "IMC Networks",  "Medion Akoya",                    "??" },
+
+	// JMicron
+	{{ 0, 0, 0, 0x152d, 0x0310, }, "JMicron",       "USB 2.0 XGA WebCam",              "??" },
+
+	// Kurokesu
+	{{ 0, 0, 0, 0x16d0, 0x0ed1, }, "Kurokesu",      "C1 PRO",                          "??" },
+
+	// Syntek
+	{{ 0, 0, 0, 0x174f, 0x5212, }, "Syntek",        "HP Spartan",                      "??" },
+	{{ 0, 0, 0, 0x174f, 0x5931, }, "Syntek",        "Samsung Q310",                    "??" },
+	{{ 0, 0, 0, 0x174f, 0x8a12, }, "Syntek",        "Packard Bell EasyNote MX52",      "??" },
 	{{ 0, 0, 0, 0x174f, 0x8a31, }, "Syntek",        "Asus F9SG",                       "??" },
 	{{ 0, 0, 0, 0x174f, 0x8a33, }, "Syntek",        "Asus U3S",                        "??" },
-	{{ 0, 0, 0, 0x17ef, 0x480b, }, "N/A",           "Lenovo Thinkpad SL500",           "??" },
+	{{ 0, 0, 0, 0x174f, 0x8a34, }, "Syntek",        "JAOtech Smart Terminal",          "??" },
+
+	// Miricle
+	{{ 0, 0, 0, 0x17dc, 0x0202, }, "Miricle",       "307K",                            "??" },
+
+	// Lenovo
+	{{ 0, 0, 0, 0x17ef, 0x480b, }, "Lenovo",        "Thinkpad SL400/SL500",            "??" },
+
+	// Aveo Technology
+	{{ 0, 0, 0, 0x1871, 0x0306, }, "Aveo",          "USB 2.0 Camera",                  "??" },
+	{{ 0, 0, 0, 0x1871, 0x0516, }, "Aveo",          "USB 2.0 Camera (Tasco Microscope)", "??" },
+
+	// Ecamm
 	{{ 0, 0, 0, 0x18cd, 0xcafe, }, "Ecamm",         "Pico iMage",                      "??" },
+
+	// Arkmicro/FSC/Manta
+	{{ 0, 0, 0, 0x18ec, 0x3188, }, "Manta",         "MM-353 Plako",                    "??" },
+	{{ 0, 0, 0, 0x18ec, 0x3288, }, "FSC",           "WebCam V30S",                     "??" },
+	{{ 0, 0, 0, 0x18ec, 0x3290, }, "Arkmicro",      "USB Web Camera",                  "??" },
+
+	// Imaging Source
+	{{ 0, 0, 0, 0x199e, 0x8102, }, "Imaging Source", "USB CCD Camera",                 "??" },
+
+	// Bodelin
 	{{ 0, 0, 0, 0x19ab, 0x1000, }, "Bodelin",       "ProScopeHR",                      "??" },
+
+	// MSI
+	{{ 0, 0, 0, 0x1b3b, 0x2951, }, "MSI",           "StarCam 370i",                    "??" },
+
+	// Generalplus
+	{{ 0, 0, 0, 0x1b3f, 0x2002, }, "Generalplus",   "808 Camera",                      "??" },
+
+	// AUKEY / Shenzhen Aoni
+	{{ 0, 0, 0, 0x1bcf, 0x0001, }, "AUKEY",         "PC-LM1E",                         "??" },
+	{{ 0, 0, 0, 0x1bcf, 0x0b40, }, "Shenzhen Aoni", "2K FHD Camera",                   "??" },
+
+	// SiGma Micro
 	{{ 0, 0, 0, 0x1c4f, 0x3000, }, "SiGma Micro",   "USB Web Camera",                  "??" },
+
+	// Actions Microelectronics
+	{{ 0, 0, 0, 0x1de1, 0xf105, }, "Actions Micro", "Display capture-UVC05",           "??" },
+
+	// NXP Semiconductors
+	{{ 0, 0, 0, 0x1fc9, 0x009b, }, "NXP",           "IR VIDEO",                        "??" },
+
+	// Oculus VR
+	{{ 0, 0, 0, 0x2833, 0x0201, }, "Oculus VR",     "Positional Tracker DK2",          "??" },
+	{{ 0, 0, 0, 0x2833, 0x0211, }, "Oculus VR",     "Rift Sensor",                     "??" },
+
+	// GEO Semiconductor
+	{{ 0, 0, 0, 0x29fe, 0x4d53, }, "GEO Semi",      "GC6500",                          "??" },
+
+	// Insta360
+	{{ 0, 0, 0, 0x2e1a, 0x4c01, }, "Insta360",      "Link",                            "??" },
+
+	// Intel RealSense
+	{{ 0, 0, 0, 0x8086, 0x0ad2, }, "Intel",         "RealSense D410",                  "??" },
+	{{ 0, 0, 0, 0x8086, 0x0ad3, }, "Intel",         "RealSense D415",                  "??" },
+	{{ 0, 0, 0, 0x8086, 0x0ad4, }, "Intel",         "RealSense D430",                  "??" },
+	{{ 0, 0, 0, 0x8086, 0x0b03, }, "Intel",         "RealSense D4M",                   "??" },
+	{{ 0, 0, 0, 0x8086, 0x0b07, }, "Intel",         "RealSense D435",                  "??" },
+	{{ 0, 0, 0, 0x8086, 0x0b3a, }, "Intel",         "RealSense D435i",                 "??" },
+	{{ 0, 0, 0, 0x8086, 0x0b5b, }, "Intel",         "RealSense D405",                  "??" },
+	{{ 0, 0, 0, 0x8086, 0x0b5c, }, "Intel",         "RealSense D455",                  "??" },
+	{{ 0, 0, 0, 0x8086, 0x1155, }, "Intel",         "RealSense D421",                  "??" },
+
 	// Generic class-based matching (fallback for unknown devices)
 	{{ USB_VIDEO_DEVICE_CLASS, USB_VIDEO_INTERFACE_VIDEOCONTROL_SUBCLASS, 0, 0, 0 }, "Generic UVC", "Video Class", "??" },
 	{{ 0xEF, 0x02, 0, 0, 0 }, "Miscellaneous device", "Interface association", "??" },
@@ -435,6 +573,80 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 			}
 
 			syslog(LOG_INFO, "UVCCamDevice: Hardcoded %d MJPEG + %d YUY2 frames\n",
+				(int)fMJPEGFrames.CountItems(), (int)fUncompressedFrames.CountItems());
+		}
+
+		// Microdia Integrated Webcam HD (Dell XPS, etc.)
+		// From listusb: VID 0x0c45, PID 0x6720
+		else if (vendorID == 0x0c45 && productID == 0x6720) {
+			syslog(LOG_INFO, "UVCCamDevice: Detected Microdia Integrated Webcam HD, using hardcoded resolutions\n");
+
+			struct FrameInfo {
+				uint16 width;
+				uint16 height;
+				uint32 default_interval;
+				uint32 min_interval;
+			};
+
+			// MJPEG frames - from listusb descriptor (Format Index 0x01)
+			// Frame indices: 1=1280x720, 2=960x540, 3=848x480, 4=640x480, 5=640x360
+			FrameInfo mjpegFrames[] = {
+				{1280, 720,  333333, 333333},   // frame_index 1: 720p @ 30fps
+				{960,  540,  333333, 333333},   // frame_index 2: qHD @ 30fps
+				{848,  480,  333333, 333333},   // frame_index 3: FWVGA @ 30fps
+				{640,  480,  333333, 333333},   // frame_index 4: VGA @ 30fps
+				{640,  360,  333333, 333333},   // frame_index 5: nHD @ 30fps
+			};
+
+			fMJPEGFormatIndex = 1;  // MJPEG format index from descriptor
+			for (size_t i = 0; i < sizeof(mjpegFrames)/sizeof(mjpegFrames[0]); i++) {
+				usb_video_frame_descriptor* desc = new usb_video_frame_descriptor;
+				memset(desc, 0, sizeof(*desc));
+				desc->frame_index = i + 1;
+				desc->capabilities = 0;
+				desc->width = mjpegFrames[i].width;
+				desc->height = mjpegFrames[i].height;
+				desc->min_bit_rate = mjpegFrames[i].width * mjpegFrames[i].height * 16 * 15;
+				desc->max_bit_rate = mjpegFrames[i].width * mjpegFrames[i].height * 16 * 30;
+				desc->max_video_frame_buffer_size = mjpegFrames[i].width * mjpegFrames[i].height * 2;
+				desc->default_frame_interval = mjpegFrames[i].default_interval;
+				desc->frame_interval_type = 1;
+				desc->discrete_frame_intervals[0] = mjpegFrames[i].min_interval;
+				fMJPEGFrames.AddItem(desc);
+				syslog(LOG_INFO, "UVCCamDevice: Added MJPEG %ux%u\n", desc->width, desc->height);
+			}
+
+			// YUY2/Uncompressed frames - from listusb descriptor (Format Index 0x02)
+			// Note: 1280x720 limited to 10fps due to USB bandwidth
+			FrameInfo yuy2Frames[] = {
+				{1280, 720,  1000000, 1000000}, // frame_index 1: 720p @ 10fps (bandwidth limited)
+				{640,  480,  333333,  333333},  // frame_index 2: VGA @ 30fps
+				{640,  360,  333333,  333333},  // frame_index 3: nHD @ 30fps
+				{424,  240,  333333,  333333},  // frame_index 4: WQVGA @ 30fps
+				{320,  240,  333333,  333333},  // frame_index 5: QVGA @ 30fps
+				{320,  180,  333333,  333333},  // frame_index 6: @ 30fps
+				{160,  120,  333333,  333333},  // frame_index 7: QQVGA @ 30fps
+			};
+
+			fUncompressedFormatIndex = 2;  // YUY2 format index from descriptor
+			for (size_t i = 0; i < sizeof(yuy2Frames)/sizeof(yuy2Frames[0]); i++) {
+				usb_video_frame_descriptor* desc = new usb_video_frame_descriptor;
+				memset(desc, 0, sizeof(*desc));
+				desc->frame_index = i + 1;
+				desc->capabilities = 0;
+				desc->width = yuy2Frames[i].width;
+				desc->height = yuy2Frames[i].height;
+				desc->min_bit_rate = yuy2Frames[i].width * yuy2Frames[i].height * 16 * 5;
+				desc->max_bit_rate = yuy2Frames[i].width * yuy2Frames[i].height * 16 * 30;
+				desc->max_video_frame_buffer_size = yuy2Frames[i].width * yuy2Frames[i].height * 2;
+				desc->default_frame_interval = yuy2Frames[i].default_interval;
+				desc->frame_interval_type = 1;
+				desc->discrete_frame_intervals[0] = yuy2Frames[i].min_interval;
+				fUncompressedFrames.AddItem(desc);
+				syslog(LOG_INFO, "UVCCamDevice: Added YUY2 %ux%u\n", desc->width, desc->height);
+			}
+
+			syslog(LOG_INFO, "UVCCamDevice: Hardcoded %d MJPEG + %d YUY2 frames for Microdia 0x6720\n",
 				(int)fMJPEGFrames.CountItems(), (int)fUncompressedFrames.CountItems());
 		}
 	}
