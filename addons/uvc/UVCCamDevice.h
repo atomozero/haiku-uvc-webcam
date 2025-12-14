@@ -23,6 +23,58 @@ const uint32 kFrameValidationReportInterval = 30;	// Seconds between stats repor
 
 
 // =============================================================================
+// USB Host Controller and Speed Detection (XHCI Optimization Support)
+// =============================================================================
+
+// USB host controller type - affects high-bandwidth and isochronous behavior
+enum usb_host_controller_type {
+	USB_HC_UNKNOWN = 0,		// Not yet detected
+	USB_HC_OHCI,			// USB 1.1 - no high-bandwidth support
+	USB_HC_UHCI,			// USB 1.1 - no high-bandwidth support
+	USB_HC_EHCI,			// USB 2.0 - high-bandwidth with limitations
+	USB_HC_XHCI				// USB 3.0+ - full high-bandwidth support
+};
+
+// USB device speed - affects bandwidth calculations
+enum usb_device_speed {
+	USB_SPEED_UNKNOWN = 0,
+	USB_SPEED_LOW = 1,		// 1.5 Mbps (USB 1.0)
+	USB_SPEED_FULL = 2,		// 12 Mbps (USB 1.1)
+	USB_SPEED_HIGH = 3,		// 480 Mbps (USB 2.0)
+	USB_SPEED_SUPER = 4,	// 5 Gbps (USB 3.0)
+	USB_SPEED_SUPER_PLUS = 5	// 10/20 Gbps (USB 3.1/3.2)
+};
+
+// Controller capability flags
+enum usb_controller_caps {
+	USB_CAP_NONE = 0,
+	USB_CAP_HIGH_BANDWIDTH = (1 << 0),		// Supports mult>1 isochronous
+	USB_CAP_DYNAMIC_IMOD = (1 << 1),		// Dynamic interrupt moderation
+	USB_CAP_TBC_TLBPC = (1 << 2),			// TBC/TLBPC for isochronous TRBs
+	USB_CAP_LPM = (1 << 3),					// Link Power Management
+	USB_CAP_STREAMS = (1 << 4)				// Bulk streams (USB 3.0+)
+};
+
+// XHCI interrupt moderation modes (matches kernel driver)
+enum xhci_imod_mode {
+	XHCI_IMOD_LOW_LATENCY = 0,	// 16000 IRQ/s - for isochronous streaming
+	XHCI_IMOD_MEDIUM = 1,		// 8000 IRQ/s - for interrupt endpoints
+	XHCI_IMOD_DEFAULT = 2,		// 4000 IRQ/s - bulk/control
+	XHCI_IMOD_POWER_SAVE = 3	// 2000 IRQ/s - idle mode
+};
+
+// Controller detection result
+struct usb_controller_info {
+	usb_host_controller_type	type;
+	usb_device_speed			device_speed;
+	uint32						capabilities;
+	xhci_imod_mode				expected_imod;
+	bool						high_bandwidth_safe;
+	const char*					type_name;
+};
+
+
+// =============================================================================
 // YUV to RGB Lookup Tables for Optimized Color Conversion
 // =============================================================================
 // Pre-computed tables eliminate per-pixel multiplications and clipping.
@@ -227,6 +279,19 @@ private:
 			void				_OnHighBandwidthFailure();
 			void				_ResetHighBandwidthState();
 
+	// USB controller and speed detection (XHCI optimization)
+			void				_DetectControllerType();
+			usb_device_speed	_GetUSBSpeed();
+			void				_LogControllerCapabilities();
+			bigtime_t			_GetOptimalPollInterval();
+			uint32				_GetExpectedIRQsPerFrame();
+			size_t				_GetOptimalBufferSize();
+			uint64				_GetMaxBandwidth();
+
+	// TBC/TLBPC packet handling (XHCI isochronous optimization)
+			float				_GetExpectedPacketCompletionRate();
+			bool				_HasTBCTLBPCSupport();
+
 
 			usbvc_interface_header_descriptor *fHeaderDescriptor;
 
@@ -350,6 +415,10 @@ private:
 			bool				fHighBandwidthWorks;		// Did it work?
 			uint32				fHighBandwidthFailures;		// Consecutive failures
 			bool				fUsingHighBandwidth;		// Currently using high-bandwidth?
+
+			// USB controller detection (XHCI optimization)
+			usb_controller_info	fControllerInfo;			// Detected controller capabilities
+			bool				fControllerDetected;		// True after detection complete
 
 			// MJPEG frame size monitoring (for auto-fallback)
 			size_t				fMJPEGFrameSizeSum;			// Sum of recent frame sizes

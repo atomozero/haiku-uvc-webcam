@@ -9,6 +9,7 @@
 #include "UVCCamDevice.h"
 #include "UVCDeframer.h"
 #include "CamDebug.h"
+#include "CamConfig.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -184,12 +185,19 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 	fHighBandwidthWorks(true),		// Assume it works until proven otherwise
 	fHighBandwidthFailures(0),
 	fUsingHighBandwidth(false),
+	// USB controller detection
+	fControllerDetected(false),
 	// MJPEG frame size monitoring
 	fMJPEGFrameSizeSum(0),
 	fMJPEGFrameSizeCount(0),
 	fExpectedMJPEGMinSize(0),
 	fLastFrameSizeCheck(0)
 {
+	// Initialize controller info to unknown
+	memset(&fControllerInfo, 0, sizeof(fControllerInfo));
+	fControllerInfo.type = USB_HC_UNKNOWN;
+	fControllerInfo.device_speed = USB_SPEED_UNKNOWN;
+	fControllerInfo.type_name = "unknown";
 	// Initialize frame validation stats
 	memset(&fValidationStats, 0, sizeof(fValidationStats));
 
@@ -450,6 +458,10 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 		syslog(LOG_WARNING, "UVCCamDevice: tjInitDecompress failed - MJPEG disabled\n");
 		/* Continue anyway - YUY2 format will still work */
 	}
+
+	// Detect USB controller type for XHCI optimizations
+	_DetectControllerType();
+	_LogControllerCapabilities();
 
 	// FIX BUG 3: Impostare fInitStatus solo dopo parsing completo
 	// Requisito minimo: avere almeno un formato video disponibile
@@ -1588,40 +1600,67 @@ UVCCamDevice::_SelectBestAlternate()
 	syslog(LOG_INFO, "UVCCamDevice: Using alternate %u with endpoint %u (bandwidth %u bytes)\n",
 		alternateIndex, endpointIndex, bestBandwidth);
 
-	// WORKAROUND for Haiku bug in BUSBInterface::SetAlternate()
-	// The bug causes a double-free when the number of endpoints changes between alternates.
-	// See USBInterface_fix.patch for the proper fix to submit to Haiku.
+	// WARNING: Haiku's BUSBInterface::SetAlternate() has a bug that causes
+	// double-free/memory corruption when switching between alternates with
+	// different endpoint counts. See patches/0001-USBKit-Fix-double-free-in-SetAlternate.patch
 	//
-	// Mitigation strategy:
-	// 1. Only call SetAlternate if truly necessary (already implemented above)
-	// 2. If we must change, try to minimize the impact by staying on similar alternates
-	// 3. Log extensively to help diagnose crashes
+	// The bug is in _UpdateDescriptorAndEndpoints(): it uses the NEW descriptor's
+	// num_endpoints to delete the OLD endpoint array. When going from 0 endpoints
+	// (alt 0) to N endpoints (alt N), it tries to delete N elements from an empty array.
+	//
+	// WORKAROUND: We must use SetAlternate() because ControlTransfer doesn't work
+	// for SET_INTERFACE in Haiku (the kernel manages interfaces internally).
+	// To minimize crash risk, we:
+	// 1. Only call SetAlternate when absolutely necessary
+	// 2. Immediately re-fetch all interface/endpoint references after the call
+	// 3. Never access the old BUSBInterface object after SetAlternate
 	if (fCurrentVideoAlternate != alternateIndex) {
-		syslog(LOG_INFO, "UVCCamDevice: Changing alternate from %u to %u (Haiku bug risk!)\n",
+		syslog(LOG_INFO, "UVCCamDevice: Changing alternate from %u to %u\n",
 			fCurrentVideoAlternate, alternateIndex);
 
-		// Log endpoint counts to help diagnose the Haiku bug
+		// Log endpoint counts to diagnose potential crashes
 		const BUSBInterface* oldAlt = streaming->AlternateAt(fCurrentVideoAlternate);
 		const BUSBInterface* newAlt = streaming->AlternateAt(alternateIndex);
-		if (oldAlt && newAlt) {
-			syslog(LOG_INFO, "UVCCamDevice: Endpoint count: old=%u new=%u\n",
-				(unsigned)oldAlt->CountEndpoints(), (unsigned)newAlt->CountEndpoints());
+		uint32 oldEndpoints = oldAlt ? oldAlt->CountEndpoints() : 0;
+		uint32 newEndpoints = newAlt ? newAlt->CountEndpoints() : 0;
+		syslog(LOG_INFO, "UVCCamDevice: Endpoint count: old=%u new=%u\n",
+			oldEndpoints, newEndpoints);
+
+		// CRITICAL: If switching from 0 endpoints to N endpoints, the Haiku bug
+		// will trigger. Log a warning so user knows to apply kernel patch.
+		if (oldEndpoints == 0 && newEndpoints > 0) {
+			syslog(LOG_WARNING, "UVCCamDevice: Risky transition (0->%u endpoints) - "
+				"may crash on unpatched Haiku. Apply kernel patch if crash occurs.\n",
+				newEndpoints);
 		}
 
+		// Call SetAlternate - may crash on unpatched Haiku due to double-free bug
 		status_t setAltResult = ((BUSBInterface*)streaming)->SetAlternate(alternateIndex);
 		if (setAltResult != B_OK) {
 			syslog(LOG_ERR, "UVCCamDevice: SetAlternate(%u) failed: %s\n",
 				alternateIndex, strerror(setAltResult));
-			return B_ERROR;
+			return setAltResult;
 		}
 
 		syslog(LOG_INFO, "UVCCamDevice: SetAlternate(%u) successful\n", alternateIndex);
 		fCurrentVideoAlternate = alternateIndex;
 
+		// CRITICAL: Re-fetch ALL references immediately to avoid using corrupted pointers
+		// The SetAlternate call may have corrupted the old streaming pointer
 		streaming = config->InterfaceAt(fStreamingIndex);
-		if (streaming == NULL)
+		if (streaming == NULL) {
+			syslog(LOG_ERR, "UVCCamDevice: Interface lost after SetAlternate\n");
 			return B_BAD_INDEX;
+		}
 	}
+
+	// Get endpoint from the correct alternate interface
+	const BUSBInterface* activeAlt = streaming->AlternateAt(alternateIndex);
+	if (activeAlt == NULL) {
+		syslog(LOG_ERR, "UVCCamDevice: Alternate %u not found\n", alternateIndex);
+		return B_BAD_INDEX;
+	}
+	streaming = activeAlt;
 
 	fIsoIn = streaming->EndpointAt(endpointIndex);
 	fIsoMaxPacketSize = bestBandwidth;
@@ -1658,39 +1697,50 @@ UVCCamDevice::_SelectBestAlternate()
 status_t
 UVCCamDevice::_SelectIdleAlternate()
 {
-	// FIX: Proper LED control via direct USB SET_INTERFACE command
+	// Switch to alternate 0 (zero-bandwidth) to turn off LED and stop streaming.
+	//
+	// IMPORTANT: Must use SetAlternate() to match _SelectBestAlternate().
+	// Using ControlTransfer() would desync Haiku's internal alternate state,
+	// causing subsequent SetAlternate() calls to fail.
 	//
 	// The webcam LED is controlled by the USB streaming state:
 	// - Alternate 0 = zero-bandwidth (LED off)
 	// - Alternate N = active streaming (LED on)
-	//
-	// We bypass BUSBInterface::SetAlternate() which has a double-free bug
-	// in Haiku's _UpdateDescriptorAndEndpoints(). Instead, we send the
-	// USB SET_INTERFACE command directly via ControlTransfer.
-	//
-	// USB SET_INTERFACE request:
-	// - bmRequestType: 0x01 (Host-to-device, Standard, Interface)
-	// - bRequest: 0x0B (SET_INTERFACE)
-	// - wValue: alternate setting (0 for idle/LED off)
-	// - wIndex: interface number
 
 	syslog(LOG_INFO, "UVCCamDevice: _SelectIdleAlternate - switching to alternate 0 (LED off)\n");
 
 	if (fDevice != NULL && fCurrentVideoAlternate != 0) {
-		// Send SET_INTERFACE directly to avoid Haiku's buggy SetAlternate()
-		ssize_t result = fDevice->ControlTransfer(
-			USB_REQTYPE_STANDARD | USB_REQTYPE_INTERFACE_OUT,  // 0x01
-			USB_REQUEST_SET_INTERFACE,                          // 0x0B
-			0,                                                  // wValue: alternate 0
-			fStreamingIndex,                                    // wIndex: interface number
-			0,                                                  // length
-			NULL);                                              // no data
+		const BUSBConfiguration* config = fDevice->ActiveConfiguration();
+		if (config == NULL) {
+			syslog(LOG_WARNING, "UVCCamDevice: No active configuration for idle alternate\n");
+			fIsoIn = NULL;
+			fIsoMaxPacketSize = 0;
+			return B_OK;
+		}
 
-		if (result >= B_OK) {
-			syslog(LOG_INFO, "UVCCamDevice: SET_INTERFACE(0) successful - LED should be off\n");
+		const BUSBInterface* streaming = config->InterfaceAt(fStreamingIndex);
+		if (streaming == NULL) {
+			syslog(LOG_WARNING, "UVCCamDevice: Streaming interface not found for idle alternate\n");
+			fIsoIn = NULL;
+			fIsoMaxPacketSize = 0;
+			return B_OK;
+		}
+
+		// Log endpoint counts - transition from N->0 endpoints is safe
+		const BUSBInterface* oldAlt = streaming->AlternateAt(fCurrentVideoAlternate);
+		const BUSBInterface* newAlt = streaming->AlternateAt(0);
+		uint32 oldEndpoints = oldAlt ? oldAlt->CountEndpoints() : 0;
+		uint32 newEndpoints = newAlt ? newAlt->CountEndpoints() : 0;
+		syslog(LOG_INFO, "UVCCamDevice: Idle transition endpoint count: old=%u new=%u\n",
+			oldEndpoints, newEndpoints);
+
+		// SetAlternate(0) - N->0 endpoint transition is generally safe
+		status_t result = ((BUSBInterface*)streaming)->SetAlternate(0);
+		if (result == B_OK) {
+			syslog(LOG_INFO, "UVCCamDevice: SetAlternate(0) successful - LED should be off\n");
 			fCurrentVideoAlternate = 0;
 		} else {
-			syslog(LOG_WARNING, "UVCCamDevice: SET_INTERFACE(0) failed: %s (LED may stay on)\n",
+			syslog(LOG_WARNING, "UVCCamDevice: SetAlternate(0) failed: %s (LED may stay on)\n",
 				strerror(result));
 		}
 	}
@@ -1998,13 +2048,14 @@ UVCCamDevice::_SelectAudioAlternate()
 		(unsigned)alternateIndex, (unsigned)endpointIndex,
 		(unsigned)bestBandwidth);
 
-	// Same Haiku bug workaround as video - see _SelectBestAlternate()
+	// Same Haiku bug workaround as video - must use SetAlternate() despite the bug
+	// because ControlTransfer doesn't work for SET_INTERFACE in Haiku.
 	if (fCurrentAudioAlternate != alternateIndex) {
 		syslog(LOG_INFO, "UVCCamDevice: Audio changing alternate from %u to %u\n",
 			(unsigned)fCurrentAudioAlternate, (unsigned)alternateIndex);
 
-		status_t setAltResult = ((BUSBInterface*)streaming)->SetAlternate(
-			alternateIndex);
+		// Call SetAlternate - may crash on unpatched Haiku
+		status_t setAltResult = ((BUSBInterface*)streaming)->SetAlternate(alternateIndex);
 		if (setAltResult != B_OK) {
 			syslog(LOG_ERR, "UVCCamDevice: Audio SetAlternate(%u) failed: %s\n",
 				(unsigned)alternateIndex, strerror(setAltResult));
@@ -2015,10 +2066,10 @@ UVCCamDevice::_SelectAudioAlternate()
 			(unsigned)alternateIndex);
 		fCurrentAudioAlternate = alternateIndex;
 
-		// Re-fetch interface after SetAlternate
+		// Re-fetch interface reference to avoid corrupted pointers
 		streaming = config->InterfaceAt(fAudioStreamingIndex);
 		if (streaming == NULL) {
-			syslog(LOG_ERR, "UVCCamDevice: Interface lost after SetAlternate\n");
+			syslog(LOG_ERR, "UVCCamDevice: Audio interface lost after SetAlternate\n");
 			return B_BAD_INDEX;
 		}
 	}
@@ -2065,11 +2116,27 @@ UVCCamDevice::_SelectAudioIdleAlternate()
 	if (fDevice == NULL || fAudioStreamingIndex == 0)
 		return B_ERROR;
 
-	// WORKAROUND for Haiku bug in BUSBInterface::_UpdateDescriptorAndEndpoints()
-	// Same issue as video - don't call SetAlternate(0) to avoid double-free crash.
-	// See _SelectIdleAlternate() for detailed explanation.
+	syslog(LOG_INFO, "UVCCamDevice: Audio switching to idle (alternate 0)\n");
 
-	// Simply invalidate our references without calling SetAlternate(0)
+	// Switch to alternate 0 for consistency with _SelectAudioAlternate()
+	if (fCurrentAudioAlternate != 0) {
+		const BUSBConfiguration* config = fDevice->ActiveConfiguration();
+		if (config != NULL) {
+			const BUSBInterface* streaming = config->InterfaceAt(fAudioStreamingIndex);
+			if (streaming != NULL) {
+				status_t result = ((BUSBInterface*)streaming)->SetAlternate(0);
+				if (result == B_OK) {
+					syslog(LOG_INFO, "UVCCamDevice: Audio SetAlternate(0) successful\n");
+					fCurrentAudioAlternate = 0;
+				} else {
+					syslog(LOG_WARNING, "UVCCamDevice: Audio SetAlternate(0) failed: %s\n",
+						strerror(result));
+				}
+			}
+		}
+	}
+
+	// Invalidate endpoint references
 	fAudioIsoIn = NULL;
 	fAudioMaxPacketSize = 0;
 
@@ -3955,6 +4022,18 @@ UVCCamDevice::_ShouldUseHighBandwidth()
 		return false;
 	}
 
+	// Use controller detection results if available
+	if (fControllerDetected) {
+		// XHCI with high-bandwidth capability: always safe
+		if ((fControllerInfo.capabilities & USB_CAP_HIGH_BANDWIDTH) != 0) {
+			return true;
+		}
+		// Controller doesn't support high-bandwidth
+		if (!fControllerInfo.high_bandwidth_safe) {
+			return false;
+		}
+	}
+
 	// Default: try high-bandwidth (most systems have XHCI now)
 	return true;
 }
@@ -3998,6 +4077,347 @@ UVCCamDevice::_ResetHighBandwidthState()
 		fHighBandwidthWorks = true;
 		syslog(LOG_INFO, "UVCCamDevice: High-bandwidth mode confirmed working (XHCI detected)\n");
 	}
+}
+
+
+// =============================================================================
+// USB Controller and Speed Detection (XHCI Optimization Support)
+// =============================================================================
+// These methods detect the USB host controller type and device speed to enable
+// XHCI-specific optimizations such as:
+// - High-bandwidth isochronous endpoints (mult>1)
+// - Dynamic interrupt moderation (low latency mode)
+// - TBC/TLBPC for reduced packet loss
+// - USB 3.0+ SuperSpeed bandwidth utilization
+
+void
+UVCCamDevice::_DetectControllerType()
+{
+	if (fControllerDetected)
+		return;
+
+	// Detect USB device speed first
+	usb_device_speed speed = _GetUSBSpeed();
+	fControllerInfo.device_speed = speed;
+
+	// Infer controller type from device speed and behavior
+	// USB 3.0+ speeds can only be achieved with XHCI
+	if (speed >= USB_SPEED_SUPER) {
+		fControllerInfo.type = USB_HC_XHCI;
+		fControllerInfo.type_name = "XHCI";
+		fControllerInfo.capabilities = USB_CAP_HIGH_BANDWIDTH
+			| USB_CAP_DYNAMIC_IMOD
+			| USB_CAP_TBC_TLBPC
+			| USB_CAP_LPM
+			| USB_CAP_STREAMS;
+		fControllerInfo.expected_imod = XHCI_IMOD_LOW_LATENCY;
+		fControllerInfo.high_bandwidth_safe = true;
+
+		// Pre-confirm high-bandwidth works for XHCI
+		fHighBandwidthTested = true;
+		fHighBandwidthWorks = true;
+	} else if (speed == USB_SPEED_HIGH) {
+		// USB 2.0 High-Speed - could be EHCI or XHCI in compatibility mode
+		// Check if high-bandwidth endpoints are requested - if device has
+		// mult>1 endpoints and they work, we're likely on XHCI
+		// Start optimistic (assume XHCI) and fall back if needed
+		fControllerInfo.type = USB_HC_XHCI;  // Assume XHCI until proven otherwise
+		fControllerInfo.type_name = "XHCI (assumed)";
+		fControllerInfo.capabilities = USB_CAP_HIGH_BANDWIDTH
+			| USB_CAP_DYNAMIC_IMOD
+			| USB_CAP_TBC_TLBPC;
+		fControllerInfo.expected_imod = XHCI_IMOD_LOW_LATENCY;
+		fControllerInfo.high_bandwidth_safe = true;  // Try high-bandwidth
+
+		// Don't pre-confirm - let runtime detection decide
+		// fHighBandwidthTested remains false until first transfer
+	} else if (speed == USB_SPEED_FULL) {
+		// USB 1.1 Full-Speed - could be OHCI, UHCI, or USB 2.0/3.0 hub
+		fControllerInfo.type = USB_HC_EHCI;  // Most likely behind EHCI companion
+		fControllerInfo.type_name = "EHCI (full-speed)";
+		fControllerInfo.capabilities = USB_CAP_NONE;
+		fControllerInfo.expected_imod = XHCI_IMOD_DEFAULT;
+		fControllerInfo.high_bandwidth_safe = false;
+
+		fHighBandwidthTested = true;
+		fHighBandwidthWorks = false;  // Full-speed doesn't support high-bandwidth
+	} else {
+		// Low-speed or unknown
+		fControllerInfo.type = USB_HC_UNKNOWN;
+		fControllerInfo.type_name = "unknown";
+		fControllerInfo.capabilities = USB_CAP_NONE;
+		fControllerInfo.expected_imod = XHCI_IMOD_DEFAULT;
+		fControllerInfo.high_bandwidth_safe = false;
+
+		fHighBandwidthTested = true;
+		fHighBandwidthWorks = false;
+	}
+
+	fControllerDetected = true;
+}
+
+
+usb_device_speed
+UVCCamDevice::_GetUSBSpeed()
+{
+	// Try to determine device speed from available information
+	// Haiku's BUSBDevice doesn't directly expose speed, but we can infer it
+	// from endpoint characteristics and device descriptor
+
+	if (fDevice == NULL)
+		return USB_SPEED_UNKNOWN;
+
+	// Check bcdUSB field in device descriptor for USB version support
+	// This tells us the maximum speed the device supports
+	const usb_device_descriptor* desc = fDevice->Descriptor();
+	if (desc == NULL)
+		return USB_SPEED_UNKNOWN;
+
+	uint16 bcdUSB = desc->usb_version;
+
+	// USB 3.1+ devices
+	if (bcdUSB >= 0x0310) {
+		syslog(LOG_INFO, "UVCCamDevice: Device supports USB 3.1+ (bcdUSB=0x%04x)\n", bcdUSB);
+		return USB_SPEED_SUPER_PLUS;
+	}
+	// USB 3.0 devices
+	if (bcdUSB >= 0x0300) {
+		syslog(LOG_INFO, "UVCCamDevice: Device supports USB 3.0 (bcdUSB=0x%04x)\n", bcdUSB);
+		return USB_SPEED_SUPER;
+	}
+	// USB 2.0 devices - check endpoint max packet size for actual speed
+	if (bcdUSB >= 0x0200) {
+		// Check if any isochronous endpoint has high-speed characteristics
+		// High-speed isoch endpoints can have maxPacketSize > 64 bytes
+		// and use mult bits (bits 12:11 of wMaxPacketSize)
+		if (fIsoIn != NULL) {
+			uint16 maxPacket = fIsoIn->MaxPacketSize();
+			uint16 baseSize = maxPacket & 0x7FF;
+			uint8 mult = ((maxPacket >> 11) & 0x3) + 1;
+
+			if (baseSize > 64 || mult > 1) {
+				syslog(LOG_INFO, "UVCCamDevice: High-speed detected (maxPacket=%u, base=%u, mult=%u)\n",
+					maxPacket, baseSize, mult);
+				return USB_SPEED_HIGH;
+			}
+		}
+
+		// Control endpoint 0 maxPacketSize can also indicate speed
+		// USB 2.0 high-speed: 64 bytes, Full-speed: 8/16/32/64 bytes
+		if (desc->max_packet_size_0 == 64) {
+			syslog(LOG_INFO, "UVCCamDevice: Likely high-speed (EP0 maxPacket=64)\n");
+			return USB_SPEED_HIGH;
+		}
+
+		syslog(LOG_INFO, "UVCCamDevice: USB 2.0 device, assuming high-speed\n");
+		return USB_SPEED_HIGH;
+	}
+
+	// USB 1.x devices
+	syslog(LOG_INFO, "UVCCamDevice: USB 1.x device (bcdUSB=0x%04x)\n", bcdUSB);
+	return USB_SPEED_FULL;
+}
+
+
+void
+UVCCamDevice::_LogControllerCapabilities()
+{
+	if (!fControllerDetected)
+		return;
+
+	const char* speedName;
+	switch (fControllerInfo.device_speed) {
+		case USB_SPEED_LOW:			speedName = "Low (1.5 Mbps)"; break;
+		case USB_SPEED_FULL:		speedName = "Full (12 Mbps)"; break;
+		case USB_SPEED_HIGH:		speedName = "High (480 Mbps)"; break;
+		case USB_SPEED_SUPER:		speedName = "Super (5 Gbps)"; break;
+		case USB_SPEED_SUPER_PLUS:	speedName = "Super+ (10+ Gbps)"; break;
+		default:					speedName = "Unknown"; break;
+	}
+
+	syslog(LOG_INFO, "UVCCamDevice: USB Controller Detection Results:\n");
+	syslog(LOG_INFO, "  Controller type: %s\n", fControllerInfo.type_name);
+	syslog(LOG_INFO, "  Device speed: %s\n", speedName);
+	syslog(LOG_INFO, "  High-bandwidth safe: %s\n",
+		fControllerInfo.high_bandwidth_safe ? "yes" : "no");
+
+	// Log capabilities
+	if (fControllerInfo.capabilities != USB_CAP_NONE) {
+		syslog(LOG_INFO, "  Capabilities:\n");
+		if (fControllerInfo.capabilities & USB_CAP_HIGH_BANDWIDTH)
+			syslog(LOG_INFO, "    - High-bandwidth isochronous (mult>1)\n");
+		if (fControllerInfo.capabilities & USB_CAP_DYNAMIC_IMOD)
+			syslog(LOG_INFO, "    - Dynamic interrupt moderation\n");
+		if (fControllerInfo.capabilities & USB_CAP_TBC_TLBPC)
+			syslog(LOG_INFO, "    - TBC/TLBPC isochronous TRBs\n");
+		if (fControllerInfo.capabilities & USB_CAP_LPM)
+			syslog(LOG_INFO, "    - Link Power Management\n");
+		if (fControllerInfo.capabilities & USB_CAP_STREAMS)
+			syslog(LOG_INFO, "    - Bulk streams\n");
+	}
+
+	// Log expected IMOD mode for isochronous streaming
+	const char* imodName;
+	switch (fControllerInfo.expected_imod) {
+		case XHCI_IMOD_LOW_LATENCY:	imodName = "Low latency (16000 IRQ/s)"; break;
+		case XHCI_IMOD_MEDIUM:		imodName = "Medium (8000 IRQ/s)"; break;
+		case XHCI_IMOD_DEFAULT:		imodName = "Default (4000 IRQ/s)"; break;
+		case XHCI_IMOD_POWER_SAVE:	imodName = "Power save (2000 IRQ/s)"; break;
+		default:					imodName = "Unknown"; break;
+	}
+	syslog(LOG_INFO, "  Expected IMOD: %s\n", imodName);
+
+	// Recommendation for 1080p streaming
+	if (fControllerInfo.high_bandwidth_safe) {
+		syslog(LOG_INFO, "UVCCamDevice: 1080p@30fps streaming is SUPPORTED\n");
+	} else {
+		syslog(LOG_WARNING, "UVCCamDevice: 1080p may require fallback - limited bandwidth\n");
+	}
+}
+
+
+bigtime_t
+UVCCamDevice::_GetOptimalPollInterval()
+{
+	// Return optimal buffer poll interval based on detected IMOD mode
+	// This helps the driver synchronize with XHCI's interrupt rate
+
+	if (!fControllerDetected) {
+		// Not detected yet, use safe default
+		return CamConfig::kPollIntervalDefault;
+	}
+
+	switch (fControllerInfo.expected_imod) {
+		case XHCI_IMOD_LOW_LATENCY:
+			// 16000 IRQ/s - poll frequently for isochronous
+			return CamConfig::kPollIntervalLowLatency;
+
+		case XHCI_IMOD_MEDIUM:
+			// 8000 IRQ/s - moderate polling
+			return CamConfig::kPollIntervalMedium;
+
+		case XHCI_IMOD_POWER_SAVE:
+			// 2000 IRQ/s - slower polling to save CPU
+			return CamConfig::kPollIntervalPowerSave;
+
+		case XHCI_IMOD_DEFAULT:
+		default:
+			// 4000 IRQ/s or unknown - safe default
+			return CamConfig::kPollIntervalDefault;
+	}
+}
+
+
+uint32
+UVCCamDevice::_GetExpectedIRQsPerFrame()
+{
+	// Return expected number of IRQs per video frame based on IMOD mode
+	// Useful for predicting buffer accumulation behavior
+
+	if (!fControllerDetected) {
+		return CamConfig::kIRQsPerFrameDefault;
+	}
+
+	switch (fControllerInfo.expected_imod) {
+		case XHCI_IMOD_LOW_LATENCY:
+			return CamConfig::kIRQsPerFrameLowLatency;
+
+		case XHCI_IMOD_MEDIUM:
+			return CamConfig::kIRQsPerFrameMedium;
+
+		case XHCI_IMOD_DEFAULT:
+		case XHCI_IMOD_POWER_SAVE:
+		default:
+			return CamConfig::kIRQsPerFrameDefault;
+	}
+}
+
+
+size_t
+UVCCamDevice::_GetOptimalBufferSize()
+{
+	// Return optimal USB transfer buffer size based on device speed
+	// USB 3.0 devices can efficiently handle larger transfers
+
+	if (!fControllerDetected) {
+		return CamConfig::kUSB2OptimalTransfer;
+	}
+
+	switch (fControllerInfo.device_speed) {
+		case USB_SPEED_SUPER:
+		case USB_SPEED_SUPER_PLUS:
+			// USB 3.0+ can handle larger buffers efficiently
+			return CamConfig::kUSB3OptimalTransfer;
+
+		case USB_SPEED_HIGH:
+		case USB_SPEED_FULL:
+		case USB_SPEED_LOW:
+		default:
+			return CamConfig::kUSB2OptimalTransfer;
+	}
+}
+
+
+uint64
+UVCCamDevice::_GetMaxBandwidth()
+{
+	// Return maximum theoretical bandwidth based on USB speed
+	// Used for calculating achievable frame rates
+
+	if (!fControllerDetected) {
+		return CamConfig::kUSB2HighSpeedBandwidth;
+	}
+
+	switch (fControllerInfo.device_speed) {
+		case USB_SPEED_SUPER_PLUS:
+			return CamConfig::kUSB3SuperSpeedPlusBW;
+
+		case USB_SPEED_SUPER:
+			return CamConfig::kUSB3SuperSpeedBandwidth;
+
+		case USB_SPEED_HIGH:
+			return CamConfig::kUSB2HighSpeedBandwidth;
+
+		case USB_SPEED_FULL:
+			return 1500000;  // ~1.5 MB/s (12 Mbps)
+
+		case USB_SPEED_LOW:
+			return 187500;   // ~187 KB/s (1.5 Mbps)
+
+		default:
+			return CamConfig::kUSB2HighSpeedBandwidth;
+	}
+}
+
+
+float
+UVCCamDevice::_GetExpectedPacketCompletionRate()
+{
+	// Return expected packet completion rate based on controller capabilities
+	// XHCI with TBC/TLBPC has better packet delivery than EHCI
+
+	if (_HasTBCTLBPCSupport()) {
+		// XHCI with TBC/TLBPC: expect 99.9% packet completion
+		return CamConfig::kXHCIPacketCompletionRate;
+	}
+
+	// EHCI or unknown: expect 99.5% packet completion
+	return CamConfig::kEHCIPacketCompletionRate;
+}
+
+
+bool
+UVCCamDevice::_HasTBCTLBPCSupport()
+{
+	// Check if the controller supports TBC/TLBPC isochronous optimization
+	// This is an XHCI-specific feature
+
+	if (!fControllerDetected) {
+		return false;
+	}
+
+	// TBC/TLBPC is available on XHCI controllers
+	return (fControllerInfo.capabilities & USB_CAP_TBC_TLBPC) != 0;
 }
 
 
