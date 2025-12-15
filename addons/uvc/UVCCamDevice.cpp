@@ -95,9 +95,18 @@ usb_webcam_support_descriptor kSupportedDevices[] = {
 	// Ophir Optronics
 	{{ 0, 0, 0, 0x0bd3, 0x0555, }, "Ophir Optronics", "SPCAM 620U",                    "??" },
 
+	// Realtek
+	// NOTE: 0x5843 has issues with Haiku's xHCI driver (Missed service errors)
+	// May work better on USB 2.0 ports (EHCI) or with external USB 2.0 hub
+	{{ 0, 0, 0, 0x0bda, 0x5843, }, "Realtek",        "USB Camera",                     "??" },
+
 	// Microdia/Sonix
+	// NOTE: Some Sonix devices have issues with Haiku's xHCI driver (Missed service errors)
+	// May work better on USB 2.0 ports (EHCI) or with external USB 2.0 hub
+	{{ 0, 0, 0, 0x0c45, 0x6340, }, "Sonix",         "USB 2.0 Camera",                  "??" },
 	{{ 0, 0, 0, 0x0c45, 0x6366, }, "Sonix",         "292A IPC AR0330",                 "??" },
 	{{ 0, 0, 0, 0x0c45, 0x6409, }, "Microdia",      "Motion Eye",                      "??" },
+	{{ 0, 0, 0, 0x0c45, 0x64ab, }, "Sonix",         "MT9M114 Integrated Camera",       "??" },
 	{{ 0, 0, 0, 0x0c45, 0x6720, }, "Microdia",      "Integrated Webcam HD",            "??" },
 
 	// MediaTek
@@ -137,6 +146,11 @@ usb_webcam_support_descriptor kSupportedDevices[] = {
 	{{ 0, 0, 0, 0x18ec, 0x3188, }, "Manta",         "MM-353 Plako",                    "??" },
 	{{ 0, 0, 0, 0x18ec, 0x3288, }, "FSC",           "WebCam V30S",                     "??" },
 	{{ 0, 0, 0, 0x18ec, 0x3290, }, "Arkmicro",      "USB Web Camera",                  "??" },
+
+	// Generic USB Camera (Philips/NXP chipset)
+	// NOTE: Has issues with Haiku's xHCI driver (Missed service errors)
+	// May work better on USB 2.0 ports (EHCI) or with external USB 2.0 hub
+	{{ 0, 0, 0, 0x1908, 0x2310, }, "Generic",       "USB2.0 PC Camera",                "??" },
 
 	// Imaging Source
 	{{ 0, 0, 0, 0x199e, 0x8102, }, "Imaging Source", "USB CCD Camera",                 "??" },
