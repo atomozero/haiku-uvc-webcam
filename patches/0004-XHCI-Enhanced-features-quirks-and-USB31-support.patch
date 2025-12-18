@@ -1,0 +1,1273 @@
+Subject: [PATCH] XHCI: Enhanced features, quirks detection, and USB 3.1+ support
+
+Implement comprehensive improvements to the xHCI driver based on Linux and
+FreeBSD implementations for better hardware compatibility and reliability.
+
+Changes:
+
+1. Controller quirks detection system:
+   - Detect vendor-specific quirks based on PCI ID
+   - Intel IMOD minimum timing workaround
+   - AMD PLL quirk
+   - ASMedia delay requirements
+   - VIA VL805 reset-on-resume (Raspberry Pi 4)
+   - Fresco Logic, Renesas, Etron handling
+
+2. USB 3.1/3.2 Protocol Speed ID (PSIV) support:
+   - Parse extended protocol capability for USB 3.1+ speeds
+   - Detect SuperSpeed+ ports with proper speed information
+   - Support for Gen1x1/Gen2x1/Gen1x2/Gen2x2 speeds
+
+3. Enhanced error recovery:
+   - Error-specific recovery strategies
+   - Consecutive error tracking to detect broken devices
+   - Better handling of transaction, stall, and babble errors
+
+4. Additional hardware definitions:
+   - PCI vendor/device IDs for common xHCI controllers
+   - HCCPARAMS2 for xHCI 1.1+ capabilities
+   - PSI (Protocol Speed ID) parsing macros
+
+5. Fixes carried forward from previous patches:
+   - Zero-bandwidth endpoint support for UVC cameras
+   - MSI-X disabled due to TRB errors on some controllers
+   - Proper endpoint initialization with max_burst fields
+   - Safety check in SubmitNormalRequest for unconfigured endpoints
+
+Signed-off-by: Haiku UVC Webcam Project
+---
+
+diff --git a/src/add-ons/kernel/busses/usb/ehci.cpp b/src/add-ons/kernel/busses/usb/ehci.cpp
+index 2ad68ba4..8d20122e 100644
+--- a/src/add-ons/kernel/busses/usb/ehci.cpp
++++ b/src/add-ons/kernel/busses/usb/ehci.cpp
+@@ -355,7 +355,8 @@ EHCI::EHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
+ 		fPortSuspendChange(0),
+ 		fInterruptPollThread(-1),
+ 		fIRQ(0),
+-		fUseMSI(false)
++		fUseMSI(false),
++		fSupports64Bit(false)
+ {
+ 	// Create a lock for the isochronous transfer list
+ 	mutex_init(&fIsochronousLock, "EHCI isochronous lock");
+@@ -454,10 +455,16 @@ EHCI::EHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
+ 	TRACE("capability parameters: 0x%08" B_PRIx32 "\n",
+ 		ReadCapReg32(EHCI_HCCPARAMS));
+ 
+-	if (EHCI_HCCPARAMS_FRAME_CACHE(ReadCapReg32(EHCI_HCCPARAMS)))
++	uint32 hccParams = ReadCapReg32(EHCI_HCCPARAMS);
++	if (EHCI_HCCPARAMS_FRAME_CACHE(hccParams))
+ 		fThreshold = 2 + 8;
+ 	else
+-		fThreshold = 2 + EHCI_HCCPARAMS_IPT(ReadCapReg32(EHCI_HCCPARAMS));
++		fThreshold = 2 + EHCI_HCCPARAMS_IPT(hccParams);
++
++	// Check for 64-bit addressing capability
++	fSupports64Bit = (hccParams & EHCI_HCCPARAMS_64BIT) != 0;
++	TRACE_ALWAYS("controller %s 64-bit addressing\n",
++		fSupports64Bit ? "supports" : "does not support");
+ 
+ 	// read port count from capability register
+ 	fPortCount = ReadCapReg32(EHCI_HCSPARAMS) & 0x0f;
+@@ -1167,9 +1174,20 @@ EHCI::SubmitIsochronous(Transfer *transfer)
+ 	packetSize /= isochronousData->packet_count;
+ 	uint16 currentFrame;
+ 
+-	if (packetSize > pipe->MaxPacketSize()) {
+-		TRACE_ERROR(
+-			"isochronous packetSize is bigger than pipe MaxPacketSize\n");
++	// Extract high-bandwidth parameters from wMaxPacketSize
++	// USB 2.0 spec: bits 10:0 = max packet size, bits 12:11 = additional transactions
++	uint16 rawMaxPacketSize = pipe->MaxPacketSize();
++	uint16 basePacketSize = rawMaxPacketSize & 0x7ff;
++	uint8 mult = ((rawMaxPacketSize >> 11) & 0x3) + 1;
++	size_t maxBytesPerMicroframe = basePacketSize * mult;
++
++	TRACE("isochronous high-bandwidth: raw=0x%04x base=%d mult=%d max_per_uframe=%zu\n",
++		rawMaxPacketSize, basePacketSize, mult, maxBytesPerMicroframe);
++
++	if (packetSize > maxBytesPerMicroframe) {
++		TRACE_ERROR("isochronous packetSize %zu is bigger than max bytes per "
++			"microframe %zu (base=%d, mult=%d)\n",
++			packetSize, maxBytesPerMicroframe, basePacketSize, mult);
+ 		return B_BAD_VALUE;
+ 	}
+ 
+@@ -1246,49 +1264,88 @@ EHCI::SubmitIsochronous(Transfer *transfer)
+ 
+ 	phys_addr_t currentPhy = bufferPhy;
+ 	uint32 frameCount = 0;
++
++	// For high-bandwidth endpoints (mult > 1), we need to program multiple
++	// transaction slots per microframe. Each iTD has 8 transaction slots,
++	// so we can fit (8 / mult) microframes per iTD.
++	// Each transaction can transfer at most basePacketSize bytes.
++	uint32 microframesPerItd = 8 / mult;
++
++	TRACE("isochronous high-bandwidth: mult=%d, microframesPerItd=%d, "
++		"basePacketSize=%d\n", mult, microframesPerItd, basePacketSize);
++
+ 	while (dataLength > 0) {
+ 		ehci_itd* itd = CreateItdDescriptor();
+ 		isoRequest[itdIndex++] = itd;
+ 		uint16 pg = 0;
+ 		itd->buffer_phy[pg] = currentPhy & 0xfffff000;
++		// Set extended (64-bit) buffer pointer if supported and needed
++		if (fSupports64Bit)
++			itd->ext_buffer_phy[pg] = currentPhy >> 32;
+ 		uint32 offset = currentPhy & 0xfff;
+ 		TRACE("isochronous created itd, filling it with phy %" B_PRIxPHYSADDR
+ 			"\n", currentPhy);
+-		for (int32 i = 0; i < 8 && dataLength > 0; i++) {
+-			size_t length = min_c(dataLength, packetSize);
+-			itd->token[i] = (EHCI_ITD_STATUS_ACTIVE << EHCI_ITD_STATUS_SHIFT)
+-				| (length << EHCI_ITD_TLENGTH_SHIFT) | (pg << EHCI_ITD_PG_SHIFT)
+-				| (offset << EHCI_ITD_TOFFSET_SHIFT);
+-			itd->last_token = i;
+-			TRACE("isochronous filled slot %" B_PRId32 " 0x%" B_PRIx32 "\n", i,
+-				itd->token[i]);
+-			dataLength -= length;
+-			offset += length;
+-			if (dataLength > 0 && offset > 0xfff) {
+-				offset -= B_PAGE_SIZE;
+-				currentPhy += B_PAGE_SIZE;
+-				itd->buffer_phy[pg + 1] = currentPhy & 0xfffff000;
+-				pg++;
++
++		int32 slot = 0;
++		// Process microframes (each microframe uses 'mult' transaction slots)
++		for (uint32 uframe = 0; uframe < microframesPerItd && dataLength > 0; uframe++) {
++			// For each microframe, program 'mult' transactions
++			size_t microframeDataRemaining = min_c(dataLength, packetSize);
++
++			for (uint8 t = 0; t < mult && microframeDataRemaining > 0; t++) {
++				// Each transaction transfers at most basePacketSize bytes
++				size_t length = min_c(microframeDataRemaining, (size_t)basePacketSize);
++
++				itd->token[slot] = (EHCI_ITD_STATUS_ACTIVE << EHCI_ITD_STATUS_SHIFT)
++					| (length << EHCI_ITD_TLENGTH_SHIFT) | (pg << EHCI_ITD_PG_SHIFT)
++					| (offset << EHCI_ITD_TOFFSET_SHIFT);
++				itd->last_token = slot;
++
++				TRACE("isochronous filled slot %d (uframe=%d, t=%d) 0x%" B_PRIx32
++					" (len=%zu, pg=%d, off=%u)\n", slot, uframe, t, itd->token[slot],
++					length, pg, offset);
++
++				microframeDataRemaining -= length;
++				dataLength -= length;
++				offset += length;
++
++				if (dataLength > 0 && offset > 0xfff) {
++					offset -= B_PAGE_SIZE;
++					currentPhy += B_PAGE_SIZE;
++					pg++;
++					if (pg < 7) {
++						itd->buffer_phy[pg] = currentPhy & 0xfffff000;
++						// Set extended buffer pointer for next page
++						if (fSupports64Bit)
++							itd->ext_buffer_phy[pg] = currentPhy >> 32;
++					}
++				}
++
++				slot++;
+ 			}
++
++			// Set IOC on the last transaction of this iTD if we're done
+ 			if (dataLength <= 0)
+-				itd->token[i] |= EHCI_ITD_IOC;
++				itd->token[itd->last_token] |= EHCI_ITD_IOC;
+ 		}
+ 
+ 		currentPhy += (offset & 0xfff) - (currentPhy & 0xfff);
+ 
++		// Set endpoint and device address in buffer_phy[0]
+ 		itd->buffer_phy[0]
+ 			|= (pipe->EndpointAddress() << EHCI_ITD_ENDPOINT_SHIFT)
+ 				| (pipe->DeviceAddress() << EHCI_ITD_ADDRESS_SHIFT);
++		// Set MaxPacketSize (base size only) and direction in buffer_phy[1]
+ 		itd->buffer_phy[1]
+-			|= (pipe->MaxPacketSize() & EHCI_ITD_MAXPACKETSIZE_MASK)
++			|= (basePacketSize & EHCI_ITD_MAXPACKETSIZE_MASK)
+ 				| (directionIn << EHCI_ITD_DIR_SHIFT);
++		// Set Multi (transaction count) in buffer_phy[2]
+ 		itd->buffer_phy[2]
+-			|= ((((pipe->MaxPacketSize() >> EHCI_ITD_MAXPACKETSIZE_LENGTH) + 1)
+-				& EHCI_ITD_MUL_MASK) << EHCI_ITD_MUL_SHIFT);
++			|= (mult & EHCI_ITD_MUL_MASK) << EHCI_ITD_MUL_SHIFT;
+ 
+ 		TRACE("isochronous filled itd buffer_phy[0,1,2] 0x%" B_PRIx32 ", 0x%"
+-			B_PRIx32 " 0x%" B_PRIx32 "\n",
+-			itd->buffer_phy[0], itd->buffer_phy[1], itd->buffer_phy[2]);
++			B_PRIx32 " 0x%" B_PRIx32 " (mult=%d)\n",
++			itd->buffer_phy[0], itd->buffer_phy[1], itd->buffer_phy[2], mult);
+ 
+ 		if (!LockIsochronous())
+ 			continue;
+@@ -1346,17 +1403,79 @@ status_t
+ EHCI::NotifyPipeChange(Pipe *pipe, usb_change change)
+ {
+ 	TRACE("pipe change %d for pipe %p\n", change, pipe);
++
+ 	switch (change) {
+-		case USB_CHANGE_CREATED:
++		case USB_CHANGE_CREATED: {
++			// For interrupt pipes, we create and keep a single queue head
++			// that will be reused for all transfers. This improves performance
++			// and reduces memory fragmentation.
++			// Note: Bulk and control pipes still create queue heads per-transfer
++			// because their transfer patterns are different.
++			if ((pipe->Type() & USB_OBJECT_INTERRUPT_PIPE) != 0) {
++				ehci_qh *queueHead = CreateQueueHead();
++				if (queueHead == NULL) {
++					TRACE_ERROR("failed to create queue head for interrupt pipe\n");
++					return B_NO_MEMORY;
++				}
++
++				status_t result = InitQueueHead(queueHead, pipe);
++				if (result != B_OK) {
++					FreeQueueHead(queueHead);
++					TRACE_ERROR("failed to init queue head for interrupt pipe\n");
++					return result;
++				}
++
++				// Link the queue head to the periodic schedule
++				result = LinkInterruptQueueHead(queueHead, pipe);
++				if (result != B_OK) {
++					FreeQueueHead(queueHead);
++					TRACE_ERROR("failed to link queue head for interrupt pipe\n");
++					return result;
++				}
++
++				pipe->SetControllerCookie(queueHead);
++				TRACE("created queue head %p for interrupt pipe %p\n",
++					queueHead, pipe);
++			}
++			break;
++		}
++
+ 		case USB_CHANGE_DESTROYED: {
+-			// ToDo: we should create and keep a single queue head
+-			// for all transfers to/from this pipe
++			// Clean up any queue head we created for this pipe
++			ehci_qh *queueHead = (ehci_qh *)pipe->ControllerCookie();
++			if (queueHead != NULL) {
++				// First cancel any pending transfers
++				CancelQueuedTransfers(pipe, true);
++
++				// Unlink from the schedule
++				UnlinkQueueHead(queueHead, &fFreeListHead);
++
++				// Let the cleanup thread free it after the controller
++				// has acknowledged the change
++				release_sem(fCleanupSem);
++
++				pipe->SetControllerCookie(NULL);
++				TRACE("destroyed queue head for pipe %p\n", pipe);
++			}
+ 			break;
+ 		}
+ 
+ 		case USB_CHANGE_PIPE_POLICY_CHANGED: {
+-			// ToDo: for isochronous pipes we might need to adapt to new
+-			// pipe policy settings here
++			// For interrupt pipes with a persistent queue head, we may need
++			// to update the queue head settings based on the new policy
++			ehci_qh *queueHead = (ehci_qh *)pipe->ControllerCookie();
++			if (queueHead != NULL
++					&& (pipe->Type() & USB_OBJECT_INTERRUPT_PIPE) != 0) {
++				// Reinitialize the queue head with updated settings
++				// The queue head is already linked, so we just update the
++				// endpoint characteristics if needed
++				status_t result = InitQueueHead(queueHead, pipe);
++				if (result != B_OK) {
++					TRACE_ERROR("failed to update queue head settings\n");
++					return result;
++				}
++				TRACE("updated queue head settings for pipe %p\n", pipe);
++			}
+ 			break;
+ 		}
+ 	}
+@@ -1557,7 +1676,32 @@ EHCI::ControllerReset()
+ status_t
+ EHCI::LightReset()
+ {
+-	return B_ERROR;
++	// Light Host Controller Reset - resets state but preserves configuration
++	// EHCI Spec 2.3.1: When set, the Host Controller resets its internal
++	// pipelines, timers, counters, state machines, etc. to their initial value.
++	// Unlike HCRESET, it does not reset the PCI configuration or the root hub
++	// port registers.
++
++	uint32 command = ReadOpReg(EHCI_USBCMD);
++
++	// Check if Light Reset is supported (by verifying the controller responds)
++	WriteOpReg(EHCI_USBCMD, command | EHCI_USBCMD_LHCRESET);
++
++	// Wait for the reset to complete (bit clears when done)
++	int32 tries = 10;
++	while (ReadOpReg(EHCI_USBCMD) & EHCI_USBCMD_LHCRESET) {
++		snooze(1000);
++		if (tries-- <= 0) {
++			TRACE_ERROR("light reset timeout\n");
++			return B_TIMED_OUT;
++		}
++	}
++
++	// Wait a bit for the controller to stabilize
++	snooze(1000);
++
++	TRACE("light reset successful\n");
++	return B_OK;
+ }
+ 
+ 
+@@ -1636,9 +1780,20 @@ EHCI::InterruptPollThread(void *data)
+ 	EHCI *ehci = (EHCI *)data;
+ 
+ 	while (!ehci->fStopThreads) {
+-		// TODO: this could be handled much better by only polling when there
+-		// are actual transfers going on...
+-		snooze(1000);
++		// Check if there are any transfers pending
++		// Use faster polling when there are active transfers,
++		// slower polling when idle to reduce CPU usage
++		bool hasTransfers = (ehci->fFirstTransfer != NULL)
++			|| (ehci->fFirstIsochronousTransfer != NULL);
++
++		if (hasTransfers) {
++			// Active transfers: poll every 1ms for responsive completions
++			snooze(1000);
++		} else {
++			// Idle: poll every 10ms to catch port status changes and
++			// any transfers that might have been added
++			snooze(10000);
++		}
+ 
+ 		cpu_status status = disable_interrupts();
+ 		ehci->Interrupt();
+@@ -1805,22 +1960,117 @@ EHCI::CancelQueuedTransfers(Pipe *pipe, bool force)
+ status_t
+ EHCI::CancelQueuedIsochronousTransfers(Pipe *pipe, bool force)
+ {
++	if (!LockIsochronous())
++		return B_ERROR;
++
++	struct transfer_entry {
++		isochronous_transfer_data*	transfer;
++		transfer_entry*				next;
++	};
++
++	transfer_entry *cancelList = NULL;
+ 	isochronous_transfer_data *current = fFirstIsochronousTransfer;
++	isochronous_transfer_data *previous = NULL;
++	bool found = false;
+ 
+-	while (current) {
++	while (current != NULL) {
+ 		if (current->transfer->TransferPipe() == pipe) {
+-			// TODO implement
++			found = true;
+ 
+-			// TODO: Use the force paramater in order to avoid calling
+-			// invalid callbacks
++			// Mark as inactive first to prevent FinishIsochronousTransfers
++			// from processing it
+ 			current->is_active = false;
++
++			// Unlink ITDs from the frame list
++			for (uint32 i = 0; i <= current->last_to_process; i++) {
++				ehci_itd *itd = current->descriptors[i];
++				if (itd != NULL && itd->prev != NULL) {
++					// Clear active status on all tokens to stop hardware
++					for (int j = 0; j < 8; j++) {
++						itd->token[j] &= ~(EHCI_ITD_STATUS_ACTIVE
++							<< EHCI_ITD_STATUS_SHIFT);
++					}
++
++					// Find which frame this ITD belongs to and unlink
++					for (uint32 frame = 0; frame < EHCI_VFRAMELIST_ENTRIES_COUNT;
++							frame++) {
++						if (fItdEntries[frame] != NULL) {
++							ehci_itd *check = fItdEntries[frame];
++							while (check != NULL) {
++								if (check == itd) {
++									UnlinkITDescriptors(itd,
++										&fItdEntries[frame]);
++									break;
++								}
++								check = check->next;
++							}
++						}
++					}
++				}
++			}
++
++			// Remove from the transfer list
++			if (previous != NULL)
++				previous->link = current->link;
++			else
++				fFirstIsochronousTransfer = current->link;
++
++			if (current == fLastIsochronousTransfer)
++				fLastIsochronousTransfer = previous;
++
++			// Add to cancel list for later processing outside the lock
++			transfer_entry *entry
++				= (transfer_entry *)malloc(sizeof(transfer_entry));
++			if (entry != NULL) {
++				entry->transfer = current;
++				entry->next = cancelList;
++				cancelList = entry;
++			}
++
++			// Move to next, but don't update previous since we removed current
++			current = (previous != NULL) ? previous->link
++				: fFirstIsochronousTransfer;
++		} else {
++			previous = current;
++			current = current->link;
+ 		}
++	}
+ 
+-		current = current->link;
++	UnlockIsochronous();
++
++	// Process the cancel list outside the lock
++	while (cancelList != NULL) {
++		transfer_entry *next = cancelList->next;
++		isochronous_transfer_data *transfer = cancelList->transfer;
++
++		// Call the callback if not forcing
++		if (!force && transfer->transfer != NULL)
++			transfer->transfer->Finished(B_CANCELED, 0);
++
++		// Free descriptors
++		for (uint32 i = 0; i <= transfer->last_to_process; i++)
++			FreeDescriptor(transfer->descriptors[i]);
++
++		// Free the transfer data
++		delete[] transfer->descriptors;
++		delete transfer->transfer;
++		if (transfer->buffer_log != NULL) {
++			fStack->FreeChunk(transfer->buffer_log,
++				(phys_addr_t)transfer->buffer_phy, transfer->buffer_size);
++		}
++		delete transfer;
++
++		free(cancelList);
++		cancelList = next;
+ 	}
+ 
+-	TRACE_ERROR("no isochronous transfer found!\n");
+-	return B_ERROR;
++	if (!found) {
++		TRACE("no isochronous transfer found for pipe\n");
++		return B_OK;  // Not an error if there's nothing to cancel
++	}
++
++	TRACE("canceled isochronous transfers for pipe %p\n", pipe);
++	return B_OK;
+ }
+ 
+ 
+@@ -2150,6 +2400,14 @@ EHCI::FinishIsochronousTransfers()
+ 
+ 			ehci_itd *itd = fItdEntries[currentFrame];
+ 
++			// Safety check: ensure itd is valid before accessing
++			if (itd == NULL) {
++				TRACE_ERROR("FinishIsochronousTransfers: NULL itd at frame %"
++					B_PRIu32 "\n", currentFrame);
++				currentFrame = (currentFrame + 1) % EHCI_VFRAMELIST_ENTRIES_COUNT;
++				continue;
++			}
++
+ 			TRACE("FinishIsochronousTransfers itd %p phy 0x%" B_PRIx32
+ 				" prev (%p/0x%" B_PRIx32 ") at frame %" B_PRId32 "\n", itd,
+ 				itd->this_phy, itd->prev, itd->prev != NULL
+@@ -2159,7 +2417,19 @@ EHCI::FinishIsochronousTransfers()
+ 				continue;
+ 
+ 			// Process the frame till it has isochronous descriptors in it.
+-			while (!(itd->next_phy & EHCI_ITEM_TERMINATE) && itd->prev != NULL) {
++			// Check itd->prev != NULL to ensure we don't process base iTDs
++			while (itd != NULL
++				&& !(itd->next_phy & EHCI_ITEM_TERMINATE)
++				&& itd->prev != NULL) {
++
++				// Validate last_token before using as array index (must be 0-7)
++				uint32 lastToken = itd->last_token;
++				if (lastToken > 7) {
++					TRACE_ERROR("FinishIsochronousTransfers: invalid last_token %"
++						B_PRIu32 " for itd %p, clamping to 7\n", lastToken, itd);
++					lastToken = 7;
++				}
++
+ 				TRACE("FinishIsochronousTransfers checking itd %p last_token"
+ 					" %" B_PRId32 "\n", itd, itd->last_token);
+ 				TRACE("FinishIsochronousTransfers tokens 0x%" B_PRIx32 " 0x%"
+@@ -2167,10 +2437,15 @@ EHCI::FinishIsochronousTransfers()
+ 					" 0x%" B_PRIx32 " 0x%" B_PRIx32 " 0x%" B_PRIx32 "\n",
+ 					itd->token[0], itd->token[1], itd->token[2], itd->token[3],
+ 					itd->token[4], itd->token[5], itd->token[6], itd->token[7]);
+-				if (((itd->token[itd->last_token] >> EHCI_ITD_STATUS_SHIFT)
++				if (((itd->token[lastToken] >> EHCI_ITD_STATUS_SHIFT)
+ 					& EHCI_ITD_STATUS_ACTIVE) == EHCI_ITD_STATUS_ACTIVE) {
+ 					TRACE("FinishIsochronousTransfers unprocessed active itd\n");
+ 				}
++
++				// CRITICAL: Save prev pointer BEFORE unlinking, as UnlinkITDescriptors
++				// may modify the list structure
++				ehci_itd *prevItd = itd->prev;
++
+ 				UnlinkITDescriptors(itd, &fItdEntries[currentFrame]);
+ 
+ 				// Process the transfer if we found the last descriptor
+@@ -2210,7 +2485,8 @@ EHCI::FinishIsochronousTransfers()
+ 
+ 					transfer->transfer->Finished(status, actualLength);
+ 
+-					itd = itd->prev;
++					// Use saved prev pointer for next iteration
++					itd = prevItd;
+ 
+ 					for (uint32 i = 0; i <= transfer->last_to_process; i++)
+ 						FreeDescriptor(transfer->descriptors[i]);
+@@ -2226,7 +2502,8 @@ EHCI::FinishIsochronousTransfers()
+ 					transferDone = true;
+ 				} else {
+ 					TRACE("FinishIsochronousTransfers not end of transfer\n");
+-					itd = itd->prev;
++					// Use saved prev pointer for next iteration
++					itd = prevItd;
+ 				}
+ 			}
+ 
+@@ -2681,12 +2958,27 @@ EHCI::CreateDescriptor(size_t bufferSize, uint8 pid)
+ 	}
+ 
+ 	addr_t physicalBase = (addr_t)physicalAddress;
+-	result->buffer_phy[0] = physicalBase;
++	result->buffer_phy[0] = (uint32)physicalBase;
++#ifdef B_HAIKU_64_BIT
++	if (fSupports64Bit)
++		result->ext_buffer_phy[0] = (uint32)(physicalBase >> 32);
++	else
++		result->ext_buffer_phy[0] = 0;
++#else
+ 	result->ext_buffer_phy[0] = 0;
++#endif
++
+ 	for (int32 i = 1; i < 5; i++) {
+ 		physicalBase += B_PAGE_SIZE;
+-		result->buffer_phy[i] = physicalBase & EHCI_QTD_PAGE_MASK;
++		result->buffer_phy[i] = (uint32)(physicalBase & EHCI_QTD_PAGE_MASK);
++#ifdef B_HAIKU_64_BIT
++		if (fSupports64Bit)
++			result->ext_buffer_phy[i] = (uint32)(physicalBase >> 32);
++		else
++			result->ext_buffer_phy[i] = 0;
++#else
+ 		result->ext_buffer_phy[i] = 0;
++#endif
+ 	}
+ 
+ 	return result;
+@@ -2868,6 +3160,17 @@ EHCI::LinkSITDescriptors(ehci_sitd *sitd, ehci_sitd **_last)
+ void
+ EHCI::UnlinkITDescriptors(ehci_itd *itd, ehci_itd **last)
+ {
++	// Safety check: itd and itd->prev must be valid
++	if (itd == NULL) {
++		TRACE_ERROR("UnlinkITDescriptors: NULL itd!\n");
++		return;
++	}
++	if (itd->prev == NULL) {
++		// This is a base iTD from the framelist, should not be unlinked
++		TRACE_ERROR("UnlinkITDescriptors: itd %p has NULL prev, skipping\n", itd);
++		return;
++	}
++
+ 	itd->prev->next_phy = itd->next_phy;
+ 	itd->prev->next = itd->next;
+ 	if (itd->next != NULL)
+@@ -3058,68 +3361,89 @@ EHCI::ReadIsochronousDescriptorChain(isochronous_transfer_data *transfer)
+ 
+ 	for (uint32 i = 0; i <= transfer->last_to_process; i++) {
+ 		ehci_itd *itd = transfer->descriptors[i];
+-		for (uint32 j = 0; j <= itd->last_token
+-			&& packet < isochronousData->packet_count; j++) {
+-
+-			size_t bufferSize = (itd->token[j] >> EHCI_ITD_TLENGTH_SHIFT)
+-				& EHCI_ITD_TLENGTH_MASK;
+-			if (((itd->token[j] >> EHCI_ITD_STATUS_SHIFT)
+-				& EHCI_ITD_STATUS_MASK) != 0) {
+-				bufferSize = 0;
+-			}
+-			isochronousData->packet_descriptors[packet].actual_length
+-				= bufferSize;
+-
+-			if (bufferSize > 0)
+-				isochronousData->packet_descriptors[packet].status = B_OK;
+-			else
+-				isochronousData->packet_descriptors[packet].status = B_ERROR;
+ 
+-			totalLength += bufferSize;
+-
+-			size_t offset = bufferOffset;
+-			size_t skipSize = packetSize - bufferSize;
+-			while (bufferSize > 0) {
+-				size_t length = min_c(bufferSize,
+-					vector[vectorIndex].length - vectorOffset);
+-				status_t status = generic_memcpy(
+-					vector[vectorIndex].base + vectorOffset, physical,
+-					(generic_addr_t)transfer->buffer_log + bufferOffset, false, length);
+-				ASSERT_ALWAYS(status == B_OK);
+-
+-				offset += length;
+-				vectorOffset += length;
+-				bufferSize -= length;
++		// Extract mult from buffer_phy[2] to know how many transactions per packet
++		uint8 mult = ((itd->buffer_phy[2] >> EHCI_ITD_MUL_SHIFT)
++			& EHCI_ITD_MUL_MASK);
++		if (mult == 0)
++			mult = 1;  // mult field of 0 means 1 transaction
++
++		TRACE("ReadIsochronousDescriptorChain: itd %p, mult=%d, last_token=%d\n",
++			itd, mult, itd->last_token);
++
++		// Process transactions in groups of 'mult' (one group = one microframe = one packet)
++		uint32 slot = 0;
++		while (slot <= itd->last_token && packet < isochronousData->packet_count) {
++			// Accumulate data from 'mult' transactions for this packet
++			size_t packetActualLength = 0;
++			status_t packetStatus = B_OK;
++			size_t packetBufferStart = bufferOffset;
++
++			for (uint8 t = 0; t < mult && slot <= itd->last_token; t++, slot++) {
++				size_t transactionLength = (itd->token[slot] >> EHCI_ITD_TLENGTH_SHIFT)
++					& EHCI_ITD_TLENGTH_MASK;
++				uint8 transactionStatus = (itd->token[slot] >> EHCI_ITD_STATUS_SHIFT)
++					& EHCI_ITD_STATUS_MASK;
++
++				TRACE("ReadIsochronousDescriptorChain: slot %d, len=%zu, status=0x%x\n",
++					slot, transactionLength, transactionStatus);
++
++				if (transactionStatus != 0) {
++					// Transaction had an error
++					packetStatus = B_ERROR;
++					transactionLength = 0;
++				}
+ 
+-				if (vectorOffset >= vector[vectorIndex].length) {
+-					if (++vectorIndex >= vectorCount) {
+-						TRACE("read isodescriptor chain (%ld bytes, no more "
+-							"vectors)\n", totalLength);
+-						return totalLength;
++				packetActualLength += transactionLength;
++
++				// Copy data from this transaction to user buffer
++				size_t copyRemaining = transactionLength;
++				while (copyRemaining > 0 && vectorIndex < vectorCount) {
++					size_t length = min_c(copyRemaining,
++						vector[vectorIndex].length - vectorOffset);
++					status_t status = generic_memcpy(
++						vector[vectorIndex].base + vectorOffset, physical,
++						(generic_addr_t)transfer->buffer_log + bufferOffset, false, length);
++					ASSERT_ALWAYS(status == B_OK);
++
++					vectorOffset += length;
++					bufferOffset += length;
++					copyRemaining -= length;
++
++					if (vectorOffset >= vector[vectorIndex].length) {
++						if (++vectorIndex >= vectorCount) {
++							break;
++						}
++						vectorOffset = 0;
+ 					}
+-
+-					vectorOffset = 0;
+ 				}
+ 			}
+ 
+-			// skip to next packet offset
+-			while (skipSize > 0) {
++			// Set the packet descriptor for this microframe
++			isochronousData->packet_descriptors[packet].actual_length = packetActualLength;
++			isochronousData->packet_descriptors[packet].status = packetStatus;
++
++			TRACE("ReadIsochronousDescriptorChain: packet %d actual_length=%zu status=%d\n",
++				packet, packetActualLength, packetStatus);
++
++			totalLength += packetActualLength;
++
++			// Skip any unused space in this packet's buffer allocation
++			size_t skipSize = packetSize - (bufferOffset - packetBufferStart);
++			while (skipSize > 0 && vectorIndex < vectorCount) {
+ 				size_t length = min_c(skipSize,
+ 					vector[vectorIndex].length - vectorOffset);
+ 				vectorOffset += length;
++				bufferOffset += length;
+ 				skipSize -= length;
+ 				if (vectorOffset >= vector[vectorIndex].length) {
+ 					if (++vectorIndex >= vectorCount) {
+-						TRACE("read isodescriptor chain (%ld bytes, no more "
+-							"vectors)\n", totalLength);
+-						return totalLength;
++						break;
+ 					}
+-
+ 					vectorOffset = 0;
+ 				}
+ 			}
+ 
+-			bufferOffset += packetSize;
+ 			if (bufferOffset >= transfer->buffer_size)
+ 				return totalLength;
+ 
+diff --git a/src/add-ons/kernel/busses/usb/ehci.h b/src/add-ons/kernel/busses/usb/ehci.h
+index a5eea1f2..fd7a6dcc 100644
+--- a/src/add-ons/kernel/busses/usb/ehci.h
++++ b/src/add-ons/kernel/busses/usb/ehci.h
+@@ -262,6 +262,9 @@ inline	uint32						ReadCapReg32(uint32 reg);
+ 		thread_id					fInterruptPollThread;
+ 		uint32						fIRQ;
+ 		bool						fUseMSI;
++
++		// 64-bit addressing support
++		bool						fSupports64Bit;
+ };
+ 
+ 
+diff --git a/src/add-ons/kernel/busses/usb/ehci_hardware.h b/src/add-ons/kernel/busses/usb/ehci_hardware.h
+index 13483038..5a3d4d20 100644
+--- a/src/add-ons/kernel/busses/usb/ehci_hardware.h
++++ b/src/add-ons/kernel/busses/usb/ehci_hardware.h
+@@ -108,6 +108,7 @@
+ #define EHCI_LEGSUP_OSOWNED		(1 << 24)	// OS Owned Semaphore
+ #define EHCI_LEGSUP_BIOSOWNED	(1 << 16)	// BIOS Owned Semaphore
+ 
++#define EHCI_HCCPARAMS_64BIT	(1 << 0)	// 64-bit Addressing Capability
+ #define EHCI_HCCPARAMS_FPLC		(1 << 19)	// 32 Frames Period List
+ #define EHCI_HCCPARAMS_PPCEC	(1 << 18)	// Per-Port Change Event
+ #define EHCI_HCCPARAMS_LPM		(1 << 17)	// Link Power Management
+diff --git a/src/add-ons/kernel/busses/usb/xhci.cpp b/src/add-ons/kernel/busses/usb/xhci.cpp
+index bcebdb92..952632ef 100644
+--- a/src/add-ons/kernel/busses/usb/xhci.cpp
++++ b/src/add-ons/kernel/busses/usb/xhci.cpp
+@@ -369,8 +369,11 @@ XHCI::XHCI(pci_info *info, 	pci_device_module_info* pci, pci_device* device, Sta
+ 		fCmdCcs(1),
+ 		fActiveIsoEndpoints(0),
+ 		fActiveInterruptEndpoints(0),
+-		fIntelQuirk(false)
++		fIntelQuirk(false),
++		fQuirks(0),
++		fConsecutiveResetErrors(0)
+ {
++	memset(fPortSpeedInfo, 0, sizeof(fPortSpeedInfo));
+ 	B_INITIALIZE_SPINLOCK(&fSpinlock);
+ 	mutex_init(&fFinishedLock, "XHCI finished transfers");
+ 	mutex_init(&fEventLock, "XHCI event handler");
+@@ -489,6 +492,9 @@ XHCI::XHCI(pci_info *info, 	pci_device_module_info* pci, pci_device* device, Sta
+ 		break;
+ 	}
+ 
++	// Detect controller quirks based on vendor/device ID
++	_DetectControllerQuirks();
++
+ 	// We need to explicitly take ownership of EHCI ports on earlier Intel chipsets.
+ 	if (fPCIInfo->vendor_id == PCI_VENDOR_INTEL) {
+ 		switch (fPCIInfo->device_id) {
+@@ -537,7 +543,9 @@ XHCI::XHCI(pci_info *info, 	pci_device_module_info* pci, pci_device* device, Sta
+ 	if (fIRQ == 0xFF)
+ 		fIRQ = 0;
+ 
+-// Try MSI-X first, then fall back to MSI, then legacy interrupts
++// Use MSI if available (MSI-X disabled due to compatibility issues on some hardware)
++#if 0
++	// MSI-X support disabled - causes "TRB was not found" errors on some controllers
+ 	if (fPci->get_msix_count(fDevice) >= 1) {
+ 		uint32 msixVector = 0;
+ 		if (fPci->configure_msix(fDevice, 1, &msixVector) == B_OK
+@@ -547,7 +555,8 @@ XHCI::XHCI(pci_info *info, 	pci_device_module_info* pci, pci_device* device, Sta
+ 			fUseMSI = true;
+ 		}
+ 	}
+-	if (!fUseMSI && fPci->get_msi_count(fDevice) >= 1) {
++#endif
++	if (fPci->get_msi_count(fDevice) >= 1) {
+ 		uint32 msiVector = 0;
+ 		if (fPci->configure_msi(fDevice, 1, &msiVector) == B_OK
+ 			&& fPci->enable_msi(fDevice) == B_OK) {
+@@ -674,15 +683,32 @@ XHCI::Start()
+ 		uint32 count = XHCI_SUPPORTED_PROTOCOLS_1_COUNT(temp);
+ 		if (offset == 0 || count == 0)
+ 			continue;
++
++		// Parse Protocol Speed IDs for USB 3.1+ enhanced speed detection
++		uint8 minor = XHCI_SUPPORTED_PROTOCOLS_0_MINOR(eec);
++		if (XHCI_SUPPORTED_PROTOCOLS_0_MAJOR(eec) == 0x3 && minor >= 0x10) {
++			// USB 3.1+ has Protocol Speed ID entries
++			_ParseProtocolSpeedIds(eecp);
++		}
++
+ 		offset--;
+ 		for (uint32 i = offset; i < offset + count; i++) {
+-			if (XHCI_SUPPORTED_PROTOCOLS_0_MAJOR(eec) == 0x3)
+-				fPortSpeeds[i] = USB_SPEED_SUPERSPEED;
+-			else
++			if (XHCI_SUPPORTED_PROTOCOLS_0_MAJOR(eec) == 0x3) {
++				// Check for SuperSpeed Plus based on PSIV or minor version
++				if (minor >= 0x10) {
++					// USB 3.1+ - default to SuperSpeed Plus
++					fPortSpeeds[i] = USB_SPEED_SUPERSPEEDPLUS;
++				} else {
++					fPortSpeeds[i] = USB_SPEED_SUPERSPEED;
++				}
++			} else {
+ 				fPortSpeeds[i] = USB_SPEED_HIGHSPEED;
++			}
+ 
+-			TRACE("speed for port %" B_PRId32 " is %s\n", i,
+-				fPortSpeeds[i] == USB_SPEED_SUPERSPEED ? "super" : "high");
++			TRACE("speed for port %" B_PRId32 " is %s (minor=0x%02x)\n", i,
++				fPortSpeeds[i] == USB_SPEED_SUPERSPEEDPLUS ? "super+" :
++				fPortSpeeds[i] == USB_SPEED_SUPERSPEED ? "super" : "high",
++				minor);
+ 		}
+ 		portFound += count;
+ 	}
+@@ -795,13 +821,9 @@ XHCI::Start()
+ 
+ 	TRACE("setting interrupt rate\n");
+ 
+-	// Setting IMOD below 0x3F8 on Intel Lynx Point can cause IRQ lockups
+-	fIntelQuirk = (fPCIInfo->vendor_id == PCI_VENDOR_INTEL
+-		&& (fPCIInfo->device_id == PCI_DEVICE_INTEL_PANTHER_POINT_XHCI
+-			|| fPCIInfo->device_id == PCI_DEVICE_INTEL_LYNX_POINT_XHCI
+-			|| fPCIInfo->device_id == PCI_DEVICE_INTEL_LYNX_POINT_LP_XHCI
+-			|| fPCIInfo->device_id == PCI_DEVICE_INTEL_BAYTRAIL_XHCI
+-			|| fPCIInfo->device_id == PCI_DEVICE_INTEL_WILDCAT_POINT_XHCI));
++	// Intel quirk is now handled by _DetectControllerQuirks() via fQuirks
++	// fIntelQuirk is kept for backward compatibility but mirrors the quirk flag
++	fIntelQuirk = ((fQuirks & XHCI_QUIRK_INTEL_IMOD) != 0);
+ 
+ 	// Set initial interrupt moderation (will be updated dynamically)
+ 	_UpdateInterruptModeration();
+@@ -971,6 +993,12 @@ XHCI::SubmitNormalRequest(Transfer *transfer)
+ 	if (status != B_OK)
+ 		return status;
+ 
++	// Safety check: max_burst_payload must be set by ConfigureEndpoint
++	if (endpoint->max_burst_payload == 0) {
++		TRACE_ERROR("endpoint max_burst_payload is 0, endpoint not configured!\n");
++		return B_NO_INIT;
++	}
++
+ 	// TRBs within a TD must be "grouped" into TD Fragments, which mostly means
+ 	// that a max_burst_payload boundary cannot be crossed within a TRB, but
+ 	// only between TRBs. More than one TRB can be in a TD Fragment, but we keep
+@@ -1765,6 +1793,9 @@ XHCI::AllocateDevice(Hub *parent, int8 hubAddress, uint8 hubPort,
+ 	endpoint0->device = device;
+ 	endpoint0->id = 0;
+ 	endpoint0->status = 0;
++	endpoint0->max_burst_payload = 0;
++	endpoint0->max_packet_size = 0;
++	endpoint0->max_burst = 0;
+ 	endpoint0->td_head = NULL;
+ 	endpoint0->used = 0;
+ 	endpoint0->next = 0;
+@@ -1999,6 +2030,10 @@ XHCI::_InsertEndpointForPipe(Pipe *pipe)
+ 
+ 		endpoint->device = device;
+ 		endpoint->id = id;
++		endpoint->status = 0;
++		endpoint->max_burst_payload = 0;
++		endpoint->max_packet_size = 0;
++		endpoint->max_burst = 0;
+ 		endpoint->td_head = NULL;
+ 		endpoint->used = 0;
+ 		endpoint->next = 0;
+@@ -2374,10 +2409,16 @@ XHCI::ConfigureEndpoint(xhci_endpoint* ep, uint8 slot, uint8 number, uint8 type,
+ 	ep->max_burst_payload = (maxBurst + 1) * actualMaxPacketSize;
+ 	ep->max_packet_size = actualMaxPacketSize;
+ 	ep->max_burst = maxBurst;
+-	if (ep->max_burst_payload == 0) {
+-		TRACE_ERROR("ConfigureEndpoint() failed invalid max_burst_payload\n");
++
++	// Allow zero-bandwidth endpoints (used by UVC alternate 0 to stop streaming).
++	// Control endpoints should always have non-zero maxPacketSize from device descriptor.
++	// Bulk/interrupt/isochronous endpoints with actual data transfers need non-zero.
++	if (ep->max_burst_payload == 0 && (type & USB_OBJECT_CONTROL_PIPE) != 0) {
++		TRACE_ERROR("ConfigureEndpoint() failed: control endpoint with zero maxPacketSize\n");
+ 		return B_BAD_VALUE;
+ 	}
++	// For non-control endpoints, zero max_burst_payload means zero-bandwidth alternate.
++	// This is valid - transfers will be rejected in SubmitNormalRequest if attempted.
+ 
+ 	// Assign average TRB length.
+ 	if ((type & USB_OBJECT_CONTROL_PIPE) != 0) {
+@@ -2744,7 +2785,7 @@ XHCI::_UpdateInterruptModeration()
+ 		imod = XHCI_IMOD_MEDIUM;
+ 		TRACE("IMOD: medium mode (8000 IRQ/s) - %u interrupt endpoints active\n",
+ 			(unsigned)fActiveInterruptEndpoints);
+-	} else if (!fIntelQuirk) {
++	} else if ((fQuirks & XHCI_QUIRK_INTEL_IMOD) == 0) {
+ 		// No time-sensitive endpoints and no Intel quirk: power save mode
+ 		// Uses lower interrupt rate to reduce CPU wakeups and save power
+ 		imod = XHCI_IMOD_POWER_SAVE;
+@@ -2756,7 +2797,7 @@ XHCI::_UpdateInterruptModeration()
+ 	}
+ 
+ 	// Intel quirk: minimum IMOD is 0x3F8 to avoid IRQ lockups
+-	if (fIntelQuirk && imod < XHCI_IMOD_DEFAULT) {
++	if ((fQuirks & XHCI_QUIRK_INTEL_IMOD) && imod < XHCI_IMOD_DEFAULT) {
+ 		TRACE("IMOD: Intel quirk active, clamping to 0x%04x\n",
+ 			(unsigned)XHCI_IMOD_DEFAULT);
+ 		imod = XHCI_IMOD_DEFAULT;
+@@ -3533,3 +3574,218 @@ XHCI::_WriteContext(uint64* p, uint64 value)
+ 	p = (uint64*)_OffsetContextAddr((addr_t)p);
+ 	*p = value;
+ }
++
++
++void
++XHCI::_DetectControllerQuirks()
++{
++	fQuirks = 0;
++
++	TRACE_ALWAYS("detecting controller quirks for vendor 0x%04x device 0x%04x\n",
++		fPCIInfo->vendor_id, fPCIInfo->device_id);
++
++	switch (fPCIInfo->vendor_id) {
++		case PCI_VENDOR_INTEL:
++			// Intel controllers need IMOD quirk to avoid IRQ lockups
++			switch (fPCIInfo->device_id) {
++				case PCI_DEVICE_INTEL_PANTHER_POINT_XHCI:
++				case PCI_DEVICE_INTEL_LYNX_POINT_XHCI:
++				case PCI_DEVICE_INTEL_LYNX_POINT_LP_XHCI:
++				case PCI_DEVICE_INTEL_BAYTRAIL_XHCI:
++				case PCI_DEVICE_INTEL_WILDCAT_POINT_XHCI:
++				case PCI_DEVICE_INTEL_WILDCAT_POINT_LP_XHCI:
++					fQuirks |= XHCI_QUIRK_INTEL_IMOD | XHCI_QUIRK_INTEL_PPWR;
++					TRACE_ALWAYS("Intel early xHCI: IMOD and port power quirks enabled\n");
++					break;
++				default:
++					// Newer Intel may still need some quirks
++					fQuirks |= XHCI_QUIRK_INTEL_IMOD;
++					break;
++			}
++			break;
++
++		case PCI_VENDOR_AMD:
++			// AMD controllers may need PLL workaround
++			fQuirks |= XHCI_QUIRK_AMD_PLL;
++			TRACE_ALWAYS("AMD xHCI: PLL quirk enabled\n");
++			break;
++
++		case PCI_VENDOR_ASMEDIA:
++			// ASMedia controllers need extra delays for stability
++			fQuirks |= XHCI_QUIRK_ASMEDIA_DELAY | XHCI_QUIRK_EXTRA_DELAY;
++			TRACE_ALWAYS("ASMedia xHCI: delay quirks enabled\n");
++			break;
++
++		case PCI_VENDOR_VIA:
++			// VIA VL805 (Raspberry Pi 4) has some quirks
++			if (fPCIInfo->device_id == PCI_DEVICE_VIA_VL805) {
++				fQuirks |= XHCI_QUIRK_RESET_ON_RESUME;
++				TRACE_ALWAYS("VIA VL805: reset-on-resume quirk enabled\n");
++			}
++			break;
++
++		case PCI_VENDOR_FRESCO:
++			// Fresco Logic controllers often have MSI issues
++			fQuirks |= XHCI_QUIRK_TRUST_TX_LEN;
++			TRACE_ALWAYS("Fresco Logic xHCI: trust TX length quirk enabled\n");
++			break;
++
++		case PCI_VENDOR_RENESAS:
++			// Renesas/NEC controllers are generally well-behaved
++			TRACE_ALWAYS("Renesas xHCI: no quirks needed\n");
++			break;
++
++		case PCI_VENDOR_ETRON:
++			// Etron controllers may need extra delays
++			fQuirks |= XHCI_QUIRK_EXTRA_DELAY;
++			TRACE_ALWAYS("Etron xHCI: extra delay quirk enabled\n");
++			break;
++
++		default:
++			TRACE_ALWAYS("unknown xHCI vendor, no quirks applied\n");
++			break;
++	}
++}
++
++
++void
++XHCI::_ParseProtocolSpeedIds(uint32 eecp)
++{
++	// Parse Protocol Speed ID (PSIV) entries from Extended Capability
++	// This is used for USB 3.1+ to determine exact speed variants
++	// (XHCI 1.1 § 7.2.2)
++
++	uint32 psic = XHCI_SUPPORTED_PROTOCOLS_2_PSIC(ReadCapReg32(eecp + 8));
++
++	if (psic == 0) {
++		// No Protocol Speed IDs defined, use default mappings
++		return;
++	}
++
++	TRACE("parsing %u protocol speed IDs at eecp 0x%x\n", (unsigned)psic, (unsigned)eecp);
++
++	// PSI entries start at offset 16 (dword 4) in the extended capability
++	for (uint32 i = 0; i < psic && i < 16; i++) {
++		uint32 psi = ReadCapReg32(eecp + 16 + (i * 4));
++		uint8 psiv = XHCI_PSI_VALUE(psi);
++		uint8 exponent = XHCI_PSI_EXPONENT(psi);
++		uint16 mantissa = XHCI_PSI_MANTISSA(psi);
++
++		// Calculate speed in Mbps for logging
++		uint32 speedMbps = mantissa;
++		switch (exponent) {
++			case 0: speedMbps /= 1000; break;	// bps -> Mbps (essentially 0)
++			case 1: speedMbps /= 1000; break;	// Kbps -> Mbps
++			case 2: break;						// Mbps
++			case 3: speedMbps *= 1000; break;	// Gbps -> Mbps
++		}
++
++		TRACE("  PSIV %u: %u %s (%u Mbps)\n", psiv, mantissa,
++			exponent == 0 ? "bps" : exponent == 1 ? "Kbps" :
++			exponent == 2 ? "Mbps" : "Gbps", speedMbps);
++
++		// Store info for ports using this protocol
++		uint32 temp = ReadCapReg32(eecp + 8);
++		uint32 offset = XHCI_SUPPORTED_PROTOCOLS_1_OFFSET(temp);
++		uint32 count = XHCI_SUPPORTED_PROTOCOLS_1_COUNT(temp);
++
++		if (offset > 0 && offset <= XHCI_MAX_PORTS) {
++			for (uint32 p = offset - 1; p < offset - 1 + count && p < XHCI_MAX_PORTS; p++) {
++				// Only store if PSIV matches what the port reports
++				// This will be checked when determining port speed
++				if (fPortSpeedInfo[p].psiv == 0 || fPortSpeedInfo[p].psiv == psiv) {
++					fPortSpeedInfo[p].psiv = psiv;
++					fPortSpeedInfo[p].exponent = exponent;
++					fPortSpeedInfo[p].mantissa = mantissa;
++				}
++			}
++		}
++	}
++}
++
++
++status_t
++XHCI::_RecoverFromError(xhci_endpoint* endpoint, uint32 completionCode)
++{
++	// Enhanced error recovery based on completion code
++	// This implements retry logic similar to FreeBSD/Linux
++
++	status_t status = B_OK;
++
++	switch (completionCode) {
++		case COMP_USB_TRANSACTION:
++			// USB transaction error - usually transient, try reset
++			TRACE_ERROR("USB transaction error, attempting endpoint reset\n");
++			status = ResetEndpoint(false, endpoint);
++			if (status == B_OK) {
++				fConsecutiveResetErrors = 0;
++			} else {
++				fConsecutiveResetErrors++;
++			}
++			break;
++
++		case COMP_STALL:
++			// Stall - endpoint halted, needs reset
++			TRACE_ERROR("endpoint stalled, resetting\n");
++			status = ResetEndpoint(false, endpoint);
++			break;
++
++		case COMP_BABBLE:
++			// Babble - device sent more data than expected
++			TRACE_ERROR("babble detected, resetting endpoint\n");
++			status = ResetEndpoint(false, endpoint);
++			break;
++
++		case COMP_TRB:
++			// TRB error - usually a software bug
++			TRACE_ERROR("TRB error, possible driver bug\n");
++			status = B_DEV_INVALID_IOCTL;
++			break;
++
++		case COMP_RING_UNDERRUN:
++		case COMP_RING_OVERRUN:
++			// Isochronous errors - not really recoverable, but not fatal
++			TRACE("isochronous ring %s\n",
++				completionCode == COMP_RING_UNDERRUN ? "underrun" : "overrun");
++			status = B_OK;
++			break;
++
++		case COMP_BANDWIDTH:
++		case COMP_BANDWIDTH_OVERRUN:
++			// Bandwidth issues - need to reduce transfer rate
++			TRACE_ERROR("bandwidth error, may need to reduce data rate\n");
++			status = B_DEV_RESOURCE_CONFLICT;
++			break;
++
++		case COMP_NO_SLOTS:
++			// No available device slots
++			TRACE_ERROR("no device slots available\n");
++			status = B_NO_MORE_FDS;
++			break;
++
++		case COMP_CONTEXT_STATE:
++			// Context state error - endpoint in wrong state
++			TRACE_ERROR("context state error, endpoint in unexpected state\n");
++			// Try to recover by stopping and restarting
++			StopEndpoint(false, endpoint);
++			status = B_DEV_NOT_READY;
++			break;
++
++		default:
++			// Unknown or unrecoverable error
++			if (completionCode >= COMP_UNDEFINED) {
++				TRACE_ERROR("undefined completion code %u\n", (unsigned)completionCode);
++			}
++			status = B_IO_ERROR;
++			break;
++	}
++
++	// If we've had too many consecutive reset errors, something is very wrong
++	if (fConsecutiveResetErrors > 5) {
++		TRACE_ERROR("too many consecutive reset errors, device may be broken\n");
++		fConsecutiveResetErrors = 0;
++		return B_DEV_BAD_DRIVE_NUM;
++	}
++
++	return status;
++}
+diff --git a/src/add-ons/kernel/busses/usb/xhci.h b/src/add-ons/kernel/busses/usb/xhci.h
+index 000b7d02..690395b5 100644
+--- a/src/add-ons/kernel/busses/usb/xhci.h
++++ b/src/add-ons/kernel/busses/usb/xhci.h
+@@ -16,6 +16,19 @@
+ #include "xhci_hardware.h"
+ 
+ 
++// Controller quirks flags
++#define XHCI_QUIRK_INTEL_IMOD		(1 << 0)	// Intel minimum IMOD workaround
++#define XHCI_QUIRK_INTEL_PPWR		(1 << 1)	// Intel port power workaround
++#define XHCI_QUIRK_AMD_PLL			(1 << 2)	// AMD PLL quirk
++#define XHCI_QUIRK_ASMEDIA_DELAY	(1 << 3)	// ASMedia needs delays
++#define XHCI_QUIRK_BROKEN_MSI		(1 << 4)	// MSI causes issues
++#define XHCI_QUIRK_NO_SOFT_RESET	(1 << 5)	// Avoid soft reset
++#define XHCI_QUIRK_RESET_ON_RESUME	(1 << 6)	// Full reset needed on resume
++#define XHCI_QUIRK_SPURIOUS_WAKEUP	(1 << 7)	// Ignore spurious wakeups
++#define XHCI_QUIRK_EXTRA_DELAY		(1 << 8)	// Needs extra delays for stability
++#define XHCI_QUIRK_TRUST_TX_LEN		(1 << 9)	// Trust transfer length in TRB
++
++
+ struct pci_info;
+ struct pci_device_module_info;
+ struct pci_device;
+@@ -295,6 +308,23 @@ private:
+ 			uint32				fActiveInterruptEndpoints;
+ 			bool				fIntelQuirk;		// Intel Lynx Point IMOD bug
+ 			void				_UpdateInterruptModeration();
++
++			// Controller quirks
++			uint32				fQuirks;
++			void				_DetectControllerQuirks();
++
++			// Error recovery
++			uint32				fConsecutiveResetErrors;
++			status_t			_RecoverFromError(xhci_endpoint* endpoint,
++									uint32 completionCode);
++
++			// Protocol Speed ID support for USB 3.1+
++			void				_ParseProtocolSpeedIds(uint32 eecp);
++			struct {
++				uint8			psiv;		// Protocol Speed ID Value
++				uint8			exponent;	// Speed exponent (bps, kbps, Mbps, Gbps)
++				uint16			mantissa;	// Speed mantissa
++			}					fPortSpeedInfo[XHCI_MAX_PORTS];
+ };
+ 
+ 
+diff --git a/src/add-ons/kernel/busses/usb/xhci_hardware.h b/src/add-ons/kernel/busses/usb/xhci_hardware.h
+index 0d39ef10..81139ce2 100644
+--- a/src/add-ons/kernel/busses/usb/xhci_hardware.h
++++ b/src/add-ons/kernel/busses/usb/xhci_hardware.h
+@@ -19,6 +19,35 @@
+ #define	PCI_DEVICE_INTEL_WILDCAT_POINT_XHCI		0x8cb1
+ #define	PCI_DEVICE_INTEL_WILDCAT_POINT_LP_XHCI	0x9cb1
+ 
++// Additional vendors for quirks
++#define	PCI_VENDOR_AMD							0x1022
++#define	PCI_VENDOR_VIA							0x1106
++#define	PCI_VENDOR_ASMEDIA						0x1b21
++#define	PCI_VENDOR_RENESAS						0x1912
++#define	PCI_VENDOR_FRESCO						0x1b73
++#define	PCI_VENDOR_ETRON						0x1b6f
++#define	PCI_VENDOR_NVIDIA						0x10de
++#define	PCI_VENDOR_TEXAS_INSTRUMENTS			0x104c
++
++// Known problematic ASMedia controllers
++#define	PCI_DEVICE_ASMEDIA_ASM1042				0x1042
++#define	PCI_DEVICE_ASMEDIA_ASM1042A				0x1142
++#define	PCI_DEVICE_ASMEDIA_ASM1142				0x1242
++#define	PCI_DEVICE_ASMEDIA_ASM2142				0x2142
++#define	PCI_DEVICE_ASMEDIA_ASM3142				0x3142
++
++// Renesas/NEC controllers
++#define	PCI_DEVICE_RENESAS_UPD720201			0x0014
++#define	PCI_DEVICE_RENESAS_UPD720202			0x0015
++
++// Fresco Logic controllers
++#define	PCI_DEVICE_FRESCO_FL1000				0x1000
++#define	PCI_DEVICE_FRESCO_FL1009				0x1009
++#define	PCI_DEVICE_FRESCO_FL1100				0x1100
++
++// VIA VL805 (common on Raspberry Pi 4)
++#define	PCI_DEVICE_VIA_VL805					0x3483
++
+ // Intel quirks registers in PCI config
+ #define	XHCI_INTEL_USB3PRM				0xdc	// USB 3.0 Port Routing Mask
+ #define	XHCI_INTEL_USB3_PSSEN			0xd8	// USB 3.0 Port SuperSpeed Enable
+@@ -57,6 +86,14 @@
+ #define HCC_CFC(p)				(((p) >> 11) & 0x1)
+ #define HCC_MAXPSASIZE(p)		(((p) >> 12) & 0xf)
+ #define HCC_XECP(p)				(((p) >> 16) & 0xfff)
++// HCCPARAMS2 (xHCI 1.1+)
++#define XHCI_HCCPARAMS2		0x1C		// Capability Parameters 2
++#define HCC2_U3C(p)				(((p) >> 0) & 0x1)	// U3 Entry Capability
++#define HCC2_CMC(p)				(((p) >> 1) & 0x1)	// Configure Endpoint Max Exit Latency
++#define HCC2_FSC(p)				(((p) >> 2) & 0x1)	// Force Save Context Capability
++#define HCC2_CTC(p)				(((p) >> 3) & 0x1)	// Compliance Transition Capability
++#define HCC2_LEC(p)				(((p) >> 4) & 0x1)	// Large ESIT Payload Capability
++#define HCC2_CIC(p)				(((p) >> 5) & 0x1)	// Configuration Information Capability
+ #define XHCI_DBOFF			0x14		// Doorbell Register offset
+ #define XHCI_RTSOFF			0x18		// Runtime Register Space offset
+ 
+@@ -150,6 +187,20 @@
+ #define XHCI_SUPPORTED_PROTOCOLS_1_COUNT(x)	(((x) >> 8) & 0xff)
+ #define XHCI_SUPPORTED_PROTOCOLS_1_OFFSET(x) (((x) >> 0) & 0xff)
+ 
++// Extended Protocol Capability - Protocol Speed ID (PSIV)
++// Used for USB 3.1+ to identify exact speed variants
++#define XHCI_SUPPORTED_PROTOCOLS_2_PSIC(x)	(((x) >> 28) & 0xf)
++#define XHCI_PSI_FULLSPEED		1
++#define XHCI_PSI_LOWSPEED		2
++#define XHCI_PSI_HIGHSPEED		3
++#define XHCI_PSI_SUPERSPEED		4
++#define XHCI_PSI_SUPERSPEEDPLUS	5
++// Protocol Speed ID entry (for USB 3.1+ enhanced speeds)
++#define XHCI_PSI_VALUE(x)		((x) & 0xf)
++#define XHCI_PSI_EXPONENT(x)	(((x) >> 4) & 0x3)
++#define XHCI_PSI_TYPE(x)		(((x) >> 6) & 0x3)
++#define XHCI_PSI_MANTISSA(x)	(((x) >> 16) & 0xffff)
++
+ 
+ // Port status Registers
+ // Section 5.4.8

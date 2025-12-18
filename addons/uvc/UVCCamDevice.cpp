@@ -309,6 +309,11 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 	fSelectedResolutionIndex(0),
 	fResolutionParameterID(0),
 	fResolutionTransitionStart(0),
+	// Frame rate selection (P2 Feature)
+	fSelectedFrameIntervalIndex(0),
+	fFrameRateParameterID(0),
+	fNumFrameIntervals(0),
+	fSelectedFrameInterval(333333),  // Default 30fps (10000000/30)
 	fAudioRingSem(-1),
 	// Frame validation state (Feature 1)
 	fLastValidFrame(NULL),
@@ -352,6 +357,8 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 	fControllerInfo.type_name = "unknown";
 	// Initialize frame validation stats
 	memset(&fValidationStats, 0, sizeof(fValidationStats));
+	// Initialize frame intervals array (P2 Feature)
+	memset(fCurrentFrameIntervals, 0, sizeof(fCurrentFrameIntervals));
 
 	// Initialize fallback config with defaults
 	_InitializeFallbackConfig();
@@ -1534,51 +1541,57 @@ UVCCamDevice::_ProbeCommitFormat()
 	memset(&request, 0, sizeof(request));
 	request._hint.frame_interval = 1;
 
-	/* FIX: Use frame interval from device descriptor instead of hardcoded 30fps */
+	/* P2 Feature: Use user-selected frame interval, fall back to device default */
 	uint32 frameInterval = 333333;  // Default 30 fps
 	BList* frameList = fIsMJPEG ? &fMJPEGFrames : &fUncompressedFrames;
 	uint32 frameIndex = fIsMJPEG ? fMJPEGFrameIndex : fUncompressedFrameIndex;
 
-	if (frameIndex > 0 && frameIndex <= (uint32)frameList->CountItems()) {
+	/* First priority: use user-selected frame interval if available */
+	if (fSelectedFrameInterval > 0) {
+		frameInterval = fSelectedFrameInterval;
+		syslog(LOG_INFO, "UVCCamDevice: Using user-selected frame interval %u (%.1f fps)\n",
+			frameInterval, 10000000.0f / frameInterval);
+	} else if (frameIndex > 0 && frameIndex <= (uint32)frameList->CountItems()) {
 		const usb_video_frame_descriptor* frameDesc =
 			(const usb_video_frame_descriptor*)frameList->ItemAt(frameIndex - 1);
 		if (frameDesc != NULL) {
-			/* Use default_frame_interval from descriptor */
+			/* Fall back to default_frame_interval from descriptor */
 			frameInterval = frameDesc->default_frame_interval;
-			syslog(LOG_INFO, "UVCCamDevice: Using device frame interval %u (%.1f fps)\n",
+			syslog(LOG_INFO, "UVCCamDevice: Using device default frame interval %u (%.1f fps)\n",
 				frameInterval, 10000000.0f / frameInterval);
+		}
+	}
 
-			/* For YUY2 (uncompressed), adapt FPS to available bandwidth.
-			 * High-bandwidth endpoints are now supported with modified EHCI.
-			 * Calculate max achievable FPS and request that if lower than default.
-			 */
-			if (!fIsMJPEG) {
-				uint32 maxBandwidth = _GetMaxAvailableBandwidth();
-				if (maxBandwidth > 0) {
-					uint32 frameSize = frameDesc->width * frameDesc->height * 2;
-					// USB 2.0 high-speed: 8000 microframes/second
-					uint32 bytesPerSecond = maxBandwidth * 8000;
-					float maxFps = (float)bytesPerSecond / frameSize;
+	/* For YUY2 (uncompressed), check bandwidth and adapt if needed */
+	if (!fIsMJPEG && frameIndex > 0 && frameIndex <= (uint32)frameList->CountItems()) {
+		const usb_video_frame_descriptor* frameDesc =
+			(const usb_video_frame_descriptor*)frameList->ItemAt(frameIndex - 1);
+		if (frameDesc != NULL) {
+			uint32 maxBandwidth = _GetMaxAvailableBandwidth();
+			if (maxBandwidth > 0) {
+				uint32 frameSize = frameDesc->width * frameDesc->height * 2;
+				// USB 2.0 high-speed: 8000 microframes/second
+				uint32 bytesPerSecond = maxBandwidth * 8000;
+				float maxFps = (float)bytesPerSecond / frameSize;
 
-					// Calculate frame_interval for max achievable FPS
-					// frame_interval is in 100ns units: 10000000 / fps
-					// Use slightly lower fps for safety margin (90%)
-					float safeFps = maxFps * 0.9f;
-					if (safeFps < 1.0f) safeFps = 1.0f;  // Minimum 1 fps
+				// Calculate frame_interval for max achievable FPS
+				// frame_interval is in 100ns units: 10000000 / fps
+				// Use slightly lower fps for safety margin (90%)
+				float safeFps = maxFps * 0.9f;
+				if (safeFps < 1.0f) safeFps = 1.0f;  // Minimum 1 fps
 
-					uint32 adaptedInterval = (uint32)(10000000.0f / safeFps);
+				uint32 adaptedInterval = (uint32)(10000000.0f / safeFps);
 
-					// If adapted interval is larger (slower fps), use it
-					if (adaptedInterval > frameInterval) {
-						syslog(LOG_INFO, "UVCCamDevice: YUY2 bandwidth check: max=%u bytes/uframe, frameSize=%u\n",
-							maxBandwidth, frameSize);
-						syslog(LOG_INFO, "UVCCamDevice: Adapting FPS: %.1f -> %.1f (interval %u -> %u)\n",
-							10000000.0f / frameInterval, safeFps, frameInterval, adaptedInterval);
-						frameInterval = adaptedInterval;
-					} else {
-						syslog(LOG_INFO, "UVCCamDevice: YUY2 bandwidth OK: max=%u bytes/uframe (%.1f MB/s), requesting %.1f fps\n",
-							maxBandwidth, bytesPerSecond / 1048576.0f, 10000000.0f / frameInterval);
-					}
+				// If adapted interval is larger (slower fps), use it as bandwidth limit
+				if (adaptedInterval > frameInterval) {
+					syslog(LOG_INFO, "UVCCamDevice: YUY2 bandwidth check: max=%u bytes/uframe, frameSize=%u\n",
+						maxBandwidth, frameSize);
+					syslog(LOG_INFO, "UVCCamDevice: Bandwidth limit: adapting FPS %.1f -> %.1f (interval %u -> %u)\n",
+						10000000.0f / frameInterval, safeFps, frameInterval, adaptedInterval);
+					frameInterval = adaptedInterval;
+				} else {
+					syslog(LOG_INFO, "UVCCamDevice: YUY2 bandwidth OK: max=%u bytes/uframe (%.1f MB/s), requesting %.1f fps\n",
+						maxBandwidth, bytesPerSecond / 1048576.0f, 10000000.0f / frameInterval);
 				}
 			}
 		}
@@ -2764,6 +2777,48 @@ UVCCamDevice::AddParameters(BParameterGroup* group, int32& index)
 
 		printf("UVCCamDevice: Added resolution selector with %d options, current=%d\n",
 			(int)frameList->CountItems(), (int)fSelectedResolutionIndex);
+
+		/* Add frame rate selector (P2 Feature) */
+		const usb_video_frame_descriptor* currentFrame =
+			(const usb_video_frame_descriptor*)frameList->ItemAt(fSelectedResolutionIndex);
+		if (currentFrame != NULL && currentFrame->frame_interval_type > 0) {
+			fFrameRateParameterID = index + 16;
+
+			/* Copy available frame intervals */
+			fNumFrameIntervals = currentFrame->frame_interval_type;
+			if (fNumFrameIntervals > 8)
+				fNumFrameIntervals = 8;
+
+			for (uint8 k = 0; k < fNumFrameIntervals; k++) {
+				fCurrentFrameIntervals[k] = currentFrame->discrete_frame_intervals[k];
+			}
+
+			BDiscreteParameter* fpsParam = videoGroup->MakeDiscreteParameter(
+				fFrameRateParameterID, B_MEDIA_RAW_VIDEO, "Frame Rate", B_GENERIC);
+
+			/* Add each available frame rate as an option */
+			for (uint8 k = 0; k < fNumFrameIntervals; k++) {
+				if (fCurrentFrameIntervals[k] > 0) {
+					float fps = 10000000.0f / fCurrentFrameIntervals[k];
+					BString fpsName;
+					fpsName.SetToFormat("%.1f fps", fps);
+					fpsParam->AddItem(k, fpsName.String());
+				}
+			}
+
+			/* Use default interval to find initial selection */
+			for (uint8 k = 0; k < fNumFrameIntervals; k++) {
+				if (fCurrentFrameIntervals[k] == currentFrame->default_frame_interval) {
+					fSelectedFrameIntervalIndex = k;
+					break;
+				}
+			}
+			fSelectedFrameInterval = fCurrentFrameIntervals[fSelectedFrameIntervalIndex];
+
+			printf("UVCCamDevice: Added frame rate selector with %d options, current=%d (%.1f fps)\n",
+				(int)fNumFrameIntervals, (int)fSelectedFrameIntervalIndex,
+				10000000.0f / fSelectedFrameInterval);
+		}
 	}
 
 	const BUSBConfiguration* config;
@@ -2920,6 +2975,13 @@ UVCCamDevice::GetParameterValue(int32 id, bigtime_t* last_change, void* value,
 			*currValueInt = fSelectedResolutionIndex;
 			*last_change = fLastParameterChanges;
 			return B_OK;
+		case 16:
+			/* Frame rate selector (P2 Feature) */
+			*size = sizeof(int);
+			currValueInt = (int*)value;
+			*currValueInt = fSelectedFrameIntervalIndex;
+			*last_change = fLastParameterChanges;
+			return B_OK;
 
 	}
 	return B_BAD_VALUE;
@@ -3065,6 +3127,34 @@ UVCCamDevice::SetParameterValue(int32 id, bigtime_t when, const void* value,
 						}
 					}
 
+					/* P2 Feature: Update available frame intervals for new resolution */
+					if (frameDesc->frame_interval_type > 0) {
+						fNumFrameIntervals = frameDesc->frame_interval_type;
+						if (fNumFrameIntervals > 8)
+							fNumFrameIntervals = 8;
+
+						for (uint8 k = 0; k < fNumFrameIntervals; k++) {
+							fCurrentFrameIntervals[k] = frameDesc->discrete_frame_intervals[k];
+						}
+
+						/* Reset to default frame interval for this resolution */
+						fSelectedFrameIntervalIndex = 0;
+						for (uint8 k = 0; k < fNumFrameIntervals; k++) {
+							if (fCurrentFrameIntervals[k] == frameDesc->default_frame_interval) {
+								fSelectedFrameIntervalIndex = k;
+								break;
+							}
+						}
+						fSelectedFrameInterval = fCurrentFrameIntervals[fSelectedFrameIntervalIndex];
+
+						printf("UVCCamDevice: Frame intervals updated for new resolution: %d options, default=%.1f fps\n",
+							(int)fNumFrameIntervals, 10000000.0f / fSelectedFrameInterval);
+					} else {
+						/* Continuous interval - use default */
+						fNumFrameIntervals = 0;
+						fSelectedFrameInterval = frameDesc->default_frame_interval;
+					}
+
 					/* FIX BUG 12: Non chiamare AcceptVideoFrame() perché cerca per
 					 * risoluzione e potrebbe trovare un frame DIVERSO da quello
 					 * selezionato (es. stessa risoluzione ma fps diversi).
@@ -3111,6 +3201,52 @@ UVCCamDevice::SetParameterValue(int32 id, bigtime_t when, const void* value,
 
 					fLastParameterChanges = when;
 				}
+			}
+			return B_OK;
+		}
+		case 16:
+		{
+			/* Frame rate selector (P2 Feature) */
+			if (!value || (size != sizeof(int)))
+				return B_BAD_VALUE;
+
+			int32 newIndex = *((int*)value);
+
+			/* Validate index */
+			if (newIndex < 0 || newIndex >= fNumFrameIntervals) {
+				printf("UVCCamDevice: Invalid frame rate index %d (max %d)\n",
+					(int)newIndex, (int)fNumFrameIntervals - 1);
+				return B_BAD_VALUE;
+			}
+
+			/* Only change if different */
+			if (newIndex != fSelectedFrameIntervalIndex) {
+				fSelectedFrameIntervalIndex = newIndex;
+				fSelectedFrameInterval = fCurrentFrameIntervals[newIndex];
+
+				float fps = 10000000.0f / fSelectedFrameInterval;
+				printf("UVCCamDevice: Frame rate changed to %.1f fps (interval %u)\n",
+					fps, fSelectedFrameInterval);
+				syslog(LOG_INFO, "UVCCamDevice: Frame rate changed to %.1f fps (interval %u)\n",
+					fps, fSelectedFrameInterval);
+
+				/* If transfer is running, renegotiate format */
+				if (TransferEnabled()) {
+					syslog(LOG_INFO, "UVCCamDevice: Transfer running, stopping to change frame rate\n");
+					StopTransfer();
+
+					snooze(50000);  // 50ms delay
+
+					status_t err = StartTransfer();
+					if (err != B_OK) {
+						syslog(LOG_ERR, "UVCCamDevice: Failed to restart transfer with new frame rate: %s\n",
+							strerror(err));
+						return err;
+					}
+					syslog(LOG_INFO, "UVCCamDevice: Transfer restarted with new frame rate\n");
+				}
+
+				fLastParameterChanges = when;
 			}
 			return B_OK;
 		}
