@@ -2,6 +2,12 @@
 
 A USB Video Class (UVC) driver for Haiku OS, providing support for standard USB webcams with video and audio capabilities.
 
+## Screenshots
+
+![Webcam streaming in Cortex](img/screenshot01.png)
+
+![Camera controls panel](img/screenshot02.png)
+
 ## Features
 
 ### Video Support
