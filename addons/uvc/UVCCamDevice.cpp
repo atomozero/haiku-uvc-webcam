@@ -187,6 +187,10 @@ usb_webcam_support_descriptor kSupportedDevices[] = {
 	// Insta360
 	{{ 0, 0, 0, 0x2e1a, 0x4c01, }, "Insta360",      "Link",                            "??" },
 
+	// SunplusIT / Bison Electronics
+	// NOTE: Requires xHCI high-bandwidth workaround on Haiku (SetAlternate bug)
+	{{ 0, 0, 0, 0x5986, 0x2113, }, "SunplusIT",     "Integrated Camera",               "??" },
+
 	// Intel RealSense
 	{{ 0, 0, 0, 0x8086, 0x0ad2, }, "Intel",         "RealSense D410",                  "??" },
 	{{ 0, 0, 0, 0x8086, 0x0ad3, }, "Intel",         "RealSense D415",                  "??" },
@@ -276,8 +280,15 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 	fCurrentVideoAlternate(0),
 	fUncompressedFormatIndex(1),
 	fUncompressedFrameIndex(1),
+	fMJPEGFormatIndex(1),
+	fMJPEGFrameIndex(1),		// Initialize to 1, will be updated by AcceptVideoFrame
+	fMaxVideoFrameSize(0),
+	fMaxPayloadTransferSize(0),
+	fProbeCommitSize(34),		// Default UVC 1.1+ size, will be auto-detected
 	fJpegDecompressor(NULL),
 	fIsMJPEG(false),
+	fIsNV12(false),
+	fMicrodiaQuirk(false),
 	// FIX BUG 6: Inizializza contatori diagnostici per istanza
 	fFillFrameCount(0),
 	fFillFrameSuccess(0),
@@ -325,6 +336,31 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 	// Processing Unit controls (Feature 2)
 	fProcessingUnitID(0),
 	fControlsInitialized(false),
+	// Camera Terminal controls (CT)
+	fCameraTerminalID(0),
+	fCameraTerminalControls(0),
+	fHasCameraTerminal(false),
+	fAutoExposureMode(2),		// Default: Auto
+	fExposureTimeAbs(333),		// Default: ~33ms (30fps)
+	fAutoFocus(true),
+	fFocusAbsolute(0),
+	fZoomAbsolute(100),			// 100 = 1x zoom
+	fPanAbsolute(0),
+	fTiltAbsolute(0),
+	fPrivacyEnabled(false),
+	fAutoExposureModeID(-1),
+	fExposureTimeID(-1),
+	fAutoFocusID(-1),
+	fFocusAbsoluteID(-1),
+	fZoomAbsoluteID(-1),
+	fPanTiltID(-1),
+	// Extension Unit support (XU)
+	fHasExtensionUnits(false),
+	// Still image capture support
+	fStillCaptureMethod(STILL_CAPTURE_NONE),
+	fHasStillCapture(false),
+	fTriggerSupport(false),
+	fTriggerUsage(false),
 	// Resolution fallback state (Feature 3)
 	fCurrentResolutionLevel(0),
 	fTargetResolutionLevel(0),
@@ -337,6 +373,9 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 	fFallbackWarningShown(false),
 	fLastPacketSuccessCount(0),
 	fLastPacketErrorCount(0),
+	// Sorted resolution indices
+	fSortedMJPEGCount(0),
+	fSortedUncompressedCount(0),
 	// High-bandwidth auto-detection state
 	fHighBandwidthTested(false),
 	fHighBandwidthWorks(true),		// Assume it works until proven otherwise
@@ -359,6 +398,11 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 	memset(&fValidationStats, 0, sizeof(fValidationStats));
 	// Initialize frame intervals array (P2 Feature)
 	memset(fCurrentFrameIntervals, 0, sizeof(fCurrentFrameIntervals));
+	// Initialize sorted resolution indices
+	memset(fSortedMJPEGIndices, 0, sizeof(fSortedMJPEGIndices));
+	memset(fSortedUncompressedIndices, 0, sizeof(fSortedUncompressedIndices));
+	// Initialize still image info
+	memset(&fStillImageInfo, 0, sizeof(fStillImageInfo));
 
 	// Initialize fallback config with defaults
 	_InitializeFallbackConfig();
@@ -709,12 +753,24 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 		else
 			fIsMJPEG = false;
 
+		// QUIRK: Microdia 0c45:6409 uses 352-pixel internal buffer width
+		// This causes row stride issues for resolutions < 352 pixels wide
+		if (fDevice->VendorID() == 0x0c45 && fDevice->ProductID() == 0x6409) {
+			fMicrodiaQuirk = true;
+			syslog(LOG_INFO, "UVCCamDevice: Microdia 0c45:6409 quirk enabled (352-pixel stride)\n");
+		}
+
 		syslog(LOG_INFO, "UVCCamDevice: Init OK - ctrl=%u stream=%u frames=%d+%d format=%s\n",
 			fControlIndex, fStreamingIndex,
 			(int)fUncompressedFrames.CountItems(), (int)fMJPEGFrames.CountItems(),
 			fIsMJPEG ? "MJPEG" : "YUY2");
 		syslog(LOG_INFO, "UVCCamDevice: Format indices: MJPEG=%d, Uncompressed=%d\n",
 			fMJPEGFormatIndex, fUncompressedFormatIndex);
+
+		// Build sorted resolution list for proper fallback ordering
+		// (level 0 = highest, level N = lowest)
+		_BuildSortedResolutionList();
+
 		// Log frame indices for each resolution
 		BList* frameList = fIsMJPEG ? &fMJPEGFrames : &fUncompressedFrames;
 		for (int32 i = 0; i < frameList->CountItems(); i++) {
@@ -784,6 +840,12 @@ UVCCamDevice::~UVCCamDevice()
 	}
 	fProcessingControls.MakeEmpty();
 
+	// Cleanup Extension Units (Feature XU)
+	for (int32 i = 0; i < fExtensionUnits.CountItems(); i++) {
+		delete (extension_unit_info*)fExtensionUnits.ItemAt(i);
+	}
+	fExtensionUnits.MakeEmpty();
+
 	free(fHeaderDescriptor);
 }
 
@@ -803,7 +865,15 @@ UVCCamDevice::_ParseVideoStreaming(const usbvc_class_descriptor* _descriptor,
 			if (descriptor->_info.dynamic_format_change_support)
 				printf("\tDynamic Format Change supported\n");
 			printf("\toutput terminal id=%d\n", descriptor->terminal_link);
-			printf("\tstill capture method=%d\n", descriptor->still_capture_method);
+
+			// Store still capture method and trigger info
+			fStillCaptureMethod = (still_capture_method)descriptor->still_capture_method;
+			fTriggerSupport = descriptor->trigger_support;
+			fTriggerUsage = descriptor->trigger_usage;
+			if (fStillCaptureMethod != STILL_CAPTURE_NONE) {
+				printf("\tstill capture: method=%d (%s)\n",
+					fStillCaptureMethod, _GetStillCaptureMethodName(fStillCaptureMethod));
+			}
 			if (descriptor->trigger_support) {
 				printf("\ttrigger button fixed to still capture=%s\n",
 					descriptor->trigger_usage ? "no" : "yes");
@@ -853,6 +923,12 @@ UVCCamDevice::_ParseVideoStreaming(const usbvc_class_descriptor* _descriptor,
 			}
 			if (descriptor->uncompressed.copyProtect)
 				printf("\tRestrict duplication\n");
+
+			// Detect NV12 format (YUV 4:2:0 planar)
+			if (!memcmp(descriptor->uncompressed.format, kNV12Guid, sizeof(usbvc_guid))) {
+				fIsNV12 = true;
+				printf("\tDetected NV12 (YUV 4:2:0) format\n");
+			}
 			break;
 		}
 		case USB_VIDEO_VS_FRAME_MJPEG:
@@ -963,19 +1039,7 @@ UVCCamDevice::_ParseVideoStreaming(const usbvc_class_descriptor* _descriptor,
 		{
 			const usb_video_still_image_frame_descriptor* descriptor
 				= (const usb_video_still_image_frame_descriptor*)_descriptor;
-			printf("VS_STILL_IMAGE_FRAME:\t#imageSizes=%d,compressions=%d,"
-				"ept=0x%x\n", descriptor->num_image_size_patterns,
-				descriptor->NumCompressionPatterns(),
-				descriptor->endpoint_address);
-			for (uint8 i = 0; i < descriptor->num_image_size_patterns; i++) {
-				printf("imageSize%d: %dx%d\n", i,
-					descriptor->_pattern_size[i].width,
-					descriptor->_pattern_size[i].height);
-			}
-			for (uint8 i = 0; i < descriptor->NumCompressionPatterns(); i++) {
-				printf("compression%d: %d\n", i,
-					descriptor->CompressionPatterns()[i]);
-			}
+			_ParseStillImageFrame(descriptor);
 			break;
 		}
 		case USB_VIDEO_VS_FORMAT_MJPEG:
@@ -1062,7 +1126,7 @@ UVCCamDevice::_ParseVideoControl(const usbvc_class_descriptor* _descriptor,
 				descriptor->associatedTerminal);
 			printf("\tDesc: %s\n",
 				fDevice->DecodeStringDescriptor(descriptor->terminal));
-			if (descriptor->terminalType == 0x201) {
+			if (descriptor->terminalType == USB_VIDEO_CAMERA_IN) {
 				const usb_video_camera_terminal_descriptor* desc
 					= (const usb_video_camera_terminal_descriptor*)descriptor;
 				printf("\tObjectiveFocalLength Min/Max %d/%d\n",
@@ -1070,6 +1134,45 @@ UVCCamDevice::_ParseVideoControl(const usbvc_class_descriptor* _descriptor,
 					desc->objective_focal_length_max);
 				printf("\tOcularFocalLength %d\n", desc->ocular_focal_length);
 				printf("\tControlSize %d\n", desc->control_size);
+
+				// Store Camera Terminal info for CT controls
+				fCameraTerminalID = desc->terminal_id;
+				fHasCameraTerminal = true;
+
+				// Build controls bitmap from descriptor
+				fCameraTerminalControls = 0;
+				if (desc->control_size >= 1) {
+					fCameraTerminalControls |= desc->_controls._control_a.scanning_mode ? (1 << 0) : 0;
+					fCameraTerminalControls |= desc->_controls._control_a.auto_exposure_mode ? (1 << 1) : 0;
+					fCameraTerminalControls |= desc->_controls._control_a.auto_exposure_priority ? (1 << 2) : 0;
+					fCameraTerminalControls |= desc->_controls._control_a.exposure_time_absolute ? (1 << 3) : 0;
+					fCameraTerminalControls |= desc->_controls._control_a.exposure_time_relative ? (1 << 4) : 0;
+					fCameraTerminalControls |= desc->_controls._control_a.focus_absolute ? (1 << 5) : 0;
+					fCameraTerminalControls |= desc->_controls._control_a.focus_relative ? (1 << 6) : 0;
+					fCameraTerminalControls |= desc->_controls._control_a.iris_absolute ? (1 << 7) : 0;
+					fCameraTerminalControls |= desc->_controls._control_a.iris_relative ? (1 << 8) : 0;
+					fCameraTerminalControls |= desc->_controls._control_a.zoom_absolute ? (1 << 9) : 0;
+					fCameraTerminalControls |= desc->_controls._control_a.zoom_relative ? (1 << 10) : 0;
+					fCameraTerminalControls |= desc->_controls._control_a.pan_tilt_absolute ? (1 << 11) : 0;
+					fCameraTerminalControls |= desc->_controls._control_a.pan_tilt_relative ? (1 << 12) : 0;
+					fCameraTerminalControls |= desc->_controls._control_a.roll_absolute ? (1 << 13) : 0;
+					fCameraTerminalControls |= desc->_controls._control_a.roll_relative ? (1 << 14) : 0;
+				}
+				if (desc->control_size >= 3) {
+					// Note: _contorl_b is a typo in Haiku's USB_video.h header
+					fCameraTerminalControls |= desc->_controls._contorl_b.focus_auto ? (1 << 17) : 0;
+					fCameraTerminalControls |= desc->_controls._contorl_b.privacy ? (1 << 18) : 0;
+				}
+
+				// Log supported CT controls
+				printf("\tCamera Terminal Controls: 0x%08x\n", (unsigned)fCameraTerminalControls);
+				if (fCameraTerminalControls & (1 << 1)) printf("\t  Auto Exposure Mode\n");
+				if (fCameraTerminalControls & (1 << 3)) printf("\t  Exposure Time Absolute\n");
+				if (fCameraTerminalControls & (1 << 5)) printf("\t  Focus Absolute\n");
+				if (fCameraTerminalControls & (1 << 17)) printf("\t  Focus Auto\n");
+				if (fCameraTerminalControls & (1 << 9)) printf("\t  Zoom Absolute\n");
+				if (fCameraTerminalControls & (1 << 11)) printf("\t  Pan/Tilt Absolute\n");
+				if (fCameraTerminalControls & (1 << 18)) printf("\t  Privacy\n");
 			}
 			break;
 		}
@@ -1169,16 +1272,7 @@ UVCCamDevice::_ParseVideoControl(const usbvc_class_descriptor* _descriptor,
 		{
 			const usb_video_extension_unit_descriptor* descriptor
 				= (const usb_video_extension_unit_descriptor*)_descriptor;
-			printf("VC_EXTENSION_UNIT:\tid=%d, guid=", descriptor->unit_id);
-			print_guid(descriptor->guid_extension_code);
-			printf("\n\t#ctrls=%d, #pins=%d\n", descriptor->num_controls,
-				descriptor->num_input_pins);
-			printf("\t");
-			for (uint8 i = 0; i < descriptor->num_input_pins; i++)
-				printf("%d ", descriptor->source_id[i]);
-			printf("\n");
-			printf("\tDesc: %s\n",
-				fDevice->DecodeStringDescriptor(descriptor->Extension()));
+			_ParseExtensionUnit(descriptor);
 			break;
 		}
 		default:
@@ -1574,24 +1668,124 @@ UVCCamDevice::_ProbeCommitFormat()
 				uint32 bytesPerSecond = maxBandwidth * 8000;
 				float maxFps = (float)bytesPerSecond / frameSize;
 
-				// Calculate frame_interval for max achievable FPS
-				// frame_interval is in 100ns units: 10000000 / fps
-				// Use slightly lower fps for safety margin (90%)
-				float safeFps = maxFps * 0.9f;
-				if (safeFps < 1.0f) safeFps = 1.0f;  // Minimum 1 fps
+				syslog(LOG_INFO, "UVCCamDevice: YUY2 bandwidth check: max=%u bytes/uframe (%.1f MB/s), frameSize=%u, maxFps=%.1f\n",
+					maxBandwidth, bytesPerSecond / 1048576.0f, frameSize, maxFps);
 
-				uint32 adaptedInterval = (uint32)(10000000.0f / safeFps);
+				// Check if frame descriptor has discrete intervals
+				if (frameDesc->frame_interval_type > 0) {
+					// DISCRETE INTERVALS: Select a supported interval that fits bandwidth
+					syslog(LOG_INFO, "UVCCamDevice: Frame has %d discrete intervals\n",
+						frameDesc->frame_interval_type);
 
-				// If adapted interval is larger (slower fps), use it as bandwidth limit
-				if (adaptedInterval > frameInterval) {
-					syslog(LOG_INFO, "UVCCamDevice: YUY2 bandwidth check: max=%u bytes/uframe, frameSize=%u\n",
-						maxBandwidth, frameSize);
-					syslog(LOG_INFO, "UVCCamDevice: Bandwidth limit: adapting FPS %.1f -> %.1f (interval %u -> %u)\n",
-						10000000.0f / frameInterval, safeFps, frameInterval, adaptedInterval);
-					frameInterval = adaptedInterval;
+					uint32 selectedInterval = 0;
+					float selectedFps = 0;
+					uint32 slowestValidInterval = 0;
+
+					// Iterate through discrete intervals (typically sorted fastest to slowest)
+					// Find the fastest interval that fits within available bandwidth
+					for (int i = 0; i < frameDesc->frame_interval_type; i++) {
+						uint32 interval = frameDesc->discrete_frame_intervals[i];
+
+						// Validate interval: must be > 0 and reasonable (1-60 fps range)
+						// Valid range: 166666 (60fps) to 10000000 (1fps)
+						if (interval < 166666 || interval > 10000000) {
+							syslog(LOG_DEBUG, "UVCCamDevice: Skipping invalid interval[%d]=%u\n",
+								i, interval);
+							continue;
+						}
+
+						float fps = 10000000.0f / interval;
+						uint32 requiredBandwidth = (uint32)(frameSize * fps);
+
+						syslog(LOG_INFO, "UVCCamDevice: Checking interval %u (%.1f fps): requires %u bytes/sec, available %u\n",
+							interval, fps, requiredBandwidth, bytesPerSecond);
+
+						// Track slowest valid interval for fallback
+						if (interval > slowestValidInterval)
+							slowestValidInterval = interval;
+
+						// Select this interval if it fits within bandwidth
+						// Use 90% safety margin
+						if (requiredBandwidth <= (uint32)(bytesPerSecond * 0.9f)) {
+							if (selectedInterval == 0 || interval < selectedInterval) {
+								// Prefer faster (smaller interval)
+								selectedInterval = interval;
+								selectedFps = fps;
+							}
+						}
+					}
+
+					// If no interval fits, try standard UVC intervals as fallback
+					// (in case descriptor storage lost some intervals)
+					if (selectedInterval == 0) {
+						// Standard UVC intervals: 10fps, 5fps, 2fps, 1fps
+						static const uint32 standardIntervals[] = {
+							1000000,   // 10 fps
+							2000000,   // 5 fps
+							5000000,   // 2 fps
+							10000000   // 1 fps
+						};
+
+						syslog(LOG_WARNING, "UVCCamDevice: No stored interval fits bandwidth, trying standard intervals\n");
+
+						for (int i = 0; i < 4; i++) {
+							uint32 interval = standardIntervals[i];
+							float fps = 10000000.0f / interval;
+							uint32 requiredBandwidth = (uint32)(frameSize * fps);
+
+							syslog(LOG_INFO, "UVCCamDevice: Trying standard interval %u (%.1f fps): requires %u, available %u\n",
+								interval, fps, requiredBandwidth, bytesPerSecond);
+
+							// Use 75% margin - USB isochronous needs headroom for overhead
+							if (requiredBandwidth <= (uint32)(bytesPerSecond * 0.75f)) {
+								selectedInterval = interval;
+								selectedFps = fps;
+								syslog(LOG_INFO, "UVCCamDevice: Selected standard fallback interval %u (%.1f fps)\n",
+									selectedInterval, selectedFps);
+								break;
+							}
+						}
+
+						// Ultimate fallback: 1 fps
+						if (selectedInterval == 0) {
+							selectedInterval = 10000000;
+							selectedFps = 1.0f;
+							syslog(LOG_WARNING, "UVCCamDevice: Using ultimate fallback: 1 fps\n");
+						}
+					} else {
+						syslog(LOG_INFO, "UVCCamDevice: Selected discrete interval %u (%.1f fps) from %d available\n",
+							selectedInterval, selectedFps, frameDesc->frame_interval_type);
+					}
+
+					// Use selected interval if it's slower than what was originally requested
+					if (selectedInterval > frameInterval) {
+						syslog(LOG_INFO, "UVCCamDevice: Bandwidth limit: adapting FPS %.1f -> %.1f (interval %u -> %u)\n",
+							10000000.0f / frameInterval, selectedFps, frameInterval, selectedInterval);
+						frameInterval = selectedInterval;
+					}
 				} else {
-					syslog(LOG_INFO, "UVCCamDevice: YUY2 bandwidth OK: max=%u bytes/uframe (%.1f MB/s), requesting %.1f fps\n",
-						maxBandwidth, bytesPerSecond / 1048576.0f, 10000000.0f / frameInterval);
+					// CONTINUOUS INTERVALS: Calculate best interval within range
+					float safeFps = maxFps * 0.9f;
+					if (safeFps < 1.0f) safeFps = 1.0f;
+
+					uint32 adaptedInterval = (uint32)(10000000.0f / safeFps);
+
+					// Clamp to continuous range if available
+					if (frameDesc->continuous.min_frame_interval > 0) {
+						if (adaptedInterval < frameDesc->continuous.min_frame_interval)
+							adaptedInterval = frameDesc->continuous.min_frame_interval;
+						if (adaptedInterval > frameDesc->continuous.max_frame_interval)
+							adaptedInterval = frameDesc->continuous.max_frame_interval;
+					}
+
+					if (adaptedInterval > frameInterval) {
+						syslog(LOG_INFO, "UVCCamDevice: Bandwidth limit (continuous): adapting FPS %.1f -> %.1f (interval %u -> %u)\n",
+							10000000.0f / frameInterval, 10000000.0f / adaptedInterval, frameInterval, adaptedInterval);
+						frameInterval = adaptedInterval;
+					} else {
+						syslog(LOG_INFO, "UVCCamDevice: YUY2 bandwidth OK: requesting %.1f fps\n",
+							10000000.0f / frameInterval);
+					}
 				}
 			}
 		}
@@ -1606,6 +1800,44 @@ UVCCamDevice::_ProbeCommitFormat()
 		request.frame_index = fUncompressedFrameIndex;
 	}
 
+	// Validate frame_index and log the actual resolution being requested
+	// This helps debug synchronization issues between Producer and driver
+	{
+		BList* frameList = fIsMJPEG ? &fMJPEGFrames : &fUncompressedFrames;
+		bool found = false;
+		for (int32 i = 0; i < frameList->CountItems(); i++) {
+			const usb_video_frame_descriptor* desc =
+				(const usb_video_frame_descriptor*)frameList->ItemAt(i);
+			if (desc && desc->frame_index == request.frame_index) {
+				syslog(LOG_INFO, "UVC Probe: frame_index=%d corresponds to %ux%u\n",
+					request.frame_index, desc->width, desc->height);
+				found = true;
+				break;
+			}
+		}
+		if (!found) {
+			syslog(LOG_WARNING, "UVC Probe: frame_index=%d not found in frame list!\n",
+				request.frame_index);
+			// Try to fix by using the first available frame
+			if (frameList->CountItems() > 0) {
+				const usb_video_frame_descriptor* desc =
+					(const usb_video_frame_descriptor*)frameList->ItemAt(0);
+				if (desc) {
+					syslog(LOG_WARNING, "UVC Probe: Falling back to frame_index=%d (%ux%u)\n",
+						desc->frame_index, desc->width, desc->height);
+					request.frame_index = desc->frame_index;
+					if (fIsMJPEG)
+						fMJPEGFrameIndex = desc->frame_index;
+					else
+						fUncompressedFrameIndex = desc->frame_index;
+				}
+			}
+		}
+	}
+
+	// Determine initial probe/commit size based on UVC version
+	// UVC 1.0: 26 bytes, UVC 1.1+: 34 bytes, UVC 1.5: 48 bytes
+	// Some cameras don't follow the spec, so we try multiple sizes if needed
 	size_t length = fHeaderDescriptor->version > 0x100 ? 34 : 26;
 
 	// Log what we're requesting
@@ -1614,14 +1846,62 @@ UVCCamDevice::_ProbeCommitFormat()
 	syslog(LOG_INFO, "UVC Format indices: MJPEG=%d, Uncompressed=%d\n",
 		fMJPEGFormatIndex, fUncompressedFormatIndex);
 
-	// SET_CUR Probe
-	size_t actualLength = fDevice->ControlTransfer(
+	// Try SET_CUR Probe with fallback to different sizes
+	// Some cameras use non-standard sizes or don't respond to all sizes
+	static const size_t kProbeSizes[] = { 34, 26, 48, 22 };
+	static const int kNumProbeSizes = sizeof(kProbeSizes) / sizeof(kProbeSizes[0]);
+
+	size_t actualLength = 0;
+	bool probeSuccess = false;
+
+	// First try the expected size based on UVC version
+	syslog(LOG_INFO, "UVC Probe: trying size %zu (UVC version 0x%04x)\n",
+		length, fHeaderDescriptor->version);
+
+	actualLength = fDevice->ControlTransfer(
 		USB_REQTYPE_CLASS | USB_REQTYPE_INTERFACE_OUT, USB_VIDEO_RC_SET_CUR,
 		USB_VIDEO_VS_PROBE_CONTROL << 8, fStreamingIndex, length, &request);
-	if (actualLength != length) {
-		syslog(LOG_ERR, "UVC Probe SET_CUR failed: expected %zu, got %zu\n", length, actualLength);
+
+	if (actualLength == length) {
+		probeSuccess = true;
+		syslog(LOG_INFO, "UVC Probe SET_CUR succeeded with size %zu\n", length);
+	} else {
+		syslog(LOG_WARNING, "UVC Probe SET_CUR failed with size %zu (got %zd), trying alternatives...\n",
+			length, (ssize_t)actualLength);
+
+		// Try other common sizes
+		for (int i = 0; i < kNumProbeSizes && !probeSuccess; i++) {
+			size_t trySize = kProbeSizes[i];
+			if (trySize == length)
+				continue;  // Already tried this one
+
+			syslog(LOG_INFO, "UVC Probe: trying alternative size %zu\n", trySize);
+
+			// Small delay between attempts
+			snooze(10000);  // 10ms
+
+			actualLength = fDevice->ControlTransfer(
+				USB_REQTYPE_CLASS | USB_REQTYPE_INTERFACE_OUT, USB_VIDEO_RC_SET_CUR,
+				USB_VIDEO_VS_PROBE_CONTROL << 8, fStreamingIndex, trySize, &request);
+
+			if (actualLength == trySize) {
+				length = trySize;  // Use this size for subsequent operations
+				probeSuccess = true;
+				syslog(LOG_INFO, "UVC Probe SET_CUR succeeded with alternative size %zu\n", length);
+				break;
+			}
+		}
+	}
+
+	if (!probeSuccess) {
+		syslog(LOG_ERR, "UVC Probe SET_CUR failed with all sizes (26, 34, 48, 22)\n");
+		syslog(LOG_ERR, "  Last attempt returned: %zd (expected: %zu)\n",
+			(ssize_t)actualLength, length);
 		return B_ERROR;
 	}
+
+	// Store the working probe size for future use
+	fProbeCommitSize = length;
 
 	// GET_CUR Probe (get negotiated values)
 	usb_video_probe_and_commit_controls response;
@@ -1751,10 +2031,37 @@ UVCCamDevice::_SelectBestAlternate()
 	syslog(LOG_INFO, "UVCCamDevice: Scanning %u alternate settings for bandwidth\n",
 		(unsigned)streaming->CountAlternates());
 
-	// Select LARGEST bandwidth alternate for best quality
+	/* XHCI HIGH-BANDWIDTH BUG WORKAROUND:
+	 *
+	 * Haiku's XHCI driver has a bug in bandwidth allocation for high-bandwidth
+	 * isochronous endpoints (mult > 1). The driver fails with:
+	 *   "unsuccessful command 12, error Bandwidth (8)"
+	 *   "transfer error on slot X endpoint Y: Endpoint not enabled"
+	 *
+	 * High-bandwidth endpoints use mult=2 (2 transactions/microframe) or
+	 * mult=3 (3 transactions/microframe), allowing up to 3072 bytes/microframe.
+	 * wMaxPacketSize encodes this: bits 10:0 = base size, bits 12:11 = additional
+	 * transactions (0=1 trans, 1=2 trans, 2=3 trans).
+	 *
+	 * STRATEGY: Two-pass selection
+	 * Pass 1: Only consider endpoints with mult=1 (single transaction, max 1024 bytes)
+	 * Pass 2: If no suitable endpoint found and user explicitly enables high-bandwidth,
+	 *         allow mult>1 endpoints as fallback
+	 *
+	 * This ensures the driver works reliably on Haiku while still allowing
+	 * advanced users to enable high-bandwidth if their hardware supports it.
+	 */
+
+	bool allowHighBandwidth = _ShouldUseHighBandwidth();
+
+	// Select LARGEST bandwidth alternate with mult=1 for best quality
 	uint32 bestBandwidth = 0;
 	uint32 alternateIndex = 0;
 	uint32 endpointIndex = 0;
+	bool selectedHighBandwidth = false;
+
+	// PASS 1: Only consider single-transaction endpoints (mult=1)
+	syslog(LOG_INFO, "UVCCamDevice: Pass 1 - scanning for single-transaction endpoints (mult=1)\n");
 
 	for (uint32 i = 0; i < streaming->CountAlternates(); i++) {
 		const BUSBInterface* alternate = streaming->AlternateAt(i);
@@ -1769,54 +2076,75 @@ UVCCamDevice::_SelectBestAlternate()
 			uint32 rawMaxPacketSize = endpoint->MaxPacketSize();
 			uint32 basePacketSize = rawMaxPacketSize & 0x7FF;
 			uint32 transactions = ((rawMaxPacketSize >> 11) & 0x3) + 1;
-			uint32 maxPacketSize = basePacketSize * transactions;
+			uint32 totalBandwidth = basePacketSize * transactions;
 
 			syslog(LOG_INFO, "UVCCamDevice: Alt %u EP %u: raw=0x%04x base=%u trans=%u total=%u bytes\n",
-				i, j, rawMaxPacketSize, basePacketSize, transactions, maxPacketSize);
+				i, j, rawMaxPacketSize, basePacketSize, transactions, totalBandwidth);
 
-			/* HIGH-BANDWIDTH ENDPOINT HANDLING:
-			 *
-			 * USB 2.0 high-bandwidth isochronous endpoints (mult=2 or mult=3) allow
-			 * up to 3072 bytes per microframe. Modern XHCI controllers handle these
-			 * correctly, but older EHCI controllers have bugs.
-			 *
-			 * Strategy: Auto-detect via _ShouldUseHighBandwidth() which:
-			 * 1. Checks environment variable overrides
-			 * 2. Uses cached result from previous attempts
-			 * 3. Defaults to trying high-bandwidth (most systems are XHCI)
-			 *
-			 * If high-bandwidth fails, _OnHighBandwidthFailure() will disable it
-			 * and the stream will restart with low-bandwidth mode.
-			 */
-			bool allowHighBandwidth = _ShouldUseHighBandwidth();
-
-			if (transactions > 1 && !allowHighBandwidth) {
-				syslog(LOG_INFO, "UVCCamDevice: Skipping high-bandwidth endpoint (mult=%u) - %s\n",
-					transactions,
-					(fHighBandwidthTested && !fHighBandwidthWorks) ? "EHCI detected" : "disabled");
-				continue;  // Skip this endpoint
-			}
-
+			// Pass 1: Skip high-bandwidth endpoints (mult > 1)
 			if (transactions > 1) {
-				syslog(LOG_INFO, "UVCCamDevice: Trying high-bandwidth endpoint (mult=%u, %u bytes/uframe)\n",
-					transactions, maxPacketSize);
+				syslog(LOG_INFO, "UVCCamDevice: Pass 1: Skipping high-bandwidth endpoint (mult=%u)\n",
+					transactions);
+				continue;
 			}
 
-			// Use maxPacketSize (includes mult factor) for bandwidth comparison
-			// This ensures high-bandwidth endpoints are properly considered
-			uint32 effectiveBandwidth = (transactions > 1 && allowHighBandwidth) ? maxPacketSize : basePacketSize;
-
-			if (effectiveBandwidth > bestBandwidth) {
-				bestBandwidth = effectiveBandwidth;
+			// Use base packet size for single-transaction endpoints
+			if (basePacketSize > bestBandwidth) {
+				bestBandwidth = basePacketSize;
 				endpointIndex = j;
 				alternateIndex = i;
 			}
 		}
 	}
 
-	/* Log bandwidth selection result */
-	/* FIX BUG 9: Rimosso messaggio obsoleto - ora usiamo high-bandwidth */
+	// Check if we found a suitable single-transaction endpoint
+	if (bestBandwidth > 0) {
+		syslog(LOG_INFO, "UVCCamDevice: Pass 1: Found single-transaction endpoint with %u bytes/uframe\n",
+			bestBandwidth);
+	}
 
+	// PASS 2: If no single-transaction endpoint found OR if user forces high-bandwidth
+	// and we found a higher bandwidth option, use high-bandwidth endpoint
+	if (bestBandwidth == 0 && allowHighBandwidth) {
+		syslog(LOG_WARNING, "UVCCamDevice: Pass 2 - no single-transaction endpoint found, "
+			"trying high-bandwidth (may fail on Haiku XHCI)\n");
+
+		for (uint32 i = 0; i < streaming->CountAlternates(); i++) {
+			const BUSBInterface* alternate = streaming->AlternateAt(i);
+
+			for (uint32 j = 0; j < alternate->CountEndpoints(); j++) {
+				const BUSBEndpoint* endpoint = alternate->EndpointAt(j);
+
+				if (!endpoint->IsIsochronous() || !endpoint->IsInput())
+					continue;
+
+				uint32 rawMaxPacketSize = endpoint->MaxPacketSize();
+				uint32 basePacketSize = rawMaxPacketSize & 0x7FF;
+				uint32 transactions = ((rawMaxPacketSize >> 11) & 0x3) + 1;
+				uint32 totalBandwidth = basePacketSize * transactions;
+
+				if (totalBandwidth > bestBandwidth) {
+					bestBandwidth = totalBandwidth;
+					endpointIndex = j;
+					alternateIndex = i;
+					selectedHighBandwidth = (transactions > 1);
+				}
+			}
+		}
+
+		if (selectedHighBandwidth) {
+			syslog(LOG_WARNING, "UVCCamDevice: Pass 2: Using high-bandwidth endpoint (%u bytes/uframe)\n",
+				bestBandwidth);
+			syslog(LOG_WARNING, "UVCCamDevice: WARNING: This may cause 'Bandwidth error' on Haiku XHCI!\n");
+			syslog(LOG_WARNING, "UVCCamDevice: If streaming fails, set WEBCAM_DISABLE_HIGH_BANDWIDTH=1\n");
+		}
+	} else if (bestBandwidth == 0) {
+		syslog(LOG_ERR, "UVCCamDevice: No suitable isochronous endpoint found\n");
+		syslog(LOG_ERR, "UVCCamDevice: Try setting WEBCAM_FORCE_HIGH_BANDWIDTH=1 to enable high-bandwidth\n");
+		return B_ERROR;
+	}
+
+	/* Bandwidth selection result */
 	if (bestBandwidth == 0)
 		return B_ERROR;
 
@@ -2855,6 +3183,9 @@ UVCCamDevice::AddParameters(BParameterGroup* group, int32& index)
 			}
 		}
 	}
+
+	/* Add Camera Terminal controls (Exposure, Focus, Zoom, etc.) */
+	_AddCameraTerminalControls(group, index);
 }
 
 
@@ -2984,6 +3315,62 @@ UVCCamDevice::GetParameterValue(int32 id, bigtime_t* last_change, void* value,
 			return B_OK;
 
 	}
+
+	/* Handle Camera Terminal controls by dynamic ID */
+	if (id == fAutoExposureModeID && fAutoExposureModeID >= 0) {
+		*size = sizeof(int);
+		currValueInt = (int*)value;
+		*currValueInt = (int)fAutoExposureMode;
+		*last_change = fLastParameterChanges;
+		return B_OK;
+	}
+	if (id == fExposureTimeID && fExposureTimeID >= 0) {
+		*size = sizeof(float);
+		currValue = (float*)value;
+		// Convert from 100μs units to milliseconds
+		*currValue = fExposureTimeAbs / 10.0f;
+		*last_change = fLastParameterChanges;
+		return B_OK;
+	}
+	if (id == fAutoFocusID && fAutoFocusID >= 0) {
+		*size = sizeof(int);
+		currValueInt = (int*)value;
+		*currValueInt = fAutoFocus ? 1 : 0;
+		*last_change = fLastParameterChanges;
+		return B_OK;
+	}
+	if (id == fFocusAbsoluteID && fFocusAbsoluteID >= 0) {
+		*size = sizeof(float);
+		currValue = (float*)value;
+		*currValue = (float)fFocusAbsolute;
+		*last_change = fLastParameterChanges;
+		return B_OK;
+	}
+	if (id == fZoomAbsoluteID && fZoomAbsoluteID >= 0) {
+		*size = sizeof(float);
+		currValue = (float*)value;
+		// Convert from internal units (100 = 1x) to display (1.0 = 1x)
+		*currValue = fZoomAbsolute / 100.0f;
+		*last_change = fLastParameterChanges;
+		return B_OK;
+	}
+	if (id == fPanTiltID && fPanTiltID >= 0) {
+		// Pan control - convert from arc-seconds to degrees
+		*size = sizeof(float);
+		currValue = (float*)value;
+		*currValue = fPanAbsolute / 3600.0f;
+		*last_change = fLastParameterChanges;
+		return B_OK;
+	}
+	if (id == (fPanTiltID + 1) && fPanTiltID >= 0) {
+		// Tilt control - convert from arc-seconds to degrees
+		*size = sizeof(float);
+		currValue = (float*)value;
+		*currValue = fTiltAbsolute / 3600.0f;
+		*last_change = fLastParameterChanges;
+		return B_OK;
+	}
+
 	return B_BAD_VALUE;
 }
 
@@ -3252,6 +3639,113 @@ UVCCamDevice::SetParameterValue(int32 id, bigtime_t when, const void* value,
 		}
 
 	}
+
+	/* Handle Camera Terminal controls by dynamic ID */
+	if (id == fAutoExposureModeID && fAutoExposureModeID >= 0) {
+		if (!value || (size != sizeof(int)))
+			return B_BAD_VALUE;
+		uint8 mode = (uint8)*((int*)value);
+		if (mode == 1 || mode == 2 || mode == 4 || mode == 8) {
+			status_t err = _SetCTControlValue(USB_VIDEO_CT_AE_MODE_CONTROL, &mode, 1);
+			if (err == B_OK) {
+				fAutoExposureMode = mode;
+				fLastParameterChanges = when;
+				printf("UVCCamDevice: Auto Exposure Mode set to %d\n", mode);
+			}
+			return err;
+		}
+		return B_BAD_VALUE;
+	}
+	if (id == fExposureTimeID && fExposureTimeID >= 0) {
+		if (!value || (size != sizeof(float)))
+			return B_BAD_VALUE;
+		float msValue = *((float*)value);
+		// Convert from milliseconds to 100μs units
+		uint32 expTime = (uint32)(msValue * 10.0f);
+		status_t err = _SetCTControlValue(USB_VIDEO_CT_EXPOSURE_TIME_ABSOLUTE_CONTROL,
+			&expTime, 4);
+		if (err == B_OK) {
+			fExposureTimeAbs = expTime;
+			fLastParameterChanges = when;
+			printf("UVCCamDevice: Exposure Time set to %.1f ms (%u units)\n",
+				msValue, expTime);
+		}
+		return err;
+	}
+	if (id == fAutoFocusID && fAutoFocusID >= 0) {
+		if (!value || (size != sizeof(int)))
+			return B_BAD_VALUE;
+		uint8 autoFocus = (*((int*)value) != 0) ? 1 : 0;
+		status_t err = _SetCTControlValue(USB_VIDEO_CT_FOCUS_AUTO_CONTROL, &autoFocus, 1);
+		if (err == B_OK) {
+			fAutoFocus = (autoFocus != 0);
+			fLastParameterChanges = when;
+			printf("UVCCamDevice: Auto Focus set to %s\n", fAutoFocus ? "On" : "Off");
+		}
+		return err;
+	}
+	if (id == fFocusAbsoluteID && fFocusAbsoluteID >= 0) {
+		if (!value || (size != sizeof(float)))
+			return B_BAD_VALUE;
+		uint16 focusVal = (uint16)*((float*)value);
+		status_t err = _SetCTControlValue(USB_VIDEO_CT_FOCUS_ABSOLUTE_CONTROL, &focusVal, 2);
+		if (err == B_OK) {
+			fFocusAbsolute = focusVal;
+			fLastParameterChanges = when;
+			printf("UVCCamDevice: Focus set to %u\n", focusVal);
+		}
+		return err;
+	}
+	if (id == fZoomAbsoluteID && fZoomAbsoluteID >= 0) {
+		if (!value || (size != sizeof(float)))
+			return B_BAD_VALUE;
+		// Convert from display (1.0 = 1x) to internal units (100 = 1x)
+		uint16 zoomVal = (uint16)(*((float*)value) * 100.0f);
+		status_t err = _SetCTControlValue(USB_VIDEO_CT_ZOOM_ABSOLUTE_CONTROL, &zoomVal, 2);
+		if (err == B_OK) {
+			fZoomAbsolute = zoomVal;
+			fLastParameterChanges = when;
+			printf("UVCCamDevice: Zoom set to %.1fx (%u)\n", zoomVal / 100.0f, zoomVal);
+		}
+		return err;
+	}
+	if (id == fPanTiltID && fPanTiltID >= 0) {
+		// Pan control - convert from degrees to arc-seconds and write compound control
+		if (!value || (size != sizeof(float)))
+			return B_BAD_VALUE;
+		struct {
+			int32 pan;
+			int32 tilt;
+		} panTilt;
+		panTilt.pan = (int32)(*((float*)value) * 3600.0f);
+		panTilt.tilt = fTiltAbsolute;  // Keep current tilt
+		status_t err = _SetCTControlValue(USB_VIDEO_CT_PANTILT_ABSOLUTE_CONTROL, &panTilt, 8);
+		if (err == B_OK) {
+			fPanAbsolute = panTilt.pan;
+			fLastParameterChanges = when;
+			printf("UVCCamDevice: Pan set to %.1f°\n", panTilt.pan / 3600.0f);
+		}
+		return err;
+	}
+	if (id == (fPanTiltID + 1) && fPanTiltID >= 0) {
+		// Tilt control - convert from degrees to arc-seconds and write compound control
+		if (!value || (size != sizeof(float)))
+			return B_BAD_VALUE;
+		struct {
+			int32 pan;
+			int32 tilt;
+		} panTilt;
+		panTilt.pan = fPanAbsolute;  // Keep current pan
+		panTilt.tilt = (int32)(*((float*)value) * 3600.0f);
+		status_t err = _SetCTControlValue(USB_VIDEO_CT_PANTILT_ABSOLUTE_CONTROL, &panTilt, 8);
+		if (err == B_OK) {
+			fTiltAbsolute = panTilt.tilt;
+			fLastParameterChanges = when;
+			printf("UVCCamDevice: Tilt set to %.1f°\n", panTilt.tilt / 3600.0f);
+		}
+		return err;
+	}
+
 	return B_BAD_VALUE;
 }
 
@@ -3381,16 +3875,36 @@ UVCCamDevice::FillFrameBuffer(BBuffer* buffer, bigtime_t* stamp)
 			size_t avgSize = fMJPEGFrameSizeSum / fMJPEGFrameSizeCount;
 
 			// If average frame size is less than 30% of expected minimum,
-			// bandwidth is severely insufficient - trigger fallback
+			// bandwidth is severely insufficient - trigger fallback via worker thread
 			if (avgSize < fExpectedMJPEGMinSize * 30 / 100) {
 				syslog(LOG_WARNING, "UVCCamDevice: MJPEG frames too small! avg=%zu, expected>%zu\n",
 					avgSize, fExpectedMJPEGMinSize);
-				syslog(LOG_WARNING, "UVCCamDevice: Bandwidth insufficient, triggering resolution fallback\n");
 
-				// Reset counters and trigger fallback
+				// Use RequestResolutionChange() for safe resolution change
+				// The actual change happens in ReconfigThread, not here
+				int32 maxLevel = _GetMaxResolutionLevel();
+				if (fCurrentResolutionLevel < maxLevel && !HasPendingReconfigRequest()) {
+					int32 targetLevel = fCurrentResolutionLevel + 1;
+					uint32 newWidth, newHeight;
+					_GetResolutionAtLevel(targetLevel, &newWidth, &newHeight);
+
+					syslog(LOG_WARNING, "UVCCamDevice: Bandwidth insufficient, "
+						"requesting fallback to %ux%u via worker thread\n",
+						newWidth, newHeight);
+
+					RequestResolutionChange(newWidth, newHeight);
+
+					fCurrentResolutionLevel = targetLevel;
+					fFallbackActive = true;
+					fLastFallbackTime = system_time();
+				} else if (fCurrentResolutionLevel >= maxLevel) {
+					syslog(LOG_WARNING, "UVCCamDevice: Bandwidth insufficient, "
+						"but already at minimum resolution\n");
+				}
+
+				// Reset counters
 				fMJPEGFrameSizeSum = 0;
 				fMJPEGFrameSizeCount = 0;
-				ReduceResolution();
 			} else {
 				// Reset counters for next window
 				fMJPEGFrameSizeSum = 0;
@@ -3471,7 +3985,51 @@ UVCCamDevice::FillFrameBuffer(BBuffer* buffer, bigtime_t* stamp)
 			if (validation == FRAME_VALID) {
 				_CacheValidFrame((const uint8*)f->Buffer(), f->BufferLength(), w, h);
 			}
+		} else if (fIsNV12) {
+			// NV12 (YUV 4:2:0 planar) conversion
+			size_t expectedNV12 = (size_t)w * h * 3 / 2;  // Y plane + UV plane (half size)
+			size_t actualNV12 = f->BufferLength();
+
+			if (actualNV12 < expectedNV12) {
+				static int32 sIncompleteNV12 = 0;
+				if (++sIncompleteNV12 <= 20 || (sIncompleteNV12 % 100) == 0)
+					syslog(LOG_WARNING, "FillFrameBuffer: Incomplete NV12 #%d: %zu/%zu bytes (%.1f%%)\n",
+						(int)sIncompleteNV12, actualNV12, expectedNV12,
+						100.0f * actualNV12 / expectedNV12);
+			}
+
+			// DEBUG: Log first bytes of NV12 frame
+			static int32 sNV12Debug = 0;
+			if (++sNV12Debug <= 5) {
+				const uint8* nv12Data = (const uint8*)f->Buffer();
+				syslog(LOG_INFO, "NV12 frame #%d: size=%zu expected=%zu w=%d h=%d\n",
+					(int)sNV12Debug, actualNV12, expectedNV12, (int)w, (int)h);
+				syslog(LOG_INFO, "NV12 Y plane first 16 bytes: %02x %02x %02x %02x %02x %02x %02x %02x "
+					"%02x %02x %02x %02x %02x %02x %02x %02x\n",
+					nv12Data[0], nv12Data[1], nv12Data[2], nv12Data[3],
+					nv12Data[4], nv12Data[5], nv12Data[6], nv12Data[7],
+					nv12Data[8], nv12Data[9], nv12Data[10], nv12Data[11],
+					nv12Data[12], nv12Data[13], nv12Data[14], nv12Data[15]);
+				// Check UV plane start
+				size_t uvOffset = (size_t)w * h;
+				if (actualNV12 > uvOffset + 8) {
+					syslog(LOG_INFO, "NV12 UV plane (offset %zu): %02x %02x %02x %02x %02x %02x %02x %02x\n",
+						uvOffset, nv12Data[uvOffset], nv12Data[uvOffset+1],
+						nv12Data[uvOffset+2], nv12Data[uvOffset+3],
+						nv12Data[uvOffset+4], nv12Data[uvOffset+5],
+						nv12Data[uvOffset+6], nv12Data[uvOffset+7]);
+				}
+			}
+
+			_ConvertNV12toRGB32(dst,
+				(unsigned char*)f->Buffer(), actualNV12, w, h);
+
+			// Cache valid frames
+			if (validation == FRAME_VALID) {
+				_CacheValidFrame((const uint8*)f->Buffer(), f->BufferLength(), w, h);
+			}
 		} else {
+			// YUY2 (YUV 4:2:2 packed) - default uncompressed format
 			// Check for incomplete YUY2 data
 			size_t expectedYUY2 = (size_t)w * h * 2;
 			size_t actualYUY2 = f->BufferLength();
@@ -3563,8 +4121,36 @@ UVCCamDevice::_ConvertYUY2toRGB32(unsigned char* dst, unsigned char* src,
 	const int32* vRTable = gYuvRgbTables.v_r_table;
 	const int32* vGTable = gYuvRgbTables.v_g_table;
 
-	size_t srcStride = (size_t)width * 2;  // YUY2: 2 bytes per pixel
+	size_t expectedSize = (size_t)width * height * 2;
+	size_t srcStride = (size_t)width * 2;  // YUY2: 2 bytes per pixel (default)
 	size_t dstStride = (size_t)width * 4;  // RGB32: 4 bytes per pixel
+
+	// STRIDE QUIRK: Microdia 0c45:6409 uses 352-pixel internal buffer width
+	// This causes 64-byte padding per row for resolutions < 352 width
+	// The camera sends correct total bytes but organized with wrong stride
+	if (fMicrodiaQuirk && width < 352) {
+		srcStride = 352 * 2;  // 704 bytes per row
+		static bool sQuirkApplied = false;
+		if (!sQuirkApplied) {
+			syslog(LOG_INFO, "YUY2: Applying Microdia stride quirk: %dx%d using stride %zu\n",
+				(int)width, (int)height, srcStride);
+			sQuirkApplied = true;
+		}
+	}
+	// STRIDE FIX: Detect row padding (some cameras add padding)
+	else if (srcSize > expectedSize && height > 1) {
+		size_t actualStride = srcSize / height;
+		// Only use if it's larger than expected and aligned reasonably
+		if (actualStride > srcStride && actualStride <= srcStride + 256) {
+			static bool sStrideWarned = false;
+			if (!sStrideWarned) {
+				syslog(LOG_WARNING, "YUY2: Detected row padding! expected stride=%zu, actual=%zu (padding=%zu bytes/row)\n",
+					srcStride, actualStride, actualStride - srcStride);
+				sStrideWarned = true;
+			}
+			srcStride = actualStride;
+		}
+	}
 
 	// Enhanced YUY2 diagnostics to detect byte order issues
 	static int32 sYUY2Diag = 0;
@@ -3686,6 +4272,83 @@ UVCCamDevice::_ConvertYUY2toRGB32(unsigned char* dst, unsigned char* src,
 			dstRow[6] = clamp255((yVal1 + vR + 128) >> 8);           // R
 			dstRow[7] = 255;                                          // A
 			dstRow += 8;
+		}
+	}
+}
+
+
+void
+UVCCamDevice::_ConvertNV12toRGB32(unsigned char* dst, const unsigned char* src,
+	size_t srcSize, int32 width, int32 height)
+{
+	// NV12 to RGB32 conversion using pre-computed lookup tables.
+	// NV12 format: Y plane (width*height bytes) followed by UV plane (width*height/2 bytes)
+	// UV plane is interleaved: U0 V0 U1 V1 ... (subsampled 2x2)
+
+	if (!dst || !src || width <= 0 || height <= 0)
+		return;
+
+	// Ensure lookup tables are initialized
+	if (!gYuvRgbTables.initialized) {
+		gYuvRgbTables.Initialize();
+	}
+
+	// Validate NV12 data size (Y plane + UV plane)
+	size_t expectedSize = (size_t)width * height * 3 / 2;
+	if (srcSize < expectedSize) {
+		syslog(LOG_WARNING, "NV12 conversion: srcSize %zu < expected %zu\n",
+			srcSize, expectedSize);
+		// Fill with black and return
+		memset(dst, 0, width * height * 4);
+		return;
+	}
+
+	// Cache table pointers for faster access in inner loop
+	const int32* yTable = gYuvRgbTables.y_table;
+	const int32* uBTable = gYuvRgbTables.u_b_table;
+	const int32* uGTable = gYuvRgbTables.u_g_table;
+	const int32* vRTable = gYuvRgbTables.v_r_table;
+	const int32* vGTable = gYuvRgbTables.v_g_table;
+
+	const unsigned char* yPlane = src;
+	const unsigned char* uvPlane = src + (width * height);
+	size_t dstStride = (size_t)width * 4;
+
+	// Process two rows at a time (they share the same UV values)
+	for (int32 row = 0; row < height; row += 2) {
+		unsigned char* dstRow0 = dst + row * dstStride;
+		unsigned char* dstRow1 = (row + 1 < height) ? dst + (row + 1) * dstStride : dstRow0;
+		const unsigned char* yRow0 = yPlane + row * width;
+		const unsigned char* yRow1 = (row + 1 < height) ? yPlane + (row + 1) * width : yRow0;
+		const unsigned char* uvRow = uvPlane + (row / 2) * width;
+
+		for (int32 col = 0; col < width; col += 2) {
+			// Get UV values (shared by 2x2 block)
+			uint8 u = uvRow[col];
+			uint8 v = uvRow[col + 1];
+
+			// Pre-compute UV contributions
+			int32 uB = uBTable[u];
+			int32 uG = uGTable[u];
+			int32 vR = vRTable[v];
+			int32 vG = vGTable[v];
+
+			// Process 2x2 block
+			for (int dy = 0; dy < 2 && (row + dy) < height; dy++) {
+				unsigned char* dstPixel = (dy == 0) ? dstRow0 + col * 4 : dstRow1 + col * 4;
+				const unsigned char* yPixel = (dy == 0) ? yRow0 + col : yRow1 + col;
+
+				for (int dx = 0; dx < 2 && (col + dx) < width; dx++) {
+					uint8 y = yPixel[dx];
+					int32 yVal = yTable[y];
+
+					// BGRA output
+					dstPixel[dx * 4 + 0] = clamp255((yVal + uB + 128) >> 8);      // B
+					dstPixel[dx * 4 + 1] = clamp255((yVal + uG + vG + 128) >> 8); // G
+					dstPixel[dx * 4 + 2] = clamp255((yVal + vR + 128) >> 8);      // R
+					dstPixel[dx * 4 + 3] = 255;                                    // A
+				}
+			}
 		}
 	}
 }
@@ -4122,6 +4785,445 @@ UVCCamDevice::_SetControlValue(uint16 selector, int16 value)
 
 
 // =============================================================================
+// Camera Terminal (CT) Control Methods
+// =============================================================================
+
+status_t
+UVCCamDevice::_GetCTControlValue(uint16 selector, void* value, size_t size)
+{
+	if (value == NULL || !fHasCameraTerminal || fCameraTerminalID == 0) {
+		return B_BAD_VALUE;
+	}
+
+	ssize_t result = fDevice->ControlTransfer(
+		USB_REQTYPE_INTERFACE_IN | USB_REQTYPE_CLASS,
+		USB_VIDEO_RC_GET_CUR,
+		selector << 8,
+		(fCameraTerminalID << 8) | fControlIndex,
+		size, value);
+
+	return (result >= 0) ? B_OK : (status_t)result;
+}
+
+
+status_t
+UVCCamDevice::_SetCTControlValue(uint16 selector, const void* value, size_t size)
+{
+	if (value == NULL || !fHasCameraTerminal || fCameraTerminalID == 0) {
+		return B_BAD_VALUE;
+	}
+
+	ssize_t result = fDevice->ControlTransfer(
+		USB_REQTYPE_INTERFACE_OUT | USB_REQTYPE_CLASS,
+		USB_VIDEO_RC_SET_CUR,
+		selector << 8,
+		(fCameraTerminalID << 8) | fControlIndex,
+		size, (void*)value);
+
+	return (result >= 0) ? B_OK : (status_t)result;
+}
+
+
+void
+UVCCamDevice::_AddCameraTerminalControls(BParameterGroup* group, int32& index)
+{
+	if (!fHasCameraTerminal || fCameraTerminalControls == 0)
+		return;
+
+	BParameterGroup* ctGroup = group->MakeGroup("Camera Controls");
+
+	// Auto Exposure Mode (selector 0x02)
+	if (fCameraTerminalControls & (1 << 1)) {
+		BDiscreteParameter* aeMode = ctGroup->MakeDiscreteParameter(
+			index++,
+			B_MEDIA_RAW_VIDEO,
+			"Auto Exposure",
+			B_ENABLE);
+		if (aeMode) {
+			aeMode->AddItem(1, "Manual");
+			aeMode->AddItem(2, "Auto");
+			aeMode->AddItem(4, "Shutter Priority");
+			aeMode->AddItem(8, "Aperture Priority");
+			fAutoExposureModeID = index - 1;
+
+			// Read current value from camera
+			uint8 mode = 2;
+			if (_GetCTControlValue(USB_VIDEO_CT_AE_MODE_CONTROL, &mode, 1) == B_OK) {
+				fAutoExposureMode = mode;
+			}
+		}
+	}
+
+	// Exposure Time Absolute (selector 0x04) - value in 100μs units
+	if (fCameraTerminalControls & (1 << 3)) {
+		BContinuousParameter* exposure = ctGroup->MakeContinuousParameter(
+			index++,
+			B_MEDIA_RAW_VIDEO,
+			"Exposure Time",
+			B_GAIN,
+			"ms",
+			0.1f,      // min: 0.01ms (100μs)
+			1000.0f,   // max: 100ms
+			0.1f);     // step
+		if (exposure) {
+			fExposureTimeID = index - 1;
+
+			// Read current value from camera (4 bytes, 100μs units)
+			uint32 expTime = 333;
+			if (_GetCTControlValue(USB_VIDEO_CT_EXPOSURE_TIME_ABSOLUTE_CONTROL,
+					&expTime, 4) == B_OK) {
+				fExposureTimeAbs = expTime;
+			}
+		}
+	}
+
+	// Focus Auto (selector 0x08) - checkbox
+	if (fCameraTerminalControls & (1 << 17)) {
+		BDiscreteParameter* focusAuto = ctGroup->MakeDiscreteParameter(
+			index++,
+			B_MEDIA_RAW_VIDEO,
+			"Auto Focus",
+			B_ENABLE);
+		if (focusAuto) {
+			focusAuto->AddItem(0, "Off");
+			focusAuto->AddItem(1, "On");
+			fAutoFocusID = index - 1;
+
+			// Read current value from camera
+			uint8 autoFocus = 1;
+			if (_GetCTControlValue(USB_VIDEO_CT_FOCUS_AUTO_CONTROL, &autoFocus, 1) == B_OK) {
+				fAutoFocus = (autoFocus != 0);
+			}
+		}
+	}
+
+	// Focus Absolute (selector 0x06) - slider, 2 bytes
+	if (fCameraTerminalControls & (1 << 5)) {
+		BContinuousParameter* focus = ctGroup->MakeContinuousParameter(
+			index++,
+			B_MEDIA_RAW_VIDEO,
+			"Focus",
+			B_GAIN,
+			"",
+			0.0f,      // min
+			255.0f,    // max (typical range, actual may vary)
+			1.0f);     // step
+		if (focus) {
+			fFocusAbsoluteID = index - 1;
+
+			// Read current value from camera (2 bytes)
+			uint16 focusVal = 0;
+			if (_GetCTControlValue(USB_VIDEO_CT_FOCUS_ABSOLUTE_CONTROL,
+					&focusVal, 2) == B_OK) {
+				fFocusAbsolute = focusVal;
+			}
+		}
+	}
+
+	// Zoom Absolute (selector 0x0B) - slider, 2 bytes
+	if (fCameraTerminalControls & (1 << 9)) {
+		BContinuousParameter* zoom = ctGroup->MakeContinuousParameter(
+			index++,
+			B_MEDIA_RAW_VIDEO,
+			"Zoom",
+			B_GAIN,
+			"x",
+			1.0f,      // min: 1x
+			10.0f,     // max: 10x (typical range)
+			0.1f);     // step
+		if (zoom) {
+			fZoomAbsoluteID = index - 1;
+
+			// Read current value from camera (2 bytes)
+			uint16 zoomVal = 100;
+			if (_GetCTControlValue(USB_VIDEO_CT_ZOOM_ABSOLUTE_CONTROL,
+					&zoomVal, 2) == B_OK) {
+				fZoomAbsolute = zoomVal;
+			}
+		}
+	}
+
+	// Pan/Tilt Absolute (selector 0x0D) - compound control, 8 bytes (pan + tilt)
+	// Pan and Tilt values are in arc-seconds (1/3600 of a degree)
+	if (fCameraTerminalControls & (1 << 11)) {
+		// Pan control (first 4 bytes)
+		BContinuousParameter* pan = ctGroup->MakeContinuousParameter(
+			index++,
+			B_MEDIA_RAW_VIDEO,
+			"Pan",
+			B_GAIN,
+			"°",
+			-180.0f,   // min: -180 degrees
+			180.0f,    // max: +180 degrees
+			1.0f);     // step: 1 degree
+		if (pan) {
+			fPanTiltID = index - 1;  // Store first ID for the compound control
+		}
+
+		// Tilt control (last 4 bytes)
+		BContinuousParameter* tilt = ctGroup->MakeContinuousParameter(
+			index++,
+			B_MEDIA_RAW_VIDEO,
+			"Tilt",
+			B_GAIN,
+			"°",
+			-180.0f,   // min: -180 degrees
+			180.0f,    // max: +180 degrees
+			1.0f);     // step: 1 degree
+
+		// Read current values from camera (8 bytes total)
+		if (pan || tilt) {
+			struct {
+				int32 pan;
+				int32 tilt;
+			} panTilt = { 0, 0 };
+			if (_GetCTControlValue(USB_VIDEO_CT_PANTILT_ABSOLUTE_CONTROL,
+					&panTilt, 8) == B_OK) {
+				fPanAbsolute = panTilt.pan;
+				fTiltAbsolute = panTilt.tilt;
+			}
+		}
+	}
+
+	printf("UVCCamDevice: Added Camera Terminal controls\n");
+}
+
+
+// =============================================================================
+// Extension Unit Methods (XU) - Vendor-Specific Features
+// =============================================================================
+
+
+void
+UVCCamDevice::_ParseExtensionUnit(
+	const usb_video_extension_unit_descriptor* descriptor)
+{
+	// Create extension unit info structure
+	extension_unit_info* xu = new extension_unit_info;
+	memset(xu, 0, sizeof(extension_unit_info));
+
+	// Copy basic info
+	xu->unit_id = descriptor->unit_id;
+	memcpy(xu->guid, descriptor->guid_extension_code, 16);
+	xu->num_controls = descriptor->num_controls;
+	xu->num_input_pins = descriptor->num_input_pins;
+
+	// Copy source IDs (up to 8)
+	uint8 pinCount = (descriptor->num_input_pins < 8)
+		? descriptor->num_input_pins : 8;
+	for (uint8 i = 0; i < pinCount; i++) {
+		xu->source_ids[i] = descriptor->source_id[i];
+	}
+
+	// Get description string from device
+	const char* desc = fDevice->DecodeStringDescriptor(descriptor->Extension());
+	if (desc != NULL) {
+		strncpy(xu->description, desc, sizeof(xu->description) - 1);
+		xu->description[sizeof(xu->description) - 1] = '\0';
+	}
+
+	// Identify vendor from GUID
+	xu->vendor = _IdentifyXUVendor(xu->guid);
+	xu->vendor_name = _GetXUVendorName(xu->vendor);
+	xu->capabilities = _GetXUCapabilities(xu->vendor);
+
+	// Store the extension unit
+	fExtensionUnits.AddItem(xu);
+	fHasExtensionUnits = true;
+
+	// Log the extension unit
+	printf("VC_EXTENSION_UNIT:\tid=%d, vendor=%s\n", xu->unit_id, xu->vendor_name);
+	printf("\tGUID: ");
+	for (int i = 0; i < 16; i++) {
+		printf("%02x", xu->guid[i]);
+		if (i == 3 || i == 5 || i == 7 || i == 9)
+			printf("-");
+	}
+	printf("\n\t#ctrls=%d, #pins=%d\n", xu->num_controls, xu->num_input_pins);
+	if (xu->description[0] != '\0')
+		printf("\tDesc: %s\n", xu->description);
+
+	// Log capabilities if known vendor
+	if (xu->capabilities != XU_CAP_NONE) {
+		printf("\tCapabilities:");
+		if (xu->capabilities & XU_CAP_LED_CONTROL)
+			printf(" LED");
+		if (xu->capabilities & XU_CAP_FACE_DETECTION)
+			printf(" FaceDetect");
+		if (xu->capabilities & XU_CAP_HDR)
+			printf(" HDR");
+		if (xu->capabilities & XU_CAP_NOISE_REDUCTION)
+			printf(" NoiseReduction");
+		if (xu->capabilities & XU_CAP_H264_ENCODING)
+			printf(" H264");
+		if (xu->capabilities & XU_CAP_PTZ_CONTROL)
+			printf(" PTZ");
+		printf("\n");
+	}
+}
+
+
+extension_unit_vendor
+UVCCamDevice::_IdentifyXUVendor(const uint8* guid)
+{
+	if (memcmp(guid, kMicrosoftH264XUGUID, 16) == 0)
+		return XU_VENDOR_MICROSOFT;
+	if (memcmp(guid, kSonixXUGUID, 16) == 0)
+		return XU_VENDOR_SONIX;
+	if (memcmp(guid, kLogitechXUGUID, 16) == 0)
+		return XU_VENDOR_LOGITECH;
+	if (memcmp(guid, kRealtekXUGUID, 16) == 0)
+		return XU_VENDOR_REALTEK;
+	return XU_VENDOR_UNKNOWN;
+}
+
+
+uint32
+UVCCamDevice::_GetXUCapabilities(extension_unit_vendor vendor)
+{
+	switch (vendor) {
+		case XU_VENDOR_MICROSOFT:
+			return XU_CAP_H264_ENCODING;
+		case XU_VENDOR_SONIX:
+			return XU_CAP_LED_CONTROL | XU_CAP_FACE_DETECTION;
+		case XU_VENDOR_LOGITECH:
+			return XU_CAP_LED_CONTROL | XU_CAP_PTZ_CONTROL | XU_CAP_H264_ENCODING;
+		case XU_VENDOR_REALTEK:
+			return XU_CAP_HDR | XU_CAP_NOISE_REDUCTION;
+		default:
+			return XU_CAP_NONE;
+	}
+}
+
+
+const char*
+UVCCamDevice::_GetXUVendorName(extension_unit_vendor vendor)
+{
+	switch (vendor) {
+		case XU_VENDOR_MICROSOFT:
+			return "Microsoft";
+		case XU_VENDOR_SONIX:
+			return "Sonix";
+		case XU_VENDOR_LOGITECH:
+			return "Logitech";
+		case XU_VENDOR_REALTEK:
+			return "Realtek";
+		default:
+			return "Unknown";
+	}
+}
+
+
+void
+UVCCamDevice::_LogExtensionUnits()
+{
+	if (!fHasExtensionUnits || fExtensionUnits.CountItems() == 0) {
+		printf("UVCCamDevice: No Extension Units detected\n");
+		return;
+	}
+
+	printf("UVCCamDevice: %d Extension Unit(s) detected:\n",
+		fExtensionUnits.CountItems());
+
+	for (int32 i = 0; i < fExtensionUnits.CountItems(); i++) {
+		extension_unit_info* xu = (extension_unit_info*)fExtensionUnits.ItemAt(i);
+		printf("  [%d] ID=%d Vendor=%s Controls=%d",
+			i + 1, xu->unit_id, xu->vendor_name, xu->num_controls);
+		if (xu->description[0] != '\0')
+			printf(" (%s)", xu->description);
+		printf("\n");
+	}
+}
+
+
+// =============================================================================
+// Still Image Capture Methods
+// =============================================================================
+
+
+void
+UVCCamDevice::_ParseStillImageFrame(
+	const usb_video_still_image_frame_descriptor* descriptor)
+{
+	// Store still image endpoint
+	fStillImageInfo.endpoint_address = descriptor->endpoint_address;
+
+	// Store still image sizes
+	fStillImageInfo.num_sizes = (descriptor->num_image_size_patterns < 16)
+		? descriptor->num_image_size_patterns : 16;
+	for (uint8 i = 0; i < fStillImageInfo.num_sizes; i++) {
+		fStillImageInfo.sizes[i].width = descriptor->_pattern_size[i].width;
+		fStillImageInfo.sizes[i].height = descriptor->_pattern_size[i].height;
+	}
+
+	// Store compression patterns
+	fStillImageInfo.num_compressions = (descriptor->NumCompressionPatterns() < 8)
+		? descriptor->NumCompressionPatterns() : 8;
+	for (uint8 i = 0; i < fStillImageInfo.num_compressions; i++) {
+		fStillImageInfo.compressions[i] = descriptor->CompressionPatterns()[i];
+	}
+
+	// Mark still capture as available
+	fHasStillCapture = true;
+
+	// Log still image info
+	printf("VS_STILL_IMAGE_FRAME:\t#imageSizes=%d, #compressions=%d, ept=0x%x\n",
+		fStillImageInfo.num_sizes, fStillImageInfo.num_compressions,
+		fStillImageInfo.endpoint_address);
+
+	for (uint8 i = 0; i < fStillImageInfo.num_sizes; i++) {
+		printf("\tstill size %d: %dx%d\n", i,
+			fStillImageInfo.sizes[i].width, fStillImageInfo.sizes[i].height);
+	}
+}
+
+
+void
+UVCCamDevice::_LogStillImageCapabilities()
+{
+	if (!fHasStillCapture && fStillCaptureMethod == STILL_CAPTURE_NONE) {
+		printf("UVCCamDevice: Still image capture not supported\n");
+		return;
+	}
+
+	printf("UVCCamDevice: Still Image Capture Capabilities:\n");
+	printf("  Capture Method: %s\n", _GetStillCaptureMethodName(fStillCaptureMethod));
+
+	if (fTriggerSupport) {
+		printf("  Hardware Trigger: Yes (%s)\n",
+			fTriggerUsage ? "general purpose" : "fixed to still capture");
+	}
+
+	if (fHasStillCapture && fStillImageInfo.num_sizes > 0) {
+		printf("  Endpoint: 0x%02x\n", fStillImageInfo.endpoint_address);
+		printf("  Available Still Resolutions:\n");
+		for (uint8 i = 0; i < fStillImageInfo.num_sizes; i++) {
+			printf("    [%d] %dx%d\n", i,
+				fStillImageInfo.sizes[i].width, fStillImageInfo.sizes[i].height);
+		}
+	}
+}
+
+
+const char*
+UVCCamDevice::_GetStillCaptureMethodName(still_capture_method method)
+{
+	switch (method) {
+		case STILL_CAPTURE_NONE:
+			return "None";
+		case STILL_CAPTURE_METHOD_1:
+			return "Method 1 (Dedicated Button)";
+		case STILL_CAPTURE_METHOD_2:
+			return "Method 2 (Host Software Triggered)";
+		case STILL_CAPTURE_METHOD_3:
+			return "Method 3 (Dedicated Pipe + Button)";
+		default:
+			return "Unknown";
+	}
+}
+
+
+// =============================================================================
 // Feature 3: Resolution Fallback Methods
 // =============================================================================
 
@@ -4167,22 +5269,73 @@ UVCCamDevice::_EvaluatePacketLoss()
 	float lossPercent = (float)fEvalWindowErrors * 100.0f / (float)fEvalWindowPackets;
 
 	if (lossPercent > fFallbackConfig.error_threshold_percent) {
-		// High packet loss - trigger fallback
-		if (!fFallbackActive || fCurrentResolutionLevel < _GetMaxResolutionLevel()) {
+		// High packet loss detected - trigger resolution fallback via worker thread
+		//
+		// NOTE: We use RequestResolutionChange() which queues the change to be
+		// processed by the ReconfigThread. This is safe because:
+		// 1. The request is asynchronous (just sets a flag and signals semaphore)
+		// 2. The actual SetAlternate() happens in ReconfigThread, not here
+		// 3. ReconfigThread stops the data pump first, then changes resolution
+		//
+		// This prevents kernel panic "USB object did not become idle!"
+
+		int32 maxLevel = _GetMaxResolutionLevel();
+
+		if (fCurrentResolutionLevel >= maxLevel) {
+			// Already at minimum resolution
+			if (!fFallbackWarningShown) {
+				syslog(LOG_WARNING, "UVCCamDevice: Packet loss %.1f%% exceeds threshold, "
+					"but already at minimum resolution\n", lossPercent);
+				fFallbackWarningShown = true;
+			}
+		} else if (!HasPendingReconfigRequest()) {
+			// Calculate fallback resolution
+			int32 targetLevel = fCurrentResolutionLevel + 1;
+			uint32 newWidth, newHeight;
+			_GetResolutionAtLevel(targetLevel, &newWidth, &newHeight);
+
 			syslog(LOG_WARNING, "UVCCamDevice: Packet loss %.1f%% exceeds threshold %.1f%%, "
-				"triggering resolution fallback\n",
-				lossPercent, fFallbackConfig.error_threshold_percent);
-			_TriggerResolutionFallback();
+				"requesting fallback to %ux%u via worker thread\n",
+				lossPercent, fFallbackConfig.error_threshold_percent,
+				newWidth, newHeight);
+
+			// Request the resolution change via worker thread (safe, non-blocking)
+			RequestResolutionChange(newWidth, newHeight);
+
+			fCurrentResolutionLevel = targetLevel;
+			fFallbackActive = true;
+			fLastFallbackTime = now;
+			fFallbackWarningShown = false;
 		}
+
 		fStableStartTime = 0;  // Reset stability timer
 	} else {
-		// Good connection - check for recovery opportunity
+		// Good connection - could attempt recovery if stable for long enough
+		// Recovery also uses the safe RequestResolutionChange() mechanism
 		if (fStableStartTime == 0) {
 			fStableStartTime = now;
 		} else if (fFallbackConfig.auto_recovery_enabled &&
 			fFallbackActive &&
-			(now - fStableStartTime) > fFallbackConfig.recovery_delay) {
-			_AttemptResolutionRecovery();
+			fCurrentResolutionLevel > 0 &&
+			(now - fStableStartTime) > fFallbackConfig.recovery_delay &&
+			!HasPendingReconfigRequest()) {
+
+			// Calculate recovery resolution
+			int32 targetLevel = fCurrentResolutionLevel - 1;
+			uint32 newWidth, newHeight;
+			_GetResolutionAtLevel(targetLevel, &newWidth, &newHeight);
+
+			syslog(LOG_INFO, "UVCCamDevice: Connection stable, "
+				"requesting recovery to %ux%u via worker thread\n",
+				newWidth, newHeight);
+
+			RequestResolutionChange(newWidth, newHeight);
+
+			fCurrentResolutionLevel = targetLevel;
+			if (fCurrentResolutionLevel == 0) {
+				fFallbackActive = false;
+			}
+			fStableStartTime = 0;
 		}
 	}
 
@@ -4304,25 +5457,47 @@ void
 UVCCamDevice::_GetResolutionAtLevel(int32 level, uint32* width, uint32* height)
 {
 	BList* frameList = fIsMJPEG ? &fMJPEGFrames : &fUncompressedFrames;
+	int32* sortedIndices = fIsMJPEG ? fSortedMJPEGIndices : fSortedUncompressedIndices;
+	int32 sortedCount = fIsMJPEG ? fSortedMJPEGCount : fSortedUncompressedCount;
 
-	// Level 0 = first (usually highest) resolution
-	// Higher levels = lower resolutions (later in list)
-	int32 index = level;
+	// Level 0 = highest resolution (first in sorted list)
+	// Higher levels = lower resolutions (later in sorted list)
+	int32 sortedLevel = level;
 
-	if (index < 0) {
-		index = 0;
+	if (sortedLevel < 0) {
+		sortedLevel = 0;
 	}
-	if (index >= frameList->CountItems()) {
-		index = frameList->CountItems() - 1;
-	}
 
-	if (index >= 0 && index < frameList->CountItems()) {
-		usb_video_frame_descriptor* desc =
-			(usb_video_frame_descriptor*)frameList->ItemAt(index);
-		if (desc) {
-			*width = desc->width;
-			*height = desc->height;
-			return;
+	// Use sorted indices if available, otherwise fall back to raw list order
+	if (sortedCount > 0) {
+		if (sortedLevel >= sortedCount) {
+			sortedLevel = sortedCount - 1;
+		}
+
+		int32 frameIndex = sortedIndices[sortedLevel];
+		if (frameIndex >= 0 && frameIndex < frameList->CountItems()) {
+			usb_video_frame_descriptor* desc =
+				(usb_video_frame_descriptor*)frameList->ItemAt(frameIndex);
+			if (desc) {
+				*width = desc->width;
+				*height = desc->height;
+				return;
+			}
+		}
+	} else {
+		// Fallback: use raw list order if sorted list not built yet
+		int32 index = sortedLevel;
+		if (index >= frameList->CountItems()) {
+			index = frameList->CountItems() - 1;
+		}
+		if (index >= 0 && index < frameList->CountItems()) {
+			usb_video_frame_descriptor* desc =
+				(usb_video_frame_descriptor*)frameList->ItemAt(index);
+			if (desc) {
+				*width = desc->width;
+				*height = desc->height;
+				return;
+			}
 		}
 	}
 
@@ -4332,12 +5507,203 @@ UVCCamDevice::_GetResolutionAtLevel(int32 level, uint32* width, uint32* height)
 }
 
 
+// =============================================================================
+// Safe Resolution Change Implementation (Worker Thread Handler)
+// =============================================================================
+// This method is called from the ReconfigThread (not from the data pump thread)
+// which makes it safe to call StopTransfer() and SetAlternate().
+//
+// The sequence is:
+// 1. Stop the data pump thread (wait for it to exit)
+// 2. Change the USB alternate interface
+// 3. Apply the new resolution
+// 4. Restart the data pump thread
+
+status_t
+UVCCamDevice::_HandleResolutionChange(uint32 width, uint32 height)
+{
+	syslog(LOG_INFO, "UVCCamDevice: _HandleResolutionChange(%u, %u) starting\n",
+		width, height);
+
+	status_t result = B_OK;
+	bool wasTransferring = TransferEnabled();
+
+	// Step 1: Stop transfer if running
+	// This is safe because we're in the reconfig thread, not the data pump
+	if (wasTransferring) {
+		syslog(LOG_INFO, "UVCCamDevice: Stopping transfer for resolution change\n");
+		result = StopTransfer();
+		if (result != B_OK) {
+			syslog(LOG_ERR, "UVCCamDevice: Failed to stop transfer: %s\n",
+				strerror(result));
+			return result;
+		}
+
+		// Give the hardware a moment to settle
+		snooze(50000);  // 50ms
+	}
+
+	// Step 2: Apply the new resolution
+	// AcceptVideoFrame will call _ProbeCommitFormat internally which
+	// handles the USB alternate interface selection
+	uint32 newWidth = width;
+	uint32 newHeight = height;
+
+	syslog(LOG_INFO, "UVCCamDevice: Applying resolution %ux%u\n",
+		newWidth, newHeight);
+
+	result = AcceptVideoFrame(newWidth, newHeight);
+	if (result != B_OK) {
+		syslog(LOG_ERR, "UVCCamDevice: Failed to apply resolution %ux%u: %s\n",
+			width, height, strerror(result));
+
+		// Try to restart transfer even if resolution change failed
+		if (wasTransferring) {
+			syslog(LOG_WARNING, "UVCCamDevice: Attempting to restart with original resolution\n");
+			StartTransfer();
+		}
+		return result;
+	}
+
+	// Step 3: Reset packet statistics for the new resolution
+	ResetPacketStatistics();
+
+	// Reset MJPEG frame size tracking for new resolution
+	fMJPEGFrameSizeSum = 0;
+	fMJPEGFrameSizeCount = 0;
+	fExpectedMJPEGMinSize = 0;  // Will be recalculated
+
+	// Reset fallback warning flag
+	fFallbackWarningShown = false;
+
+	// Step 4: Restart transfer if it was running
+	if (wasTransferring) {
+		syslog(LOG_INFO, "UVCCamDevice: Restarting transfer with new resolution\n");
+		result = StartTransfer();
+		if (result != B_OK) {
+			syslog(LOG_ERR, "UVCCamDevice: Failed to restart transfer: %s\n",
+				strerror(result));
+			return result;
+		}
+	}
+
+	syslog(LOG_INFO, "UVCCamDevice: Resolution change to %ux%u completed successfully\n",
+		newWidth, newHeight);
+
+	return B_OK;
+}
+
+
 int32
 UVCCamDevice::_GetMaxResolutionLevel()
 {
-	BList* frameList = fIsMJPEG ? &fMJPEGFrames : &fUncompressedFrames;
-	int32 count = frameList->CountItems();
+	// Use sorted count, not raw frame list count
+	int32 count = fIsMJPEG ? fSortedMJPEGCount : fSortedUncompressedCount;
+	if (count == 0) {
+		// Fallback to raw list if sorted not yet built
+		BList* frameList = fIsMJPEG ? &fMJPEGFrames : &fUncompressedFrames;
+		count = frameList->CountItems();
+	}
 	return (count > 0) ? count - 1 : 0;
+}
+
+
+void
+UVCCamDevice::_BuildSortedResolutionList()
+{
+	// Build sorted index lists for both MJPEG and Uncompressed frames
+	// Sorted by pixel count in descending order (largest first)
+	// This ensures level 0 = highest resolution, level N = lowest
+
+	// Helper structure for sorting
+	struct ResolutionEntry {
+		int32 index;
+		uint64 pixels;  // width * height
+	};
+
+	// Sort MJPEG frames
+	int32 mjpegCount = fMJPEGFrames.CountItems();
+	if (mjpegCount > 32) mjpegCount = 32;  // Cap at array size
+
+	if (mjpegCount > 0) {
+		ResolutionEntry entries[32];
+		for (int32 i = 0; i < mjpegCount; i++) {
+			usb_video_frame_descriptor* desc =
+				(usb_video_frame_descriptor*)fMJPEGFrames.ItemAt(i);
+			entries[i].index = i;
+			entries[i].pixels = desc ? (uint64)desc->width * desc->height : 0;
+		}
+
+		// Simple bubble sort (small list, done once at init)
+		for (int32 i = 0; i < mjpegCount - 1; i++) {
+			for (int32 j = 0; j < mjpegCount - i - 1; j++) {
+				if (entries[j].pixels < entries[j + 1].pixels) {
+					ResolutionEntry temp = entries[j];
+					entries[j] = entries[j + 1];
+					entries[j + 1] = temp;
+				}
+			}
+		}
+
+		// Copy sorted indices
+		for (int32 i = 0; i < mjpegCount; i++) {
+			fSortedMJPEGIndices[i] = entries[i].index;
+		}
+		fSortedMJPEGCount = mjpegCount;
+
+		// Log the sorted order
+		syslog(LOG_INFO, "UVC: MJPEG resolutions sorted by size:\n");
+		for (int32 i = 0; i < mjpegCount; i++) {
+			usb_video_frame_descriptor* desc =
+				(usb_video_frame_descriptor*)fMJPEGFrames.ItemAt(fSortedMJPEGIndices[i]);
+			if (desc) {
+				syslog(LOG_INFO, "  [%d] %ux%u (frame index %d)\n",
+					i, desc->width, desc->height, fSortedMJPEGIndices[i]);
+			}
+		}
+	}
+
+	// Sort Uncompressed frames
+	int32 uncompCount = fUncompressedFrames.CountItems();
+	if (uncompCount > 32) uncompCount = 32;
+
+	if (uncompCount > 0) {
+		ResolutionEntry entries[32];
+		for (int32 i = 0; i < uncompCount; i++) {
+			usb_video_frame_descriptor* desc =
+				(usb_video_frame_descriptor*)fUncompressedFrames.ItemAt(i);
+			entries[i].index = i;
+			entries[i].pixels = desc ? (uint64)desc->width * desc->height : 0;
+		}
+
+		// Simple bubble sort
+		for (int32 i = 0; i < uncompCount - 1; i++) {
+			for (int32 j = 0; j < uncompCount - i - 1; j++) {
+				if (entries[j].pixels < entries[j + 1].pixels) {
+					ResolutionEntry temp = entries[j];
+					entries[j] = entries[j + 1];
+					entries[j + 1] = temp;
+				}
+			}
+		}
+
+		// Copy sorted indices
+		for (int32 i = 0; i < uncompCount; i++) {
+			fSortedUncompressedIndices[i] = entries[i].index;
+		}
+		fSortedUncompressedCount = uncompCount;
+
+		// Log the sorted order
+		syslog(LOG_INFO, "UVC: Uncompressed resolutions sorted by size:\n");
+		for (int32 i = 0; i < uncompCount; i++) {
+			usb_video_frame_descriptor* desc =
+				(usb_video_frame_descriptor*)fUncompressedFrames.ItemAt(fSortedUncompressedIndices[i]);
+			if (desc) {
+				syslog(LOG_INFO, "  [%d] %ux%u (frame index %d)\n",
+					i, desc->width, desc->height, fSortedUncompressedIndices[i]);
+			}
+		}
+	}
 }
 
 
@@ -4368,14 +5734,35 @@ UVCCamDevice::OnTransferSuccess()
 bool
 UVCCamDevice::_ShouldUseHighBandwidth()
 {
+	/* XHCI HIGH-BANDWIDTH BUG WORKAROUND:
+	 *
+	 * Haiku's XHCI driver has a known bug that fails to properly allocate
+	 * bandwidth for high-bandwidth isochronous endpoints (mult > 1).
+	 * The error manifests as:
+	 *   "unsuccessful command 12, error Bandwidth (8)"
+	 *   "Endpoint not enabled"
+	 *
+	 * Therefore, we DEFAULT TO DISABLED on Haiku.
+	 * Users can explicitly enable high-bandwidth via environment variable
+	 * if they want to test or if they have a patched kernel.
+	 */
+
 	// Check environment variable override first
 	const char* disableHighBW = getenv("WEBCAM_DISABLE_HIGH_BANDWIDTH");
 	if (disableHighBW != NULL && (strcmp(disableHighBW, "1") == 0 || strcmp(disableHighBW, "yes") == 0)) {
 		return false;
 	}
 
+	// Only enable high-bandwidth if EXPLICITLY requested by user
 	const char* forceHighBW = getenv("WEBCAM_FORCE_HIGH_BANDWIDTH");
 	if (forceHighBW != NULL && (strcmp(forceHighBW, "1") == 0 || strcmp(forceHighBW, "yes") == 0)) {
+		syslog(LOG_WARNING, "UVCCamDevice: High-bandwidth FORCED via WEBCAM_FORCE_HIGH_BANDWIDTH\n");
+		syslog(LOG_WARNING, "UVCCamDevice: This may cause 'Bandwidth error' on Haiku XHCI!\n");
+		return true;
+	}
+
+	// If we've already tested and it worked, continue using it
+	if (fHighBandwidthTested && fHighBandwidthWorks) {
 		return true;
 	}
 
@@ -4384,20 +5771,14 @@ UVCCamDevice::_ShouldUseHighBandwidth()
 		return false;
 	}
 
-	// Use controller detection results if available
-	if (fControllerDetected) {
-		// XHCI with high-bandwidth capability: always safe
-		if ((fControllerInfo.capabilities & USB_CAP_HIGH_BANDWIDTH) != 0) {
-			return true;
-		}
-		// Controller doesn't support high-bandwidth
-		if (!fControllerInfo.high_bandwidth_safe) {
-			return false;
-		}
-	}
-
-	// Default: try high-bandwidth (most systems have XHCI now)
-	return true;
+	/* DEFAULT: Disabled on Haiku due to XHCI bug
+	 *
+	 * The kernel bug is in xhci.cpp bandwidth allocation. Until this is
+	 * fixed upstream, high-bandwidth endpoints will fail. Users on systems
+	 * with working XHCI (or with patched kernel) can enable via:
+	 *   export WEBCAM_FORCE_HIGH_BANDWIDTH=1
+	 */
+	return false;
 }
 
 
@@ -4462,37 +5843,54 @@ UVCCamDevice::_DetectControllerType()
 	usb_device_speed speed = _GetUSBSpeed();
 	fControllerInfo.device_speed = speed;
 
+	/* XHCI HIGH-BANDWIDTH BUG:
+	 *
+	 * Haiku's XHCI driver has a bug in bandwidth allocation for high-bandwidth
+	 * isochronous endpoints (mult > 1). Until this is fixed upstream, we must
+	 * mark ALL controller types as NOT high-bandwidth safe by default.
+	 *
+	 * The bug is in src/add-ons/kernel/busses/usb/xhci.cpp and manifests as:
+	 *   "unsuccessful command 12, error Bandwidth (8)"
+	 *   "transfer error on slot X endpoint Y: Endpoint not enabled"
+	 *
+	 * Users can override this via WEBCAM_FORCE_HIGH_BANDWIDTH=1 env var.
+	 */
+
 	// Infer controller type from device speed and behavior
 	// USB 3.0+ speeds can only be achieved with XHCI
 	if (speed >= USB_SPEED_SUPER) {
 		fControllerInfo.type = USB_HC_XHCI;
 		fControllerInfo.type_name = "XHCI";
-		fControllerInfo.capabilities = USB_CAP_HIGH_BANDWIDTH
-			| USB_CAP_DYNAMIC_IMOD
+		// Remove USB_CAP_HIGH_BANDWIDTH due to Haiku bug
+		fControllerInfo.capabilities = USB_CAP_DYNAMIC_IMOD
 			| USB_CAP_TBC_TLBPC
 			| USB_CAP_LPM
 			| USB_CAP_STREAMS;
 		fControllerInfo.expected_imod = XHCI_IMOD_LOW_LATENCY;
-		fControllerInfo.high_bandwidth_safe = true;
+		fControllerInfo.high_bandwidth_safe = false;  // Disabled due to Haiku XHCI bug
 
-		// Pre-confirm high-bandwidth works for XHCI
-		fHighBandwidthTested = true;
-		fHighBandwidthWorks = true;
+		// Do NOT pre-confirm high-bandwidth - let user explicitly enable
+		fHighBandwidthTested = false;
+		fHighBandwidthWorks = false;
+
+		syslog(LOG_INFO, "UVCCamDevice: XHCI detected (USB 3.0+), high-bandwidth DISABLED by default\n");
+		syslog(LOG_INFO, "UVCCamDevice: Set WEBCAM_FORCE_HIGH_BANDWIDTH=1 to enable high-bandwidth\n");
 	} else if (speed == USB_SPEED_HIGH) {
 		// USB 2.0 High-Speed - could be EHCI or XHCI in compatibility mode
-		// Check if high-bandwidth endpoints are requested - if device has
-		// mult>1 endpoints and they work, we're likely on XHCI
-		// Start optimistic (assume XHCI) and fall back if needed
-		fControllerInfo.type = USB_HC_XHCI;  // Assume XHCI until proven otherwise
-		fControllerInfo.type_name = "XHCI (assumed)";
-		fControllerInfo.capabilities = USB_CAP_HIGH_BANDWIDTH
-			| USB_CAP_DYNAMIC_IMOD
+		// Both have issues with high-bandwidth on Haiku
+		fControllerInfo.type = USB_HC_XHCI;  // Assume XHCI (most common)
+		fControllerInfo.type_name = "XHCI (USB 2.0 mode)";
+		// Remove USB_CAP_HIGH_BANDWIDTH due to Haiku bug
+		fControllerInfo.capabilities = USB_CAP_DYNAMIC_IMOD
 			| USB_CAP_TBC_TLBPC;
 		fControllerInfo.expected_imod = XHCI_IMOD_LOW_LATENCY;
-		fControllerInfo.high_bandwidth_safe = true;  // Try high-bandwidth
+		fControllerInfo.high_bandwidth_safe = false;  // Disabled due to Haiku XHCI bug
 
-		// Don't pre-confirm - let runtime detection decide
-		// fHighBandwidthTested remains false until first transfer
+		// Do NOT pre-confirm high-bandwidth
+		fHighBandwidthTested = false;
+		fHighBandwidthWorks = false;
+
+		syslog(LOG_INFO, "UVCCamDevice: USB 2.0 High-Speed device, high-bandwidth DISABLED by default\n");
 	} else if (speed == USB_SPEED_FULL) {
 		// USB 1.1 Full-Speed - could be OHCI, UHCI, or USB 2.0/3.0 hub
 		fControllerInfo.type = USB_HC_EHCI;  // Most likely behind EHCI companion

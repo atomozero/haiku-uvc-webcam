@@ -159,6 +159,107 @@ struct camera_control_info {
 };
 
 
+// =============================================================================
+// Extension Unit Support (Vendor-Specific Features)
+// =============================================================================
+
+// Known vendor Extension Unit GUIDs
+// Format: {xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}
+
+// Microsoft: UVC 1.5 encoding extension
+static const uint8 kMicrosoftH264XUGUID[16] = {
+	0xa9, 0x4c, 0x5d, 0x1f,  // GUID Data1
+	0xf5, 0x2b,              // GUID Data2
+	0x46, 0x4e,              // GUID Data3
+	0xb2, 0xe8, 0xd6, 0x5e, 0x3a, 0xb0, 0x95, 0x3c  // GUID Data4
+};
+
+// Sonix Technology (VID 0x0C45) - LED, face detection
+static const uint8 kSonixXUGUID[16] = {
+	0x18, 0x6e, 0xce, 0xbb,
+	0x49, 0x82,
+	0x48, 0x6c,
+	0x8c, 0x50, 0x81, 0x27, 0xb1, 0x43, 0x00, 0x56
+};
+
+// Logitech - PTZ, LED, H.264 encoding
+static const uint8 kLogitechXUGUID[16] = {
+	0x82, 0x06, 0x61, 0x63,
+	0x70, 0x50,
+	0xab, 0x49,
+	0xb8, 0xcc, 0xb3, 0x85, 0x5e, 0x8d, 0x22, 0x50
+};
+
+// Realtek (VID 0x0BDA) - HDR, noise reduction
+static const uint8 kRealtekXUGUID[16] = {
+	0x3a, 0x17, 0x15, 0x28,
+	0xab, 0x46,
+	0x4a, 0x47,
+	0xa5, 0x9c, 0x02, 0xec, 0x3e, 0x79, 0x8d, 0x2a
+};
+
+// Extension Unit vendor identification
+enum extension_unit_vendor {
+	XU_VENDOR_UNKNOWN = 0,
+	XU_VENDOR_MICROSOFT,
+	XU_VENDOR_SONIX,
+	XU_VENDOR_LOGITECH,
+	XU_VENDOR_REALTEK
+};
+
+// Extension Unit capability flags
+enum extension_unit_caps {
+	XU_CAP_NONE = 0,
+	XU_CAP_LED_CONTROL = (1 << 0),		// LED on/off
+	XU_CAP_FACE_DETECTION = (1 << 1),	// Face detection
+	XU_CAP_HDR = (1 << 2),				// HDR mode
+	XU_CAP_NOISE_REDUCTION = (1 << 3),	// Digital noise reduction
+	XU_CAP_H264_ENCODING = (1 << 4),	// Hardware H.264 encoding
+	XU_CAP_PTZ_CONTROL = (1 << 5)		// Enhanced PTZ
+};
+
+// Extension Unit information
+struct extension_unit_info {
+	uint8					unit_id;
+	uint8					guid[16];
+	extension_unit_vendor	vendor;
+	uint32					capabilities;	// XU_CAP_* flags
+	uint8					num_controls;
+	uint8					num_input_pins;
+	uint8					source_ids[8];	// Up to 8 source pins
+	char					description[64];
+	const char*				vendor_name;
+};
+
+
+// =============================================================================
+// Still Image Capture Support
+// =============================================================================
+
+// UVC Still Capture Methods (from VS_INPUT_HEADER)
+enum still_capture_method {
+	STILL_CAPTURE_NONE = 0,			// Not supported
+	STILL_CAPTURE_METHOD_1 = 1,		// Dedicated button (interrupt endpoint)
+	STILL_CAPTURE_METHOD_2 = 2,		// Host software-triggered
+	STILL_CAPTURE_METHOD_3 = 3		// Dedicated still pipe with button
+};
+
+// Still image size pattern from VS_STILL_IMAGE_FRAME
+struct still_image_size {
+	uint16		width;
+	uint16		height;
+};
+
+// Still image frame information
+struct still_image_info {
+	uint8					endpoint_address;
+	uint8					num_sizes;
+	still_image_size		sizes[16];		// Up to 16 still resolutions
+	uint8					num_compressions;
+	uint8					compressions[8];	// Compression values
+};
+
+
 class UVCCamDevice : public CamDevice {
 public:
 								UVCCamDevice(CamDeviceAddon &_addon,
@@ -185,6 +286,10 @@ public:
 
 	// PHASE 4: Override packet loss resolution fallback
 	virtual status_t			ReduceResolution();
+
+	// Safe resolution change via worker thread (prevents kernel panic)
+	virtual status_t			_HandleResolutionChange(uint32 width,
+									uint32 height);
 
 	// High-bandwidth auto-detection overrides
 	virtual void				OnConsecutiveTransferFailures(uint32 count);
@@ -220,6 +325,9 @@ private:
 			status_t			_SelectIdleAlternate();
 			void 				_ConvertYUY2toRGB32(unsigned char *dst,
 									unsigned char *src, size_t srcSize,
+									int32 width, int32 height);
+			void				_ConvertNV12toRGB32(unsigned char* dst,
+									const unsigned char* src, size_t srcSize,
 									int32 width, int32 height);
 			void				_DecompressMJPEGtoRGB32(unsigned char* dst,
 									const unsigned char* src, size_t srcSize,
@@ -262,6 +370,28 @@ private:
 			status_t			_SetControlValue(uint16 selector,
 									int16 value);
 
+	// Camera Terminal control methods (CT)
+			status_t			_GetCTControlValue(uint16 selector,
+									void* value, size_t size);
+			status_t			_SetCTControlValue(uint16 selector,
+									const void* value, size_t size);
+			void				_AddCameraTerminalControls(BParameterGroup* group,
+									int32& index);
+
+	// Extension Unit methods (XU) - Vendor-specific features
+			void				_ParseExtensionUnit(
+									const usb_video_extension_unit_descriptor* descriptor);
+			extension_unit_vendor	_IdentifyXUVendor(const uint8* guid);
+			uint32				_GetXUCapabilities(extension_unit_vendor vendor);
+			const char*			_GetXUVendorName(extension_unit_vendor vendor);
+			void				_LogExtensionUnits();
+
+	// Still image capture methods
+			void				_ParseStillImageFrame(
+									const usb_video_still_image_frame_descriptor* descriptor);
+			void				_LogStillImageCapabilities();
+			const char*			_GetStillCaptureMethodName(still_capture_method method);
+
 	// Resolution fallback methods (Feature 3)
 			void				_EvaluatePacketLoss();
 			status_t			_TriggerResolutionFallback();
@@ -270,6 +400,7 @@ private:
 									uint32* width, uint32* height);
 			int32				_GetMaxResolutionLevel();
 			void				_InitializeFallbackConfig();
+			void				_BuildSortedResolutionList();
 
 	// Bandwidth calculation (YUY2 adaptive FPS support)
 			uint32				_GetMaxAvailableBandwidth();
@@ -306,6 +437,7 @@ private:
 			uint32				fMJPEGFrameIndex;
 			uint32				fMaxVideoFrameSize;
 			uint32				fMaxPayloadTransferSize;
+			size_t				fProbeCommitSize;		// Working probe/commit size (26, 34, or 48 bytes)
 
 			BList				fUncompressedFrames;
 			BList				fMJPEGFrames;
@@ -330,6 +462,8 @@ private:
 			// MJPEG decompression support
 			tjhandle			fJpegDecompressor;
 			bool				fIsMJPEG;
+			bool				fIsNV12;		// NV12 (YUV 4:2:0) format
+			bool				fMicrodiaQuirk;	// Microdia 0c45:6409 stride quirk
 
 			// FIX BUG 6: Contatori diagnostici per istanza (non statici)
 			int32				fFillFrameCount;
@@ -403,6 +537,40 @@ private:
 			uint8				fProcessingUnitID;
 			bool				fControlsInitialized;
 
+			// Camera Terminal controls (CT) - Exposure, Focus, Zoom, Pan/Tilt
+			uint8				fCameraTerminalID;
+			uint32				fCameraTerminalControls;	// Bitmap of supported CT controls
+			bool				fHasCameraTerminal;
+
+			// CT control current values
+			uint8				fAutoExposureMode;		// 1=Manual, 2=Auto, 4=Shutter, 8=Aperture
+			uint32				fExposureTimeAbs;		// In 100μs units
+			bool				fAutoFocus;
+			uint16				fFocusAbsolute;
+			uint16				fZoomAbsolute;
+			int32				fPanAbsolute;			// Arc-seconds
+			int32				fTiltAbsolute;			// Arc-seconds
+			bool				fPrivacyEnabled;
+
+			// CT control parameter IDs
+			int32				fAutoExposureModeID;
+			int32				fExposureTimeID;
+			int32				fAutoFocusID;
+			int32				fFocusAbsoluteID;
+			int32				fZoomAbsoluteID;
+			int32				fPanTiltID;
+
+			// Extension Unit support (XU) - Vendor-specific features
+			BList				fExtensionUnits;		// List of extension_unit_info*
+			bool				fHasExtensionUnits;
+
+			// Still image capture support
+			still_capture_method	fStillCaptureMethod;
+			still_image_info	fStillImageInfo;
+			bool				fHasStillCapture;
+			bool				fTriggerSupport;		// Hardware button available
+			bool				fTriggerUsage;			// Button usage mode
+
 			// Resolution fallback state (Feature 3)
 			resolution_fallback_config	fFallbackConfig;
 			int32				fCurrentResolutionLevel;	// 0=max, N=min
@@ -416,6 +584,13 @@ private:
 			bool				fFallbackWarningShown;
 			uint32				fLastPacketSuccessCount;	// For delta calculation
 			uint32				fLastPacketErrorCount;
+
+			// Sorted resolution indices (for proper fallback ordering)
+			// Index 0 = highest resolution, higher indices = lower resolutions
+			int32				fSortedMJPEGIndices[32];	// Max 32 resolutions
+			int32				fSortedUncompressedIndices[32];
+			int32				fSortedMJPEGCount;
+			int32				fSortedUncompressedCount;
 
 			// High-bandwidth auto-detection state
 			bool				fHighBandwidthTested;		// Have we tried high-bandwidth?

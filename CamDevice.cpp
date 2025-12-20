@@ -52,6 +52,9 @@ const float CamDevice::kPacketLossThreshold = 0.05f;	// 5% packet loss triggers 
 const bigtime_t CamDevice::kStatsWindowSize = 5000000;	// 5 second window
 const uint32 CamDevice::kMinPacketsForStats = 100;		// Min packets before calculating
 
+// Multi-camera support: Global instance counter for unique device naming
+int32 CamDevice::sInstanceCounter = 0;
+
 
 CamDevice::CamDevice(CamDeviceAddon &_addon, BUSBDevice* _device)
 	: fInitStatus(B_NO_INIT),
@@ -77,8 +80,15 @@ CamDevice::CamDevice(CamDeviceAddon &_addon, BUSBDevice* _device)
 	  fFirstTransferLogged(false),
 	  fDroppedFramesLogged(0),
 	  fLogThrottleCounter(0),
-	  fLastLogTime(0)
+	  fLastLogTime(0),
+	  fReconfigThread(-1),
+	  fReconfigSem(-1),
+	  fReconfigThreadRunning(false),
+	  fReconfigLock("ReconfigLock")
 {
+	// Initialize reconfig request
+	fReconfigRequest.Reset();
+
 	// Initialize error histogram
 	fErrorHistogram.Reset();
 
@@ -90,6 +100,10 @@ CamDevice::CamDevice(CamDeviceAddon &_addon, BUSBDevice* _device)
 
 	// Initialize double buffer structure (actual allocation deferred)
 	fDoubleBuffer.initialized = false;
+
+	// Multi-camera support: Assign unique instance number (atomic increment)
+	fInstanceNumber = atomic_add(&sInstanceCounter, 1) + 1;
+
 	// fill in the generic flavor
 	_addon.WebCamAddOn()->FillDefaultFlavorInfo(&fFlavorInfo);
 	// if we use id matching, cache the index to the list
@@ -101,8 +115,10 @@ CamDevice::CamDevice(CamDeviceAddon &_addon, BUSBDevice* _device)
 	// 1. Table entry with specific VID/PID (most reliable names)
 	// 2. USB descriptor strings (may be generic)
 	// 3. Table entry with class-only match (fallback)
+	// Multi-camera: Add instance number or serial for uniqueness
 	const char* usbManufacturer = _device->ManufacturerString();
 	const char* usbProduct = _device->ProductString();
+	const char* usbSerial = _device->SerialNumberString();
 
 	fFlavorInfoNameStr = "";
 	fFlavorInfoInfoStr = "";
@@ -138,6 +154,21 @@ CamDevice::CamDevice(CamDeviceAddon &_addon, BUSBDevice* _device)
 		fFlavorInfoNameStr << "USB Webcam";
 	}
 
+	// Multi-camera support: Add unique identifier for multiple cameras
+	// Use serial number if available, otherwise instance number for duplicates
+	if (usbSerial != NULL && usbSerial[0] != '\0') {
+		// Append shortened serial (last 6 chars) for uniqueness
+		size_t serialLen = strlen(usbSerial);
+		if (serialLen > 6) {
+			fFlavorInfoNameStr << " [" << (usbSerial + serialLen - 6) << "]";
+		} else {
+			fFlavorInfoNameStr << " [" << usbSerial << "]";
+		}
+	} else if (fInstanceNumber > 1) {
+		// No serial, use instance number for second and subsequent cameras
+		fFlavorInfoNameStr << " #" << fInstanceNumber;
+	}
+
 	fFlavorInfoInfoStr << fFlavorInfoNameStr;
 	fFlavorInfo.name = fFlavorInfoNameStr.String();
 	fFlavorInfo.info = fFlavorInfoInfoStr.String();
@@ -160,6 +191,9 @@ CamDevice::CamDevice(CamDeviceAddon &_addon, BUSBDevice* _device)
 
 CamDevice::~CamDevice()
 {
+	// Stop reconfig thread first (it may try to control transfers)
+	StopReconfigThread();
+
 	// Ensure transfers are stopped before cleanup
 	// (Unplugged() should have been called, but be safe)
 	if (atomic_get(&fTransferEnabled) != 0) {
@@ -321,6 +355,9 @@ CamDevice::StopTransfer()
 	fLocker.Unlock();
 	wait_for_thread(fPumpThread, &err);
 	fLocker.Lock();
+
+	// Log error statistics summary on stream stop
+	LogErrorStatistics();
 
 	return B_OK;
 }
@@ -544,14 +581,30 @@ CamDevice::LogErrorStatistics()
 		fErrorHistogram.total_transfers, totalErrorRate);
 
 	static const char* errorNames[] = {
-		"None", "Timeout", "Stall", "CRC", "Overflow", "Disconnected", "Unknown"
+		"None", "Timeout", "Stall", "CRC", "Overflow", "Disconnected",
+		"EHCI Halted", "Babble", "Unknown"
 	};
+
+	// Track EHCI-specific errors for summary
+	uint32 ehciErrors = fErrorHistogram.counts[USB_ERROR_EHCI_HALTED] +
+	                    fErrorHistogram.counts[USB_ERROR_BABBLE];
 
 	for (int i = 1; i < USB_ERROR_TYPE_COUNT; i++) {
 		if (fErrorHistogram.counts[i] > 0) {
 			syslog(LOG_INFO, "  %s errors: %u (%.2f%%)\n",
 				errorNames[i], fErrorHistogram.counts[i],
 				fErrorHistogram.GetErrorRate((usb_error_type)i) * 100.0f);
+		}
+	}
+
+	// Warn about EHCI-specific errors
+	if (ehciErrors > 0) {
+		float ehciRate = (float)ehciErrors / fErrorHistogram.total_transfers * 100.0f;
+		syslog(LOG_WARNING, "  EHCI controller errors (Halted+Babble): %u (%.2f%%)\n",
+			ehciErrors, ehciRate);
+		if (ehciRate > 5.0f) {
+			syslog(LOG_WARNING, "  -> High EHCI error rate! Consider reducing resolution "
+				"or using a different USB port.\n");
 		}
 	}
 }
@@ -1279,8 +1332,11 @@ CamDevice::ClassifyUSBError(ssize_t error)
 			return USB_ERROR_STALL;
 
 		case B_DEV_CRC_ERROR:
-		case B_DEV_DATA_OVERRUN:
 			return USB_ERROR_CRC;
+
+		case B_DEV_DATA_OVERRUN:
+			// Data overrun often indicates babble (device sent too much data)
+			return USB_ERROR_BABBLE;
 
 		case B_DEV_FIFO_OVERRUN:
 		case B_DEV_DATA_UNDERRUN:
@@ -1290,6 +1346,11 @@ CamDevice::ClassifyUSBError(ssize_t error)
 		case B_DEV_NO_MEDIA:
 		case B_DEV_UNREADABLE:
 			return USB_ERROR_DISCONNECTED;
+
+		case B_DEV_BAD_PID:
+		case B_DEV_UNEXPECTED_PID:
+			// Bad/unexpected PID often indicates EHCI endpoint halted
+			return USB_ERROR_EHCI_HALTED;
 
 		default:
 			return USB_ERROR_UNKNOWN;
@@ -1665,7 +1726,8 @@ CamDevice::LogRecoveryRecommendation(usb_error_type error)
 	error_recovery_action action = EvaluateErrorRecovery(error);
 
 	static const char* errorNames[] = {
-		"None", "Timeout", "Stall", "CRC", "Overflow", "Disconnected", "Unknown"
+		"None", "Timeout", "Stall", "CRC", "Overflow", "Disconnected",
+		"EHCI Halted", "Babble", "Unknown"
 	};
 
 	const char* errorName = (error >= 0 && error < USB_ERROR_TYPE_COUNT)
@@ -1680,4 +1742,224 @@ CamDevice::LogRecoveryRecommendation(usb_error_type error)
 		syslog(LOG_INFO, "  Error rate: %.2f%%, Consecutive errors: %u\n",
 			errorRate, fErrorRecoveryConfig.consecutive_errors);
 	}
+
+	// Additional logging for EHCI-specific errors
+	if (error == USB_ERROR_EHCI_HALTED || error == USB_ERROR_BABBLE) {
+		syslog(LOG_WARNING, "CamDevice: EHCI error detected - this may indicate "
+			"USB bandwidth or controller issues\n");
+	}
+}
+
+
+// =============================================================================
+// Reconfiguration Worker Thread Implementation
+// =============================================================================
+// This thread handles resolution/format changes safely by:
+// 1. Waiting for a signal (semaphore)
+// 2. Stopping the data pump thread
+// 3. Changing USB alternate interface (SetAlternate)
+// 4. Restarting the data pump thread
+//
+// This prevents kernel panic "USB object did not become idle!" which occurs
+// when SetAlternate() is called while USB isochronous transfers are active.
+
+
+status_t
+CamDevice::StartReconfigThread()
+{
+	if (fReconfigThreadRunning)
+		return B_OK;  // Already running
+
+	// Create semaphore for signaling the thread
+	fReconfigSem = create_sem(0, "WebcamReconfigSem");
+	if (fReconfigSem < 0) {
+		syslog(LOG_ERR, "CamDevice: Failed to create reconfig semaphore: %s\n",
+			strerror(fReconfigSem));
+		return fReconfigSem;
+	}
+
+	// Spawn the reconfiguration thread
+	fReconfigThread = spawn_thread(_ReconfigThread, "Webcam Reconfig",
+		B_NORMAL_PRIORITY, this);
+	if (fReconfigThread < 0) {
+		syslog(LOG_ERR, "CamDevice: Failed to spawn reconfig thread: %s\n",
+			strerror(fReconfigThread));
+		delete_sem(fReconfigSem);
+		fReconfigSem = -1;
+		return fReconfigThread;
+	}
+
+	fReconfigThreadRunning = true;
+	resume_thread(fReconfigThread);
+
+	syslog(LOG_INFO, "CamDevice: Reconfig thread started (tid=%d)\n",
+		(int)fReconfigThread);
+	return B_OK;
+}
+
+
+status_t
+CamDevice::StopReconfigThread()
+{
+	if (!fReconfigThreadRunning)
+		return B_OK;  // Not running
+
+	syslog(LOG_INFO, "CamDevice: Stopping reconfig thread...\n");
+
+	// Signal thread to shutdown
+	{
+		BAutolock lock(fReconfigLock);
+		fReconfigRequest.type = RECONFIG_SHUTDOWN;
+		fReconfigRequest.pending = true;
+	}
+	fReconfigThreadRunning = false;
+
+	// Wake up the thread
+	if (fReconfigSem >= 0)
+		release_sem(fReconfigSem);
+
+	// Wait for thread to exit
+	if (fReconfigThread >= 0) {
+		status_t result;
+		wait_for_thread(fReconfigThread, &result);
+		fReconfigThread = -1;
+	}
+
+	// Cleanup semaphore
+	if (fReconfigSem >= 0) {
+		delete_sem(fReconfigSem);
+		fReconfigSem = -1;
+	}
+
+	syslog(LOG_INFO, "CamDevice: Reconfig thread stopped\n");
+	return B_OK;
+}
+
+
+int32
+CamDevice::_ReconfigThread(void* _this)
+{
+	CamDevice* device = (CamDevice*)_this;
+	return device->ReconfigThread();
+}
+
+
+status_t
+CamDevice::ReconfigThread()
+{
+	syslog(LOG_INFO, "CamDevice: ReconfigThread started\n");
+
+	while (fReconfigThreadRunning) {
+		// Wait for a reconfiguration request
+		status_t err = acquire_sem_etc(fReconfigSem, 1, B_RELATIVE_TIMEOUT,
+			1000000);  // 1 second timeout
+
+		if (err == B_TIMED_OUT)
+			continue;  // Check fReconfigThreadRunning and loop
+
+		if (err == B_BAD_SEM_ID || err == B_INTERRUPTED) {
+			// Semaphore deleted or interrupted - exit
+			break;
+		}
+
+		// Check if we should shutdown
+		if (!fReconfigThreadRunning)
+			break;
+
+		// Get the pending request
+		reconfig_request request;
+		{
+			BAutolock lock(fReconfigLock);
+			if (!fReconfigRequest.pending) {
+				continue;  // Spurious wakeup
+			}
+			request = fReconfigRequest;
+			fReconfigRequest.pending = false;
+		}
+
+		// Handle shutdown request
+		if (request.type == RECONFIG_SHUTDOWN)
+			break;
+
+		// Process the reconfiguration request
+		syslog(LOG_INFO, "CamDevice: ReconfigThread processing request type=%d\n",
+			request.type);
+
+		switch (request.type) {
+			case RECONFIG_RESOLUTION_CHANGE:
+				_HandleResolutionChange(request.width, request.height);
+				break;
+
+			case RECONFIG_FORMAT_CHANGE:
+				// Future: handle format changes
+				syslog(LOG_WARNING, "CamDevice: Format change not yet implemented\n");
+				break;
+
+			default:
+				syslog(LOG_WARNING, "CamDevice: Unknown reconfig request type: %d\n",
+					request.type);
+				break;
+		}
+	}
+
+	syslog(LOG_INFO, "CamDevice: ReconfigThread exiting\n");
+	return B_OK;
+}
+
+
+status_t
+CamDevice::RequestResolutionChange(uint32 width, uint32 height)
+{
+	// Start reconfig thread if not running
+	if (!fReconfigThreadRunning) {
+		status_t err = StartReconfigThread();
+		if (err != B_OK) {
+			syslog(LOG_ERR, "CamDevice: Cannot request resolution change: "
+				"reconfig thread failed to start (%s)\n", strerror(err));
+			return err;
+		}
+	}
+
+	// Queue the request
+	{
+		BAutolock lock(fReconfigLock);
+		if (fReconfigRequest.pending) {
+			syslog(LOG_WARNING, "CamDevice: Resolution change already pending, "
+				"updating to %ux%u\n", width, height);
+		}
+		fReconfigRequest.RequestResolution(width, height);
+	}
+
+	// Signal the thread
+	release_sem(fReconfigSem);
+
+	syslog(LOG_INFO, "CamDevice: Requested resolution change to %ux%u\n",
+		width, height);
+	return B_OK;
+}
+
+
+bool
+CamDevice::HasPendingReconfigRequest() const
+{
+	return fReconfigRequest.pending;
+}
+
+
+void
+CamDevice::CancelPendingReconfigRequest()
+{
+	BAutolock lock(fReconfigLock);
+	fReconfigRequest.Reset();
+}
+
+
+// Virtual method - base implementation does nothing
+// Subclasses (UVCCamDevice) override to perform actual resolution change
+status_t
+CamDevice::_HandleResolutionChange(uint32 width, uint32 height)
+{
+	syslog(LOG_INFO, "CamDevice: _HandleResolutionChange(%u, %u) - "
+		"base class, no-op\n", width, height);
+	return B_OK;
 }

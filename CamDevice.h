@@ -59,6 +59,8 @@ enum usb_error_type {
 	USB_ERROR_CRC,			// CRC/data corruption
 	USB_ERROR_OVERFLOW,		// Buffer overflow
 	USB_ERROR_DISCONNECTED,	// Device disconnected
+	USB_ERROR_EHCI_HALTED,	// EHCI endpoint halted (qTD error 0x00080248)
+	USB_ERROR_BABBLE,		// Babble detected (too much data)
 	USB_ERROR_UNKNOWN,		// Other errors
 	USB_ERROR_TYPE_COUNT	// Number of error types (for histogram)
 };
@@ -118,6 +120,10 @@ struct error_recovery_config {
 				return RECOVERY_REDUCE_BANDWIDTH;
 			case USB_ERROR_DISCONNECTED:
 				return RECOVERY_FATAL;
+			case USB_ERROR_EHCI_HALTED:
+				return RECOVERY_RESTART_TRANSFER;  // EHCI halt requires restart
+			case USB_ERROR_BABBLE:
+				return RECOVERY_REDUCE_BANDWIDTH;  // Too much data = reduce bandwidth
 			default:
 				return RECOVERY_RETRY;
 		}
@@ -192,6 +198,44 @@ struct usb_error_histogram {
 		for (int i = 1; i < USB_ERROR_TYPE_COUNT; i++) // Skip USB_ERROR_NONE
 			totalErrors += counts[i];
 		return (float)totalErrors / (float)total_transfers;
+	}
+};
+
+
+// =============================================================================
+// Resolution Reconfiguration Request (Safe Resolution Change)
+// =============================================================================
+// Used by worker thread to safely change resolution without kernel panic.
+// The data pump thread signals the reconfig thread, which then:
+// 1. Stops the transfer (waits for data pump to exit)
+// 2. Changes the resolution via SetAlternate()
+// 3. Restarts the transfer
+
+enum reconfig_request_type {
+	RECONFIG_NONE = 0,
+	RECONFIG_RESOLUTION_CHANGE,
+	RECONFIG_FORMAT_CHANGE,
+	RECONFIG_SHUTDOWN
+};
+
+struct reconfig_request {
+	reconfig_request_type	type;
+	uint32					width;
+	uint32					height;
+	bool					pending;
+
+	void Reset() {
+		type = RECONFIG_NONE;
+		width = 0;
+		height = 0;
+		pending = false;
+	}
+
+	void RequestResolution(uint32 w, uint32 h) {
+		width = w;
+		height = h;
+		type = RECONFIG_RESOLUTION_CHANGE;
+		pending = true;
 	}
 };
 
@@ -375,6 +419,11 @@ class CamDevice {
 			const error_recovery_config&	GetErrorRecoveryConfig() const;
 			void		LogRecoveryRecommendation(usb_error_type error);
 
+	// Safe resolution change (via worker thread to avoid kernel panic)
+			status_t	RequestResolutionChange(uint32 width, uint32 height);
+			bool		HasPendingReconfigRequest() const;
+			void		CancelPendingReconfigRequest();
+
 	// High-bandwidth auto-detection callbacks (for UVC devices)
 	virtual void		OnConsecutiveTransferFailures(uint32 count);
 	virtual void		OnTransferSuccess();
@@ -418,7 +467,14 @@ class CamDevice {
 	void				SetDataInput(BDataIO *input);
 	virtual status_t	DataPumpThread();
 	static int32		_DataPumpThread(void *_this);
-	
+
+	// Reconfiguration worker thread (for safe resolution changes)
+	virtual status_t	ReconfigThread();
+	static int32		_ReconfigThread(void *_this);
+			status_t	StartReconfigThread();
+			status_t	StopReconfigThread();
+	virtual status_t	_HandleResolutionChange(uint32 width, uint32 height);
+
 	virtual void		DumpRegs();
 	
 	protected:
@@ -453,6 +509,10 @@ class CamDevice {
 		uint32			fIsoMaxPacketSize;
 		int32			fFirstParameterID;
 		bigtime_t		fLastParameterChanges;
+
+		// Multi-camera unique identification
+		int32			fInstanceNumber;		// Unique instance number for this camera
+static	int32			sInstanceCounter;		// Global counter for unique IDs
 
 	protected:
 		friend class CamDeviceAddon;
@@ -508,6 +568,13 @@ class CamDevice {
 		uint8*			GetActiveBuffer();
 		uint8*			GetReadyBuffer();
 		void			SwapBuffers();
+
+		// Reconfiguration worker thread state
+		thread_id		fReconfigThread;
+		sem_id			fReconfigSem;
+		volatile bool	fReconfigThreadRunning;
+		reconfig_request	fReconfigRequest;
+		BLocker			fReconfigLock;
 };
 
 // the addon itself, that instanciate

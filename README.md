@@ -1,96 +1,185 @@
-# UVC Webcam Driver for Haiku OS
+# UVC Webcam Driver for Haiku
 
-A USB Video Class (UVC) media add-on for Haiku OS that provides webcam support for video conferencing and capture applications.
+A USB Video Class (UVC) driver for Haiku OS, providing support for standard USB webcams with video and audio capabilities.
 
-![Screenshot 1](img/screenshot01.png)
+## Features
 
-![Screenshot 2](img/screenshot02.png)
+### Video Support
+- **MJPEG** - Compressed format, recommended for HD resolutions (720p, 1080p)
+- **YUY2** - Uncompressed format, lower latency for video conferencing
+- **NV12** - YUV 4:2:0 planar format, reduced bandwidth
 
-## Supported Hardware
+### Camera Controls
+- **Processing Unit**: Brightness, Contrast, Saturation, Sharpness, Gamma, Hue
+- **White Balance**: Temperature, Auto mode
+- **Exposure**: Auto/Manual modes, Exposure time
+- **Focus**: Auto/Manual focus, Zoom
+- **Other**: Backlight compensation, Gain, Power line frequency (anti-flicker)
 
-This driver supports **UVC-compliant USB webcams**, which includes most modern webcams. The driver has been tested with:
+### Audio Support
+- USB Audio Class 1.0 for webcams with built-in microphones
+- Automatic detection and separate audio node creation
 
-- AUKEY PC-LM1E (1080p)
-- Most generic UVC webcams
+### Advanced Features
+- Multi-camera support with unique device naming
+- Hot-plug with parameter persistence
+- Automatic resolution fallback on bandwidth issues
+- USB 3.0 (XHCI) and USB 2.0 (EHCI) controller optimization
+- Extension Unit detection for vendor-specific features
 
-### Supported Features
+## Supported Devices
 
-- **Video Formats:** MJPEG and YUY2 (uncompressed)
-- **Resolutions:** Multiple resolutions up to 1080p (device dependent)
-- **Frame Rates:** Up to 30 fps (device dependent)
-- **Audio:** Optional USB Audio Class 1.0 support for webcams with built-in microphones
+| Device | VID:PID | Status |
+|--------|---------|--------|
+| AUKEY PC-LM1E | 1BCF:0001 | Full support |
+| Sonix USB 2.0 Camera | 0C45:6409 | Full support |
+| Realtek USB Camera | 0BDA:5843 | Supported |
+| Generic UVC webcams | Various | Should work |
 
-## Requirements
-
-- Haiku OS (tested on R1/beta5 and nightly builds)
-- libturbojpeg (`pkgman install devel:libturbojpeg`)
-- A UVC-compliant USB webcam
+The driver auto-detects any UVC-compliant webcam. Devices not in the list may still work.
 
 ## Installation
 
 ### From Source
 
 ```bash
-# Install dependencies
-pkgman install devel:libturbojpeg
-
-# Clone the repository
-git clone https://github.com/atomozero/haiku-uvc-webcam.git
-cd haiku-uvc-webcam
-
 # Build
 make
 
-# Install
+# Install to user add-ons
 make install
+
+# Restart media services
+media_client quit
+media_client launch
 ```
 
-The driver will be installed to:
+### Manual Installation
+
+Copy `aukey_webcam_v4.media_addon` to:
 ```
-/boot/home/config/non-packaged/add-ons/media/uvc_webcam.media_addon
+/boot/home/config/non-packaged/add-ons/media/
 ```
 
-### After Installation
+## Build Requirements
 
-1. Restart the media services or reboot
-2. Open **Media** preferences to verify the webcam is detected
-3. Use an application like **CodyCam** or **BubiCam** to test
+- Haiku OS (nightly or R1/beta4+)
+- GCC compiler
+- libturbojpeg (`pkgman install devel:libturbojpeg`)
+
+## Usage
+
+After installation and media server restart:
+
+1. Open **MediaPlayer** or **Cortex**
+2. The webcam appears as a video producer node
+3. Connect it to a video consumer (window, recorder, etc.)
+
+### Testing with Cortex
+
+1. Launch Cortex from Deskbar > Applications
+2. Find your camera node (e.g., "AUKEY PC-LM1E USB Camera")
+3. Drag a connection to "Video Window"
+4. Double-click the camera node to access controls
 
 ## Troubleshooting
 
-### Enable Debug Logging
-
-Set the `WEBCAM_DEBUG` environment variable before launching your application:
+### Camera not detected
 
 ```bash
+# Check if device is recognized
+listusb | grep -i video
+
+# Check driver loading
+tail -f /var/log/syslog | grep -i uvc
+```
+
+### Poor video quality or stuttering
+
+1. Try lower resolution (640x480)
+2. Use MJPEG format instead of YUY2 for HD
+3. Check USB connection (avoid hubs for USB 2.0 cameras)
+
+### No audio from webcam microphone
+
+- Ensure the webcam has a built-in microphone
+- Check Media preferences for audio input selection
+- Audio node appears as "[Camera Name] Audio"
+
+### Kernel panic on resolution change
+
+This is fixed in the driver. If you experience issues:
+1. Avoid changing resolution while streaming
+2. Stop the stream before changing settings
+
+## Diagnostics
+
+### UVC Benchmark Tool
+
+```bash
+cd tests
+g++ -O2 -o uvc_benchmark uvc_benchmark.cpp -lbe -ldevice
+./uvc_benchmark
+```
+
+Shows detailed UVC compliance and compatibility score.
+
+### Debug Logging
+
+Set environment variable before launching media services:
+```bash
 export WEBCAM_DEBUG=verbose
+media_client quit
+media_client launch
 ```
 
 Debug levels: `none`, `error`, `warn`, `info`, `verbose`, `trace`
 
-### View Logs
+## Architecture
 
-```bash
-tail -f /var/log/syslog | grep -iE "UVC|webcam|producer"
+```
+┌─────────────────────────────────────────────────────┐
+│                  Media Kit                          │
+├─────────────────────────────────────────────────────┤
+│  VideoProducer    │    AudioProducer               │
+├───────────────────┴─────────────────────────────────┤
+│                   CamDevice                         │
+│  (Frame buffering, USB transfers, deframing)        │
+├─────────────────────────────────────────────────────┤
+│                 UVCCamDevice                        │
+│  (UVC protocol, format negotiation, controls)       │
+├─────────────────────────────────────────────────────┤
+│                   CamRoster                         │
+│  (USB device discovery, hot-plug handling)          │
+├─────────────────────────────────────────────────────┤
+│               Haiku USB Stack                       │
+└─────────────────────────────────────────────────────┘
 ```
 
-### Safe Mode (Lower Resolution)
+## Performance Optimizations
 
-If you experience USB bandwidth issues:
-
-```bash
-export WEBCAM_SAFE_MODE=1
-```
+- **YUV-RGB Lookup Tables**: Pre-computed conversion tables for faster color space conversion
+- **Frame Pool Recycling**: Reduces memory allocation overhead
+- **Double Buffering**: Improved USB transfer efficiency
+- **Adaptive Timeout**: Dynamic timeout based on actual frame timing
+- **Log Throttling**: Reduced syslog overhead in production
 
 ## Known Limitations
 
-- High-bandwidth USB endpoints (3 transactions/microframe) may not work on all systems due to Haiku EHCI driver limitations
-- Resolution changes require stream restart
+- Still image capture: Detection only (no hardware trigger support)
+- USB 1.1 (OHCI/UHCI): Limited bandwidth, low resolutions only
+- Some vendor Extension Units: Detected but controls not exposed
 
 ## License
 
-MIT License - See [LICENSE](LICENSE) for details.
+Distributed under the MIT License. See source files for details.
 
-## Contributing
+## Credits
 
-Contributions are welcome! Please open an issue or pull request on GitHub.
+- Original driver: Ithamar Adema, Jérôme Duval, Gabriel Hartmann
+- UVC improvements and optimizations: 2024-2025 contributors
+
+## Links
+
+- [Haiku OS](https://www.haiku-os.org/)
+- [USB Video Class Specification](https://www.usb.org/document-library/video-class-v15-document-set)

@@ -10,9 +10,9 @@ INCLUDES = -I. -I./addons/uvc \
 	-I/boot/system/develop/headers/private/drivers
 
 LIBS = -lbe -lmedia -ldevice -lturbojpeg
-LDFLAGS = -shared -Xlinker -soname=uvc_webcam.media_addon
+LDFLAGS = -shared -Xlinker -soname=aukey_webcam_v4.media_addon
 
-TARGET = uvc_webcam.media_addon
+TARGET = aukey_webcam_v4.media_addon
 
 # Source files
 SOURCES = \
