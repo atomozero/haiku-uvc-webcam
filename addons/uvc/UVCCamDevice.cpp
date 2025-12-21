@@ -381,6 +381,9 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 	fHighBandwidthWorks(true),		// Assume it works until proven otherwise
 	fHighBandwidthFailures(0),
 	fUsingHighBandwidth(false),
+	// Bandwidth estimation (cached)
+	fMaxAvailableBandwidth(0),
+	fBandwidthCalculated(false),
 	// USB controller detection
 	fControllerDetected(false),
 	// MJPEG frame size monitoring
@@ -771,13 +774,15 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 		// (level 0 = highest, level N = lowest)
 		_BuildSortedResolutionList();
 
-		// Log frame indices for each resolution
+		// Log frame indices for current format (raw USB order, for debugging)
 		BList* frameList = fIsMJPEG ? &fMJPEGFrames : &fUncompressedFrames;
+		syslog(LOG_DEBUG, "UVCCamDevice: Raw %s frame list (%d entries):\n",
+			fIsMJPEG ? "MJPEG" : "YUY2", (int)frameList->CountItems());
 		for (int32 i = 0; i < frameList->CountItems(); i++) {
 			const usb_video_frame_descriptor* desc =
 				(const usb_video_frame_descriptor*)frameList->ItemAt(i);
 			if (desc)
-				syslog(LOG_INFO, "UVCCamDevice:   [%d] %ux%u frame_index=%u\n",
+				syslog(LOG_DEBUG, "UVCCamDevice:   raw[%d] %ux%u frame_index=%u\n",
 					(int)i, desc->width, desc->height, desc->frame_index);
 		}
 	} else {
@@ -1385,8 +1390,21 @@ UVCCamDevice::StartTransfer()
 status_t
 UVCCamDevice::StopTransfer()
 {
+	// CRITICAL FIX: Stop the data pump thread FIRST, before changing USB interface.
+	// Previous code called _SelectIdleAlternate() before CamDevice::StopTransfer(),
+	// which caused KDL panic "USB object did not become idle!" because SetAlternate()
+	// was called while the pump thread was still performing IsochronousTransfer().
+	//
+	// Correct sequence:
+	// 1. Stop the pump thread and wait for it to exit (CamDevice::StopTransfer)
+	// 2. Then switch to alternate 0 to turn off LED (_SelectIdleAlternate)
+
+	status_t result = CamDevice::StopTransfer();
+
+	// Now that pump thread is stopped, it's safe to change USB interface
 	_SelectIdleAlternate();
-	return CamDevice::StopTransfer();
+
+	return result;
 }
 
 
@@ -1528,6 +1546,46 @@ UVCCamDevice::AcceptVideoFrame(uint32& width, uint32& height)
 		const usb_video_frame_descriptor* descriptor
 			= (const usb_video_frame_descriptor*)frameList->ItemAt(i);
 		if (descriptor->width == width && descriptor->height == height) {
+			// Check if resolution is supportable with available bandwidth
+			// Auto-fallback to lower resolution if bandwidth is insufficient
+			if (!_IsResolutionSupportable(width, height, fIsMJPEG)) {
+				float maxFps = _EstimateMaxFps(width, height, fIsMJPEG);
+				syslog(LOG_WARNING, "UVCCamDevice: %ux%u limited to %.1f fps - "
+					"auto-selecting lower resolution\n", width, height, maxFps);
+				syslog(LOG_INFO, "UVCCamDevice: Enable high-bandwidth with: "
+					"export WEBCAM_FORCE_HIGH_BANDWIDTH=1\n");
+
+				// Find next lower resolution in sorted list
+				int32* sortedIndices = fIsMJPEG ? fSortedMJPEGIndices : fSortedUncompressedIndices;
+				int32 sortedCount = fIsMJPEG ? fSortedMJPEGCount : fSortedUncompressedCount;
+
+				// Find current position in sorted list and try next lower
+				for (int32 level = 0; level < sortedCount - 1; level++) {
+					int32 idx = sortedIndices[level];
+					if (idx >= 0 && idx < frameCount) {
+						usb_video_frame_descriptor* desc =
+							(usb_video_frame_descriptor*)frameList->ItemAt(idx);
+						if (desc && desc->width == width && desc->height == height) {
+							// Found current, get next lower
+							int32 nextIdx = sortedIndices[level + 1];
+							if (nextIdx >= 0 && nextIdx < frameCount) {
+								usb_video_frame_descriptor* nextDesc =
+									(usb_video_frame_descriptor*)frameList->ItemAt(nextIdx);
+								if (nextDesc) {
+									syslog(LOG_INFO, "UVCCamDevice: Falling back to %ux%u\n",
+										nextDesc->width, nextDesc->height);
+									width = nextDesc->width;
+									height = nextDesc->height;
+									// Continue to accept this resolution
+									descriptor = nextDesc;
+									break;
+								}
+							}
+						}
+					}
+				}
+			}
+
 			/* FIX BUG 11: Usare descriptor->frame_index invece di i+1.
 			 * Il frame_index nel descrittore USB è il valore che va usato
 			 * nel Probe/Commit, NON la posizione nella lista.
@@ -1542,6 +1600,16 @@ UVCCamDevice::AcceptVideoFrame(uint32& width, uint32& height)
 					((UVCDeframer*)fDeframer)->SetExpectedFrameSize(width * height * 2);
 				}
 			}
+
+			// Update current resolution level for correct fallback direction
+			// This ensures fallback goes DOWN (to lower resolutions) not UP
+			int32 level = _FindResolutionLevel(width, height);
+			if (level >= 0) {
+				fCurrentResolutionLevel = level;
+				syslog(LOG_DEBUG, "UVCCamDevice: Set resolution level to %d for %ux%u\n",
+					level, width, height);
+			}
+
 			SetVideoFrame(BRect(0, 0, width - 1, height - 1));
 			return B_OK;
 		}
@@ -1630,6 +1698,46 @@ UVCCamDevice::_ProbeCommitFormat()
 {
 	if (fDevice == NULL)
 		return B_ERROR;
+
+	// INTERFACE PREPARATION: ALWAYS reset streaming interface to alternate 0
+	// before probe/commit. This is critical because:
+	// 1. The camera's internal state may not match our tracked fCurrentVideoAlternate
+	// 2. After USB errors or EHCI issues, the interface state is undefined
+	// 3. Many cameras require explicit SetAlternate(0) before accepting probe commands
+	// 4. On first call, fCurrentVideoAlternate is 0 but camera may need reset anyway
+	const BUSBConfiguration* config = fDevice->ActiveConfiguration();
+	if (config != NULL) {
+		const BUSBInterface* streaming = config->InterfaceAt(fStreamingIndex);
+		if (streaming != NULL) {
+			syslog(LOG_INFO, "UVCCamDevice: Probe/Commit: resetting interface to alternate 0\n");
+			status_t resetResult = ((BUSBInterface*)streaming)->SetAlternate(0);
+			if (resetResult == B_OK) {
+				fCurrentVideoAlternate = 0;
+				// Give the device time to settle after interface reset
+				snooze(100000);  // 100ms - increased for EHCI stability
+			} else {
+				syslog(LOG_WARNING, "UVCCamDevice: Interface reset failed: %s (continuing anyway)\n",
+					strerror(resetResult));
+				// Even if SetAlternate fails, give device time to recover
+				snooze(50000);
+			}
+		}
+	}
+
+	// Additional delay before first control transfer
+	// Some cameras need time after initialization before accepting probe
+	// Use WEBCAM_PROBE_DELAY environment variable to increase delay (in ms)
+	// Increased default to 100ms for better EHCI compatibility
+	bigtime_t probeDelay = 100000;  // 100ms default (was 20ms)
+	const char* delayEnv = getenv("WEBCAM_PROBE_DELAY");
+	if (delayEnv != NULL) {
+		int envDelay = atoi(delayEnv);
+		if (envDelay > 0 && envDelay <= 2000) {
+			probeDelay = envDelay * 1000;
+			syslog(LOG_INFO, "UVCCamDevice: Using WEBCAM_PROBE_DELAY=%dms\n", envDelay);
+		}
+	}
+	snooze(probeDelay);
 
 	usb_video_probe_and_commit_controls request;
 	memset(&request, 0, sizeof(request));
@@ -1846,30 +1954,45 @@ UVCCamDevice::_ProbeCommitFormat()
 	syslog(LOG_INFO, "UVC Format indices: MJPEG=%d, Uncompressed=%d\n",
 		fMJPEGFormatIndex, fUncompressedFormatIndex);
 
-	// Try SET_CUR Probe with fallback to different sizes
-	// Some cameras use non-standard sizes or don't respond to all sizes
+	// Try SET_CUR Probe with retry logic and fallback to different sizes
+	// Some cameras need multiple attempts before responding to control transfers.
+	// EHCI controller errors (0x00080248) often indicate timing issues that
+	// can be resolved with retries and increased delays.
 	static const size_t kProbeSizes[] = { 34, 26, 48, 22 };
 	static const int kNumProbeSizes = sizeof(kProbeSizes) / sizeof(kProbeSizes[0]);
+	static const int kMaxRetries = 5;  // Increased retries per size for EHCI stability
+	static const bigtime_t kRetryDelays[] = { 100000, 200000, 300000, 400000, 500000 };  // 100-500ms delays
 
 	size_t actualLength = 0;
 	bool probeSuccess = false;
 
-	// First try the expected size based on UVC version
+	// First try the expected size based on UVC version with retries
 	syslog(LOG_INFO, "UVC Probe: trying size %zu (UVC version 0x%04x)\n",
 		length, fHeaderDescriptor->version);
 
-	actualLength = fDevice->ControlTransfer(
-		USB_REQTYPE_CLASS | USB_REQTYPE_INTERFACE_OUT, USB_VIDEO_RC_SET_CUR,
-		USB_VIDEO_VS_PROBE_CONTROL << 8, fStreamingIndex, length, &request);
+	for (int retry = 0; retry < kMaxRetries && !probeSuccess; retry++) {
+		if (retry > 0) {
+			syslog(LOG_INFO, "UVC Probe: retry %d with delay %lldms\n",
+				retry, kRetryDelays[retry - 1] / 1000);
+			snooze(kRetryDelays[retry - 1]);
+		}
 
-	if (actualLength == length) {
-		probeSuccess = true;
-		syslog(LOG_INFO, "UVC Probe SET_CUR succeeded with size %zu\n", length);
-	} else {
-		syslog(LOG_WARNING, "UVC Probe SET_CUR failed with size %zu (got %zd), trying alternatives...\n",
-			length, (ssize_t)actualLength);
+		actualLength = fDevice->ControlTransfer(
+			USB_REQTYPE_CLASS | USB_REQTYPE_INTERFACE_OUT, USB_VIDEO_RC_SET_CUR,
+			USB_VIDEO_VS_PROBE_CONTROL << 8, fStreamingIndex, length, &request);
 
-		// Try other common sizes
+		if (actualLength == length) {
+			probeSuccess = true;
+			syslog(LOG_INFO, "UVC Probe SET_CUR succeeded with size %zu (attempt %d)\n",
+				length, retry + 1);
+		}
+	}
+
+	if (!probeSuccess) {
+		syslog(LOG_WARNING, "UVC Probe SET_CUR failed with size %zu after %d retries, trying alternatives...\n",
+			length, kMaxRetries);
+
+		// Try other common sizes with retries
 		for (int i = 0; i < kNumProbeSizes && !probeSuccess; i++) {
 			size_t trySize = kProbeSizes[i];
 			if (trySize == length)
@@ -1877,18 +2000,21 @@ UVCCamDevice::_ProbeCommitFormat()
 
 			syslog(LOG_INFO, "UVC Probe: trying alternative size %zu\n", trySize);
 
-			// Small delay between attempts
-			snooze(10000);  // 10ms
+			for (int retry = 0; retry < kMaxRetries && !probeSuccess; retry++) {
+				// Delay before each attempt (including first)
+				snooze(kRetryDelays[retry < kMaxRetries - 1 ? retry : kMaxRetries - 2]);
 
-			actualLength = fDevice->ControlTransfer(
-				USB_REQTYPE_CLASS | USB_REQTYPE_INTERFACE_OUT, USB_VIDEO_RC_SET_CUR,
-				USB_VIDEO_VS_PROBE_CONTROL << 8, fStreamingIndex, trySize, &request);
+				actualLength = fDevice->ControlTransfer(
+					USB_REQTYPE_CLASS | USB_REQTYPE_INTERFACE_OUT, USB_VIDEO_RC_SET_CUR,
+					USB_VIDEO_VS_PROBE_CONTROL << 8, fStreamingIndex, trySize, &request);
 
-			if (actualLength == trySize) {
-				length = trySize;  // Use this size for subsequent operations
-				probeSuccess = true;
-				syslog(LOG_INFO, "UVC Probe SET_CUR succeeded with alternative size %zu\n", length);
-				break;
+				if (actualLength == trySize) {
+					length = trySize;  // Use this size for subsequent operations
+					probeSuccess = true;
+					syslog(LOG_INFO, "UVC Probe SET_CUR succeeded with alternative size %zu (attempt %d)\n",
+						trySize, retry + 1);
+					break;
+				}
 			}
 		}
 	}
@@ -2004,6 +2130,51 @@ UVCCamDevice::_GetMaxAvailableBandwidth()
 	}
 
 	return maxBandwidth;
+}
+
+
+float
+UVCCamDevice::_EstimateMaxFps(uint32 width, uint32 height, bool isMJPEG)
+{
+	// Calculate estimated max FPS for a given resolution based on available bandwidth
+	// USB 2.0 high-speed: 8000 microframes/second
+
+	uint32 bandwidth = _GetMaxAvailableBandwidth();
+	if (bandwidth == 0)
+		return 0.0f;
+
+	uint32 bytesPerSecond = bandwidth * 8000;
+
+	if (isMJPEG) {
+		// MJPEG is compressed, typically 1/10 to 1/20 of raw YUY2 size
+		// Use conservative estimate of 1/8 compression ratio
+		uint32 estimatedFrameSize = (width * height * 2) / 8;
+		return (float)bytesPerSecond / estimatedFrameSize;
+	} else {
+		// YUY2 uncompressed: 2 bytes per pixel
+		uint32 frameSize = width * height * 2;
+		return (float)bytesPerSecond / frameSize;
+	}
+}
+
+
+bool
+UVCCamDevice::_IsResolutionSupportable(uint32 width, uint32 height, bool isMJPEG)
+{
+	// Check if a resolution can achieve minimum acceptable FPS
+	// We require at least 5 FPS for reasonable video playback
+
+	const float kMinAcceptableFps = 5.0f;
+	float maxFps = _EstimateMaxFps(width, height, isMJPEG);
+
+	if (maxFps < kMinAcceptableFps) {
+		syslog(LOG_WARNING, "UVCCamDevice: Resolution %ux%u (%s) limited to %.1f fps "
+			"(requires high-bandwidth endpoints)\n",
+			width, height, isMJPEG ? "MJPEG" : "YUY2", maxFps);
+		return false;
+	}
+
+	return true;
 }
 
 
@@ -5608,6 +5779,42 @@ UVCCamDevice::_GetMaxResolutionLevel()
 }
 
 
+int32
+UVCCamDevice::_FindResolutionLevel(uint32 width, uint32 height)
+{
+	// Find the level (position in sorted list) for a given resolution
+	// Returns -1 if not found
+	BList* frameList = fIsMJPEG ? &fMJPEGFrames : &fUncompressedFrames;
+	int32* sortedIndices = fIsMJPEG ? fSortedMJPEGIndices : fSortedUncompressedIndices;
+	int32 sortedCount = fIsMJPEG ? fSortedMJPEGCount : fSortedUncompressedCount;
+
+	// Search in sorted list if available
+	if (sortedCount > 0) {
+		for (int32 level = 0; level < sortedCount; level++) {
+			int32 frameIndex = sortedIndices[level];
+			if (frameIndex >= 0 && frameIndex < frameList->CountItems()) {
+				usb_video_frame_descriptor* desc =
+					(usb_video_frame_descriptor*)frameList->ItemAt(frameIndex);
+				if (desc && desc->width == width && desc->height == height) {
+					return level;
+				}
+			}
+		}
+	} else {
+		// Fallback to raw list order
+		for (int32 i = 0; i < frameList->CountItems(); i++) {
+			usb_video_frame_descriptor* desc =
+				(usb_video_frame_descriptor*)frameList->ItemAt(i);
+			if (desc && desc->width == width && desc->height == height) {
+				return i;
+			}
+		}
+	}
+
+	return -1;  // Not found
+}
+
+
 void
 UVCCamDevice::_BuildSortedResolutionList()
 {
@@ -5652,13 +5859,17 @@ UVCCamDevice::_BuildSortedResolutionList()
 		fSortedMJPEGCount = mjpegCount;
 
 		// Log the sorted order
-		syslog(LOG_INFO, "UVC: MJPEG resolutions sorted by size:\n");
+		syslog(LOG_INFO, "UVC: MJPEG resolutions sorted by size (count=%d):\n", mjpegCount);
 		for (int32 i = 0; i < mjpegCount; i++) {
+			int32 sortedIdx = fSortedMJPEGIndices[i];
 			usb_video_frame_descriptor* desc =
-				(usb_video_frame_descriptor*)fMJPEGFrames.ItemAt(fSortedMJPEGIndices[i]);
+				(usb_video_frame_descriptor*)fMJPEGFrames.ItemAt(sortedIdx);
 			if (desc) {
-				syslog(LOG_INFO, "  [%d] %ux%u (frame index %d)\n",
-					i, desc->width, desc->height, fSortedMJPEGIndices[i]);
+				syslog(LOG_INFO, "UVCCamDevice:   [%d] %ux%u frame_index=%u\n",
+					i, desc->width, desc->height, desc->frame_index);
+			} else {
+				syslog(LOG_WARNING, "UVCCamDevice:   [%d] NULL descriptor at sorted index %d\n",
+					i, sortedIdx);
 			}
 		}
 	}
@@ -5694,13 +5905,17 @@ UVCCamDevice::_BuildSortedResolutionList()
 		fSortedUncompressedCount = uncompCount;
 
 		// Log the sorted order
-		syslog(LOG_INFO, "UVC: Uncompressed resolutions sorted by size:\n");
+		syslog(LOG_INFO, "UVC: Uncompressed resolutions sorted by size (count=%d):\n", uncompCount);
 		for (int32 i = 0; i < uncompCount; i++) {
+			int32 sortedIdx = fSortedUncompressedIndices[i];
 			usb_video_frame_descriptor* desc =
-				(usb_video_frame_descriptor*)fUncompressedFrames.ItemAt(fSortedUncompressedIndices[i]);
+				(usb_video_frame_descriptor*)fUncompressedFrames.ItemAt(sortedIdx);
 			if (desc) {
-				syslog(LOG_INFO, "  [%d] %ux%u (frame index %d)\n",
-					i, desc->width, desc->height, fSortedUncompressedIndices[i]);
+				syslog(LOG_INFO, "UVCCamDevice:   [%d] %ux%u frame_index=%u\n",
+					i, desc->width, desc->height, desc->frame_index);
+			} else {
+				syslog(LOG_WARNING, "UVCCamDevice:   [%d] NULL descriptor at sorted index %d\n",
+					i, sortedIdx);
 			}
 		}
 	}

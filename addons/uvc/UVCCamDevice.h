@@ -399,11 +399,14 @@ private:
 			void				_GetResolutionAtLevel(int32 level,
 									uint32* width, uint32* height);
 			int32				_GetMaxResolutionLevel();
+			int32				_FindResolutionLevel(uint32 width, uint32 height);
 			void				_InitializeFallbackConfig();
 			void				_BuildSortedResolutionList();
 
 	// Bandwidth calculation (YUY2 adaptive FPS support)
 			uint32				_GetMaxAvailableBandwidth();
+			float				_EstimateMaxFps(uint32 width, uint32 height, bool isMJPEG);
+			bool				_IsResolutionSupportable(uint32 width, uint32 height, bool isMJPEG);
 
 	// High-bandwidth auto-detection
 			bool				_ShouldUseHighBandwidth();
@@ -597,6 +600,10 @@ private:
 			bool				fHighBandwidthWorks;		// Did it work?
 			uint32				fHighBandwidthFailures;		// Consecutive failures
 			bool				fUsingHighBandwidth;		// Currently using high-bandwidth?
+
+			// Bandwidth estimation for resolution validation
+			uint32				fMaxAvailableBandwidth;		// Max bytes/microframe (cached)
+			bool				fBandwidthCalculated;		// True after first calculation
 
 			// USB controller detection (XHCI optimization)
 			usb_controller_info	fControllerInfo;			// Detected controller capabilities
