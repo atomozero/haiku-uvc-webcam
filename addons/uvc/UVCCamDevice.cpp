@@ -4296,16 +4296,18 @@ UVCCamDevice::_ConvertYUY2toRGB32(unsigned char* dst, unsigned char* src,
 	size_t srcStride = (size_t)width * 2;  // YUY2: 2 bytes per pixel (default)
 	size_t dstStride = (size_t)width * 4;  // RGB32: 4 bytes per pixel
 
-	// STRIDE QUIRK: Microdia 0c45:6409 uses 352-pixel internal buffer width
-	// This causes 64-byte padding per row for resolutions < 352 width
-	// The camera sends correct total bytes but organized with wrong stride
-	if (fMicrodiaQuirk && width < 352) {
-		srcStride = 352 * 2;  // 704 bytes per row
-		static bool sQuirkApplied = false;
-		if (!sQuirkApplied) {
-			syslog(LOG_INFO, "YUY2: Applying Microdia stride quirk: %dx%d using stride %zu\n",
-				(int)width, (int)height, srcStride);
-			sQuirkApplied = true;
+	// STRIDE QUIRK: Microdia 0c45:6409 may use 352-pixel internal buffer width
+	// Only apply when srcSize indicates actual padding (srcSize > expectedSize)
+	if (fMicrodiaQuirk && width < 352 && srcSize > expectedSize) {
+		size_t paddedStride = 352 * 2;
+		if (srcSize >= paddedStride * height) {
+			srcStride = paddedStride;
+			static bool sQuirkApplied = false;
+			if (!sQuirkApplied) {
+				syslog(LOG_INFO, "YUY2: Applying Microdia stride quirk: %dx%d using stride %zu (srcSize=%zu)\n",
+					(int)width, (int)height, srcStride, srcSize);
+				sQuirkApplied = true;
+			}
 		}
 	}
 	// STRIDE FIX: Detect row padding (some cameras add padding)
