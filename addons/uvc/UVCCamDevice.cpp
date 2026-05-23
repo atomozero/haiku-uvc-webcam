@@ -3245,104 +3245,79 @@ UVCCamDevice::_AddAutoParameter(BParameterGroup* subgroup, int32 index,
 void
 UVCCamDevice::AddParameters(BParameterGroup* group, int32& index)
 {
-	printf("UVCCamDevice::AddParameters()\n");
 	fFirstParameterID = index;
-//	debug_printf("fIndex = %d\n",fIndex);
 	CamDevice::AddParameters(group, index);
 
-	/* Add Video Format/Resolution info group */
-	BParameterGroup* videoGroup = group->MakeGroup("Video Format");
+	// ── Stream Configuration ─────────────────────────────────
+	BString streamLabel;
+	streamLabel.SetToFormat("Stream (%s)", fIsMJPEG ? "MJPEG" : "YUY2");
+	BParameterGroup* streamGroup = group->MakeGroup(streamLabel.String());
 
-	/* Add format info as text (read-only) */
-	BString formatInfo;
-	if (fIsMJPEG) {
-		formatInfo = "Format: MJPEG (compressed)";
-	} else {
-		formatInfo = "Format: YUY2 (uncompressed)";
-	}
-
-	/* Add format type as text */
-	videoGroup->MakeTextParameter(index + 15, B_MEDIA_RAW_VIDEO,
-		formatInfo.String(), "Format", 64);
-
-	/* Add resolution selector as discrete parameter (Task 2) */
+	// Resolution selector
 	BList* frameList = fIsMJPEG ? &fMJPEGFrames : &fUncompressedFrames;
 	if (frameList->CountItems() > 0) {
-		fResolutionParameterID = index + 14;  // Store parameter ID for later
+		fResolutionParameterID = index + 14;
 
-		BDiscreteParameter* resParam = videoGroup->MakeDiscreteParameter(
-			fResolutionParameterID, B_MEDIA_RAW_VIDEO, "Resolution", B_RESOLUTION);
+		BDiscreteParameter* resParam = streamGroup->MakeDiscreteParameter(
+			fResolutionParameterID, B_MEDIA_RAW_VIDEO, "Resolution",
+			B_RESOLUTION);
 
-		/* Add each available resolution as an option */
 		for (int32 i = 0; i < frameList->CountItems(); i++) {
-			const usb_video_frame_descriptor* frameDesc =
+			const usb_video_frame_descriptor* desc =
 				(const usb_video_frame_descriptor*)frameList->ItemAt(i);
-			if (frameDesc != NULL) {
-				BString resName;
-				resName << frameDesc->width << "x" << frameDesc->height;
-				if (frameDesc->default_frame_interval > 0) {
-					float fps = 10000000.0f / frameDesc->default_frame_interval;
-					resName << " @ " << (int)fps << " fps";
-				}
-				resParam->AddItem(i, resName.String());
-			}
+			if (desc == NULL)
+				continue;
+			BString label;
+			label.SetToFormat("%ux%u", desc->width, desc->height);
+			resParam->AddItem(i, label.String());
 		}
 
-		/* Ensure selected index is valid */
-		if (fSelectedResolutionIndex >= frameList->CountItems()) {
+		if (fSelectedResolutionIndex >= frameList->CountItems())
 			fSelectedResolutionIndex = 0;
-		}
 
-		printf("UVCCamDevice: Added resolution selector with %d options, current=%d\n",
-			(int)frameList->CountItems(), (int)fSelectedResolutionIndex);
-
-		/* Add frame rate selector (P2 Feature) */
-		const usb_video_frame_descriptor* currentFrame =
-			(const usb_video_frame_descriptor*)frameList->ItemAt(fSelectedResolutionIndex);
-		if (currentFrame != NULL && currentFrame->frame_interval_type > 0) {
+		// Frame rate selector
+		const usb_video_frame_descriptor* curFrame =
+			(const usb_video_frame_descriptor*)frameList->ItemAt(
+				fSelectedResolutionIndex);
+		if (curFrame != NULL && curFrame->frame_interval_type > 0) {
 			fFrameRateParameterID = index + 16;
-
-			/* Copy available frame intervals */
-			fNumFrameIntervals = currentFrame->frame_interval_type;
+			fNumFrameIntervals = curFrame->frame_interval_type;
 			if (fNumFrameIntervals > 8)
 				fNumFrameIntervals = 8;
 
+			for (uint8 k = 0; k < fNumFrameIntervals; k++)
+				fCurrentFrameIntervals[k] =
+					curFrame->discrete_frame_intervals[k];
+
+			BDiscreteParameter* fpsParam =
+				streamGroup->MakeDiscreteParameter(fFrameRateParameterID,
+					B_MEDIA_RAW_VIDEO, "Frame Rate", B_GENERIC);
+
 			for (uint8 k = 0; k < fNumFrameIntervals; k++) {
-				fCurrentFrameIntervals[k] = currentFrame->discrete_frame_intervals[k];
+				if (fCurrentFrameIntervals[k] == 0)
+					continue;
+				float fps = 10000000.0f / fCurrentFrameIntervals[k];
+				BString label;
+				label.SetToFormat("%.0f fps", fps);
+				fpsParam->AddItem(k, label.String());
 			}
 
-			BDiscreteParameter* fpsParam = videoGroup->MakeDiscreteParameter(
-				fFrameRateParameterID, B_MEDIA_RAW_VIDEO, "Frame Rate", B_GENERIC);
-
-			/* Add each available frame rate as an option */
 			for (uint8 k = 0; k < fNumFrameIntervals; k++) {
-				if (fCurrentFrameIntervals[k] > 0) {
-					float fps = 10000000.0f / fCurrentFrameIntervals[k];
-					BString fpsName;
-					fpsName.SetToFormat("%.1f fps", fps);
-					fpsParam->AddItem(k, fpsName.String());
-				}
-			}
-
-			/* Use default interval to find initial selection */
-			for (uint8 k = 0; k < fNumFrameIntervals; k++) {
-				if (fCurrentFrameIntervals[k] == currentFrame->default_frame_interval) {
+				if (fCurrentFrameIntervals[k]
+					== curFrame->default_frame_interval) {
 					fSelectedFrameIntervalIndex = k;
 					break;
 				}
 			}
-			fSelectedFrameInterval = fCurrentFrameIntervals[fSelectedFrameIntervalIndex];
-
-			printf("UVCCamDevice: Added frame rate selector with %d options, current=%d (%.1f fps)\n",
-				(int)fNumFrameIntervals, (int)fSelectedFrameIntervalIndex,
-				10000000.0f / fSelectedFrameInterval);
+			fSelectedFrameInterval =
+				fCurrentFrameIntervals[fSelectedFrameIntervalIndex];
 		}
 	}
 
+	// ── Image Adjustments ────────────────────────────────────
 	const BUSBConfiguration* config;
 	const BUSBInterface* interface;
 	uint8 buffer[1024];
-
 	usb_descriptor* generic = (usb_descriptor*)buffer;
 
 	for (uint32 i = 0; i < fDevice->CountConfigurations(); i++) {
@@ -3354,27 +3329,29 @@ UVCCamDevice::AddParameters(BParameterGroup* group, int32& index)
 			interface = config->InterfaceAt(j);
 			if (interface == NULL)
 				continue;
-			if (interface->Class() != USB_VIDEO_DEVICE_CLASS || interface->Subclass()
-				!= USB_VIDEO_INTERFACE_VIDEOCONTROL_SUBCLASS)
+			if (interface->Class() != USB_VIDEO_DEVICE_CLASS
+				|| interface->Subclass()
+					!= USB_VIDEO_INTERFACE_VIDEOCONTROL_SUBCLASS)
 				continue;
 			for (uint32 k = 0; interface->OtherDescriptorAt(k, generic,
 				sizeof(buffer)) == B_OK; k++) {
-				if (generic->generic.descriptor_type != (USB_REQTYPE_CLASS
-					| USB_DESCRIPTOR_INTERFACE))
+				if (generic->generic.descriptor_type
+					!= (USB_REQTYPE_CLASS | USB_DESCRIPTOR_INTERFACE))
 					continue;
-
-				if (((const usbvc_class_descriptor*)generic)->descriptorSubtype
+				if (((const usbvc_class_descriptor*)generic)
+					->descriptorSubtype
 					== USB_VIDEO_VC_PROCESSING_UNIT) {
-					/* Add Image Settings group label */
-					group->MakeGroup("Image Settings");
-					_AddProcessingParameter(group, index,
-						(const usb_video_processing_unit_descriptor*)generic);
+					BParameterGroup* imageGroup =
+						group->MakeGroup("Image");
+					_AddProcessingParameter(imageGroup, index,
+						(const usb_video_processing_unit_descriptor*)
+							generic);
 				}
 			}
 		}
 	}
 
-	/* Add Camera Terminal controls (Exposure, Focus, Zoom, etc.) */
+	// ── Camera Controls ──────────────────────────────────────
 	_AddCameraTerminalControls(group, index);
 }
 

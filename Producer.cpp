@@ -228,9 +228,6 @@ VideoProducer::NodeRegistered()
 	state->AddItem(B_HOST_TO_LENDIAN_INT32(0x000000ff), "Blue");
 	*/
 
-	g = main->MakeGroup("Info");
-	g->MakeTextParameter(P_INFO, B_MEDIA_RAW_VIDEO, "", "Info", 256);
-
 	int32 id = P_LAST;
 	if (fCamDevice) {
 #ifndef SINGLE_PARAMETER_GROUP
