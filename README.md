@@ -35,14 +35,14 @@ A USB Video Class (UVC) driver for Haiku OS, providing support for standard USB 
 
 ## Supported Devices
 
-| Device | VID:PID | Status |
-|--------|---------|--------|
-| AUKEY PC-LM1E | 1BCF:0001 | Full support |
-| Sonix USB 2.0 Camera | 0C45:6409 | Full support |
-| Realtek USB Camera | 0BDA:5843 | Supported |
-| Generic UVC webcams | Various | Should work |
+| Device | VID:PID | Format | Status |
+|--------|---------|--------|--------|
+| AUKEY PC-LM1E | 1BCF:0001 | MJPEG + YUY2 | Working (tested up to 1280x720) |
+| Microdia Motion Eye | 0C45:6409 | YUY2 only | Partial (tearing, firmware limitation) |
+| Realtek USB Camera | 0BDA:5843 | MJPEG + YUY2 | Supported |
+| Generic UVC webcams | Various | Varies | Should work |
 
-The driver auto-detects any UVC-compliant webcam. Devices not in the list may still work.
+The driver auto-detects any UVC-compliant webcam. Devices not in the list may still work. MJPEG webcams are recommended for best results.
 
 ## Installation
 
@@ -69,7 +69,7 @@ Copy `aukey_webcam_v4.media_addon` to:
 
 ## Build Requirements
 
-- Haiku OS (nightly or R1/beta4+)
+- Haiku OS (R1/beta5 or nightly)
 - GCC compiler
 - libturbojpeg (`pkgman install devel:libturbojpeg`)
 
@@ -172,9 +172,11 @@ Debug levels: `none`, `error`, `warn`, `info`, `verbose`, `trace`
 
 ## Known Limitations
 
+- Cameras with YUY2-only output (no MJPEG) may show tearing on USB 2.0 due to bandwidth constraints
 - Still image capture: Detection only (no hardware trigger support)
 - USB 1.1 (OHCI/UHCI): Limited bandwidth, low resolutions only
 - Some vendor Extension Units: Detected but controls not exposed
+- Long streaming sessions may trigger EHCI host system error on some Intel controllers
 
 ## License
 
