@@ -845,9 +845,22 @@ AudioProducer::_audio_generator_(void *data)
 int32
 AudioProducer::AudioGenerator()
 {
-	size_t frameSize = (fConnectedFormat.format & 0x0F) * fConnectedFormat.channel_count;
+	size_t sampleSize = fConnectedFormat.format
+		& media_raw_audio_format::B_AUDIO_SIZE_MASK;
+	if (sampleSize == 0)
+		sampleSize = 2;
+	size_t channelCount = fConnectedFormat.channel_count;
+	if (channelCount == 0)
+		channelCount = 1;
+	size_t frameSize = sampleSize * channelCount;
 	size_t framesPerBuffer = fConnectedFormat.buffer_size / frameSize;
-	bigtime_t bufferDuration = (bigtime_t)(framesPerBuffer * 1000000LL / fConnectedFormat.frame_rate);
+	if (framesPerBuffer == 0)
+		framesPerBuffer = 1;
+	float frameRate = fConnectedFormat.frame_rate;
+	if (frameRate <= 0)
+		frameRate = 48000.0f;
+	bigtime_t bufferDuration = (bigtime_t)(framesPerBuffer * 1000000LL
+		/ (bigtime_t)frameRate);
 
 	bigtime_t nextBufferTime = system_time();
 
