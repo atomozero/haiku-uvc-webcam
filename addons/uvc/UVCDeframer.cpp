@@ -197,8 +197,8 @@ UVCDeframer::Write(const void* buffer, size_t size)
 
 		// For YUY2: discard incomplete previous frame data and start fresh
 		// For MJPEG: complete previous frame if we have data
-		if (fExpectedFrameSize == 0 && fInputBuffer.BufferLength() > 0) {
-			// MJPEG: complete previous frame
+		if (fExpectedFrameSize == 0 && fFixedBufferPos > 0) {
+			// MJPEG: complete previous frame from fixed buffer
 			BAutolock l(fLocker);
 			int32 queueCount = fFrames.CountItems();
 
@@ -213,14 +213,11 @@ UVCDeframer::Write(const void* buffer, size_t size)
 				fCurrentFrame = AllocFrame();
 
 			if (fCurrentFrame != NULL) {
-				const uint8* frameData = (const uint8*)fInputBuffer.Buffer();
-				size_t frameSize = fInputBuffer.BufferLength();
-
 				fFrameCount++;
 				fFramesCompleted++;
 
-				if (frameData != NULL && frameSize > 0)
-					fCurrentFrame->Write(frameData, frameSize);
+				if (fFixedBuffer != NULL && fFixedBufferPos > 0)
+					fCurrentFrame->Write(fFixedBuffer, fFixedBufferPos);
 
 				fFrames.AddItem(fCurrentFrame);
 				release_sem(fFrameSem);
@@ -362,18 +359,9 @@ UVCDeframer::Write(const void* buffer, size_t size)
 		fFrameCount++;
 		fFramesCompleted++;
 
-		// Use fixed buffer for YUY2, BMallocIO for MJPEG
-		const uint8* frameData;
-		size_t frameSize;
-		if (fExpectedFrameSize > 0 && fFixedBuffer != NULL) {
-			// YUY2: read from fixed buffer
-			frameData = fFixedBuffer;
-			frameSize = fFixedBufferPos;
-		} else {
-			// MJPEG: read from BMallocIO (backwards compat)
-			frameData = (const uint8*)fInputBuffer.Buffer();
-			frameSize = fInputBuffer.BufferLength();
-		}
+		// Read frame data from fixed buffer (used for both YUY2 and MJPEG)
+		const uint8* frameData = fFixedBuffer;
+		size_t frameSize = fFixedBufferPos;
 
 		// Debug: dump first frame to file for analysis
 		static int32 sDumpCount = 0;
