@@ -447,8 +447,10 @@ AudioProducer::SetBufferGroup(const media_source &for_source,
 		// NULL means use our own buffer group
 		// Recreate default buffer group if needed
 		if (fBufferGroup == NULL && fConnected) {
-			fBufferGroup = new BBufferGroup(fConnectedFormat.buffer_size,
-				AUDIO_BUFFER_COUNT);
+			size_t bufSize = fConnectedFormat.buffer_size;
+			if (bufSize == 0)
+				bufSize = AUDIO_BUFFER_SIZE;
+			fBufferGroup = new BBufferGroup(bufSize, AUDIO_BUFFER_COUNT);
 			if (fBufferGroup->InitCheck() != B_OK) {
 				delete fBufferGroup;
 				fBufferGroup = NULL;
@@ -514,6 +516,27 @@ AudioProducer::Connect(status_t error, const media_source &source,
 
 	fConnectedFormat = format.u.raw_audio;
 
+	// Validate and fix format fields that may come as wildcards (0)
+	if ((fConnectedFormat.format
+		& media_raw_audio_format::B_AUDIO_SIZE_MASK) == 0)
+		fConnectedFormat.format = media_raw_audio_format::B_AUDIO_SHORT;
+	if (fConnectedFormat.channel_count == 0)
+		fConnectedFormat.channel_count = 2;
+	if (fConnectedFormat.frame_rate <= 0)
+		fConnectedFormat.frame_rate = 32000.0f;
+	if (fConnectedFormat.buffer_size == 0)
+		fConnectedFormat.buffer_size = AUDIO_BUFFER_SIZE;
+	if (fConnectedFormat.byte_order == 0)
+		fConnectedFormat.byte_order = B_MEDIA_LITTLE_ENDIAN;
+
+	syslog(LOG_INFO, "AudioProducer: Connect format: %u ch, %.0f Hz, "
+		"bufSize=%u, sampleSize=%u\n",
+		(unsigned)fConnectedFormat.channel_count,
+		fConnectedFormat.frame_rate,
+		(unsigned)fConnectedFormat.buffer_size,
+		(unsigned)(fConnectedFormat.format
+			& media_raw_audio_format::B_AUDIO_SIZE_MASK));
+
 	// Get latency
 	bigtime_t latency = 0;
 	media_node_id tsID = 0;
@@ -521,25 +544,26 @@ AudioProducer::Connect(status_t error, const media_source &source,
 	SetEventLatency(latency + 1000);
 
 	// Calculate buffer duration
-	size_t sampleSize = fConnectedFormat.format & media_raw_audio_format::B_AUDIO_SIZE_MASK;
-	if (sampleSize == 0)
-		sampleSize = 2;
+	size_t sampleSize = fConnectedFormat.format
+		& media_raw_audio_format::B_AUDIO_SIZE_MASK;
 	size_t channelCount = fConnectedFormat.channel_count;
-	if (channelCount == 0)
-		channelCount = 1;
 	size_t frameSize = sampleSize * channelCount;
 	size_t framesPerBuffer = fConnectedFormat.buffer_size / frameSize;
 	if (framesPerBuffer == 0)
 		framesPerBuffer = 1;
-	float frameRate = fConnectedFormat.frame_rate;
-	if (frameRate <= 0)
-		frameRate = 48000.0f;
-	fProcessingLatency = (bigtime_t)(framesPerBuffer * 1000000LL / (bigtime_t)frameRate);
+	fProcessingLatency = (bigtime_t)(framesPerBuffer * 1000000LL
+		/ (bigtime_t)fConnectedFormat.frame_rate);
 
 	// Create buffer group
-	fBufferGroup = new BBufferGroup(fConnectedFormat.buffer_size, AUDIO_BUFFER_COUNT);
+	syslog(LOG_INFO, "AudioProducer: Creating BufferGroup size=%u count=%d\n",
+		(unsigned)fConnectedFormat.buffer_size, AUDIO_BUFFER_COUNT);
+	fBufferGroup = new BBufferGroup(fConnectedFormat.buffer_size,
+		AUDIO_BUFFER_COUNT);
 	if (fBufferGroup->InitCheck() < B_OK) {
-		syslog(LOG_ERR, "AudioProducer: BufferGroup InitCheck failed\n");
+		syslog(LOG_ERR, "AudioProducer: BufferGroup InitCheck failed "
+			"(size=%u, err=%s)\n",
+			(unsigned)fConnectedFormat.buffer_size,
+			strerror(fBufferGroup->InitCheck()));
 		delete fBufferGroup;
 		fBufferGroup = NULL;
 		return;
