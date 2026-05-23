@@ -4030,29 +4030,27 @@ UVCCamDevice::FillFrameBuffer(BBuffer* buffer, bigtime_t* stamp)
 		validation = _ValidateMJPEGFrame((const uint8*)f->Buffer(), f->BufferLength());
 
 		// MJPEG frame size monitoring for auto-fallback
-		// Track frame sizes to detect if bandwidth is insufficient
 		size_t frameSize = f->BufferLength();
 		fMJPEGFrameSizeSum += frameSize;
 		fMJPEGFrameSizeCount++;
 
-		// Calculate expected minimum MJPEG size based on resolution
-		// MJPEG typically compresses 10:1 to 20:1, so expect at least 5% of raw size
+		// Minimum expected MJPEG size: 1% of raw YUY2 size.
+		// MJPEG compression varies widely (10:1 to 50:1+), so use a low
+		// threshold to avoid false positives on highly compressed streams.
 		if (fExpectedMJPEGMinSize == 0) {
-			fExpectedMJPEGMinSize = (size_t)w * h * 2 / 20;  // 5% of YUY2 size
-			syslog(LOG_INFO, "UVCCamDevice: MJPEG minimum expected size: %zu bytes for %dx%d\n",
-				fExpectedMJPEGMinSize, (int)w, (int)h);
+			fExpectedMJPEGMinSize = (size_t)w * h * 2 / 100;
+			if (fExpectedMJPEGMinSize < 1024)
+				fExpectedMJPEGMinSize = 1024;
 		}
 
-		// Check every 30 frames if average size is too small
+		// Check every 60 frames (skip first 60 to allow stream stabilization)
 		bigtime_t now = system_time();
-		if (fMJPEGFrameSizeCount >= 30 && (now - fLastFrameSizeCheck) > 5000000) {
+		if (fMJPEGFrameSizeCount >= 60 && (now - fLastFrameSizeCheck) > 10000000) {
 			fLastFrameSizeCheck = now;
 			size_t avgSize = fMJPEGFrameSizeSum / fMJPEGFrameSizeCount;
 
-			// If average frame size is less than 30% of expected minimum,
-			// bandwidth is severely insufficient - trigger fallback via worker thread
-			if (avgSize < fExpectedMJPEGMinSize * 30 / 100) {
-				syslog(LOG_WARNING, "UVCCamDevice: MJPEG frames too small! avg=%zu, expected>%zu\n",
+			if (avgSize < fExpectedMJPEGMinSize) {
+				syslog(LOG_WARNING, "UVCCamDevice: MJPEG frames too small! avg=%zu, min=%zu\n",
 					avgSize, fExpectedMJPEGMinSize);
 
 				// Use RequestResolutionChange() for safe resolution change

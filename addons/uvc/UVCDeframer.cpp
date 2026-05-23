@@ -247,50 +247,20 @@ UVCDeframer::Write(const void* buffer, size_t size)
 	// Track total payload bytes received (before truncation)
 	fTotalBytesThisFrame += payloadSize;
 
-	// Log packet details for first frame to analyze assembly
-	static int32 sPacketLog = 0;
-	static size_t sRunningOffset = 0;
-	if (sPacketLog < 50) {  // Log first 50 packets
-		syslog(LOG_INFO, "PKT#%d: hdr=%d payload=%d offset=%zu total=%zu\n",
-			(int)sPacketLog, buf[0], payloadSize, sRunningOffset, fTotalBytesThisFrame);
-		sPacketLog++;
-	}
-	sRunningOffset += payloadSize;
-
 	// For YUY2 (fixed size), truncate payload if it would exceed expected size
 	size_t bytesToWrite = payloadSize;
 	if (fExpectedFrameSize > 0) {
-		size_t currentSize = fFixedBufferPos;  // Use fixed buffer position
-		size_t spaceLeft = (currentSize < fExpectedFrameSize)
-			? (fExpectedFrameSize - currentSize) : 0;
-		if (bytesToWrite > spaceLeft) {
+		size_t spaceLeft = (fFixedBufferPos < fExpectedFrameSize)
+			? (fExpectedFrameSize - fFixedBufferPos) : 0;
+		if (bytesToWrite > spaceLeft)
 			bytesToWrite = spaceLeft;
-			// Log occasional truncations
-			static int32 sTruncations = 0;
-			if (++sTruncations <= 5)
-				syslog(LOG_INFO, "UVCDeframer: Truncating payload %zu->%zu (frame nearly complete)\n",
-					(size_t)payloadSize, bytesToWrite);
-		}
 	}
 
-	// Write payload to FIXED BUFFER (bypassing BMallocIO to test if it's causing corruption)
+	// Write payload to fixed buffer
 	if (bytesToWrite > 0 && fFixedBuffer != NULL) {
-		// Direct memcpy to fixed buffer - no BMallocIO involved
 		if (fFixedBufferPos + bytesToWrite <= fFixedBufferSize) {
 			memcpy(fFixedBuffer + fFixedBufferPos, &buf[buf[0]], bytesToWrite);
-
-			// Debug: Log first few writes
-			static int32 sWriteDebug = 0;
-			if (++sWriteDebug <= 10) {
-				syslog(LOG_INFO, "FixedBuf Write #%d: pos %zu->%zu, bytes=%zu, first4=[%02x %02x %02x %02x]\n",
-					(int)sWriteDebug, fFixedBufferPos, fFixedBufferPos + bytesToWrite, bytesToWrite,
-					buf[buf[0]], buf[buf[0]+1], buf[buf[0]+2], buf[buf[0]+3]);
-			}
-
 			fFixedBufferPos += bytesToWrite;
-		} else {
-			syslog(LOG_ERR, "UVCDeframer: Fixed buffer overflow! pos=%zu + write=%zu > size=%zu\n",
-				fFixedBufferPos, bytesToWrite, fFixedBufferSize);
 		}
 	}
 
@@ -362,43 +332,6 @@ UVCDeframer::Write(const void* buffer, size_t size)
 		// Read frame data from fixed buffer (used for both YUY2 and MJPEG)
 		const uint8* frameData = fFixedBuffer;
 		size_t frameSize = fFixedBufferPos;
-
-		// Debug: dump first frame to file for analysis
-		static int32 sDumpCount = 0;
-		if (++sDumpCount == 1 && frameData != NULL && frameSize > 0) {
-			// Save raw YUY2 frame to file
-			FILE* f = fopen("/boot/home/Desktop/frame_dump.yuv", "wb");
-			if (f) {
-				fwrite(frameData, 1, frameSize, f);
-				fclose(f);
-				syslog(LOG_INFO, "UVCDeframer: Saved frame to /boot/home/Desktop/frame_dump.yuv (%zu bytes) [FixedBuffer]\n", frameSize);
-			}
-			// Also log first 64 bytes
-			char hexbuf[256];
-			snprintf(hexbuf, sizeof(hexbuf),
-				"Frame first 64 bytes:\n"
-				"%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n"
-				"%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n"
-				"%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n"
-				"%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
-				frameData[0], frameData[1], frameData[2], frameData[3],
-				frameData[4], frameData[5], frameData[6], frameData[7],
-				frameData[8], frameData[9], frameData[10], frameData[11],
-				frameData[12], frameData[13], frameData[14], frameData[15],
-				frameData[16], frameData[17], frameData[18], frameData[19],
-				frameData[20], frameData[21], frameData[22], frameData[23],
-				frameData[24], frameData[25], frameData[26], frameData[27],
-				frameData[28], frameData[29], frameData[30], frameData[31],
-				frameData[32], frameData[33], frameData[34], frameData[35],
-				frameData[36], frameData[37], frameData[38], frameData[39],
-				frameData[40], frameData[41], frameData[42], frameData[43],
-				frameData[44], frameData[45], frameData[46], frameData[47],
-				frameData[48], frameData[49], frameData[50], frameData[51],
-				frameData[52], frameData[53], frameData[54], frameData[55],
-				frameData[56], frameData[57], frameData[58], frameData[59],
-				frameData[60], frameData[61], frameData[62], frameData[63]);
-			syslog(LOG_INFO, "UVCDeframer: %s\n", hexbuf);
-		}
 
 		// Validate YUY2 frame completeness
 		if (fExpectedFrameSize > 0 && frameSize < fExpectedFrameSize) {
