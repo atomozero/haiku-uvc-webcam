@@ -1449,7 +1449,6 @@ UVCCamDevice::SuggestVideoFrame(uint32& width, uint32& height)
 		}
 	}
 
-	// Task 2: Use the selected resolution index
 	BList* frameList = fIsMJPEG ? &fMJPEGFrames : &fUncompressedFrames;
 
 	// First check if fIsMJPEG needs to be initialized
@@ -1461,19 +1460,35 @@ UVCCamDevice::SuggestVideoFrame(uint32& width, uint32& height)
 	// Re-select the frame list after determining format
 	frameList = fIsMJPEG ? &fMJPEGFrames : &fUncompressedFrames;
 
-	// Use the selected resolution if available
-	if (frameList->CountItems() > 0) {
-		int32 index = fSelectedResolutionIndex;
-		if (index < 0 || index >= frameList->CountItems())
-			index = 0;
+	// Suggest a resolution that fits the available bandwidth.
+	// For MJPEG: prefer 640x480 (good quality, low bandwidth due to compression).
+	// For YUY2: prefer 320x240 (uncompressed needs more bandwidth).
+	uint32 targetW = fIsMJPEG ? 640 : 320;
+	uint32 targetH = fIsMJPEG ? 480 : 240;
 
+	if (frameList->CountItems() > 0) {
+		// Find the resolution closest to target
+		int32 bestIndex = 0;
+		uint32 bestDiff = UINT32_MAX;
+		for (int32 i = 0; i < frameList->CountItems(); i++) {
+			const usb_video_frame_descriptor* desc =
+				(const usb_video_frame_descriptor*)frameList->ItemAt(i);
+			uint32 diff = abs((int)(desc->width * desc->height)
+				- (int)(targetW * targetH));
+			if (diff < bestDiff) {
+				bestDiff = diff;
+				bestIndex = i;
+			}
+		}
+
+		fSelectedResolutionIndex = bestIndex;
 		const usb_video_frame_descriptor* descriptor
-			= (const usb_video_frame_descriptor*)frameList->ItemAt(index);
+			= (const usb_video_frame_descriptor*)frameList->ItemAt(bestIndex);
 		if (descriptor != NULL) {
 			width  = descriptor->width;
 			height = descriptor->height;
-			printf("UVCCamDevice::SuggestVideoFrame: Using resolution index %d: %ux%u\n",
-				(int)index, (unsigned)width, (unsigned)height);
+			syslog(LOG_INFO, "UVCCamDevice: SuggestVideoFrame %ux%u (%s, index %d)\n",
+				width, height, fIsMJPEG ? "MJPEG" : "YUY2", (int)bestIndex);
 			AcceptVideoFrame(width, height);
 			return B_OK;
 		}
@@ -5244,7 +5259,9 @@ UVCCamDevice::_IdentifyXUVendor(const uint8* guid)
 {
 	if (memcmp(guid, kMicrosoftH264XUGUID, 16) == 0)
 		return XU_VENDOR_MICROSOFT;
-	if (memcmp(guid, kSonixXUGUID, 16) == 0)
+	if (memcmp(guid, kSonixXUGUID, 16) == 0
+		|| memcmp(guid, kSonixSysHWGUID, 16) == 0
+		|| memcmp(guid, kSonixUsrHWGUID, 16) == 0)
 		return XU_VENDOR_SONIX;
 	if (memcmp(guid, kLogitechXUGUID, 16) == 0)
 		return XU_VENDOR_LOGITECH;
