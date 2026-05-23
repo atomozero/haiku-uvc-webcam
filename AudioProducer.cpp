@@ -953,6 +953,31 @@ AudioProducer::AudioGenerator()
 				fAudioStats.underruns++;
 		}
 
+		// Mono microphone fix: many webcams have a single microphone but
+		// report stereo format. One channel has the signal, the other is
+		// silent or noise. Detect which channel is stronger and duplicate
+		// it to both channels for balanced audio output.
+		if (fConnectedFormat.channel_count == 2 && bytesRead >= 8) {
+			size_t samplePairs = bytesRead / 4;  // 2 channels x 2 bytes
+			int32 sumL = 0, sumR = 0;
+			// Sample first 64 pairs to detect imbalance
+			size_t checkCount = (samplePairs < 64) ? samplePairs : 64;
+			for (size_t i = 0; i < checkCount; i++) {
+				sumL += abs(audioData[i * 2]);
+				sumR += abs(audioData[i * 2 + 1]);
+			}
+			// If one channel has < 10% of the other's energy, duplicate
+			if (sumL > sumR * 10 || sumR < sumL / 10) {
+				// Left is dominant - copy L to R
+				for (size_t i = 0; i < samplePairs; i++)
+					audioData[i * 2 + 1] = audioData[i * 2];
+			} else if (sumR > sumL * 10 || sumL < sumR / 10) {
+				// Right is dominant - copy R to L
+				for (size_t i = 0; i < samplePairs; i++)
+					audioData[i * 2] = audioData[i * 2 + 1];
+			}
+		}
+
 		// Group 8: Record audio levels
 		size_t sampleCount = bytesRead / sizeof(int16);
 		if (sampleCount > 0)
