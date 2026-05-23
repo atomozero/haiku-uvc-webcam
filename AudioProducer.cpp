@@ -934,9 +934,15 @@ AudioProducer::AudioGenerator()
 		// Set buffer header
 		media_header *h = buffer->Header();
 		h->type = B_MEDIA_RAW_AUDIO;
-		h->size_used = fConnectedFormat.buffer_size;
+		h->size_used = bytesToFill;
 		h->time_source = TimeSource()->ID();
-		h->start_time = 0;  // Immediate playback for live audio
+
+		// Use current performance time for live audio
+		BTimeSource* ts = TimeSource();
+		if (ts != NULL)
+			h->start_time = ts->PerformanceTimeFor(system_time());
+		else
+			h->start_time = system_time();
 
 		if (SendBuffer(buffer, fOutput.source, fOutput.destination) != B_OK) {
 			syslog(LOG_WARNING, "AudioProducer: SendBuffer failed\n");
