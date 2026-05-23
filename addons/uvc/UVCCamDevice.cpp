@@ -468,15 +468,19 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 				for (uint32 k = 0; interface->OtherDescriptorAt(k, generic,
 					sizeof(buffer)) == B_OK; k++) {
 					descCount++;
-					printf("UVCCamDevice: VS descriptor %u: type=0x%02x, len=%u\n",
-						k, generic->generic.descriptor_type, generic->generic.length);
+					syslog(LOG_INFO, "UVCCamDevice: VS desc %u: type=0x%02x subtype=%u len=%u\n",
+						k, generic->generic.descriptor_type,
+						((const usbvc_class_descriptor*)generic)->descriptorSubtype,
+						generic->generic.length);
 					if (generic->generic.descriptor_type != (USB_REQTYPE_CLASS
 						| USB_DESCRIPTOR_INTERFACE))
 						continue;
 					_ParseVideoStreaming((const usbvc_class_descriptor*)generic,
 						generic->generic.length);
 				}
-				printf("UVCCamDevice: Found %u descriptors in base interface\n", descCount);
+				syslog(LOG_INFO, "UVCCamDevice: Found %u VS descriptors, uncompressed=%d mjpeg=%d\n",
+					descCount, (int)fUncompressedFrames.CountItems(),
+					(int)fMJPEGFrames.CountItems());
 
 				// If no frames found, try alternates (some devices put descriptors there)
 				if (fUncompressedFrames.CountItems() == 0 && fMJPEGFrames.CountItems() == 0) {
@@ -4237,8 +4241,6 @@ UVCCamDevice::FillFrameBuffer(BBuffer* buffer, bigtime_t* stamp)
 				}
 			}
 
-			// Pass actual size so conversion can calculate correct stride
-			// (some webcams add padding to each row)
 			_ConvertYUY2toRGB32(dst,
 				(unsigned char*)f->Buffer(), actualYUY2, w, h);
 
@@ -5205,6 +5207,9 @@ UVCCamDevice::_ParseExtensionUnit(
 	fHasExtensionUnits = true;
 
 	// Log the extension unit
+	syslog(LOG_INFO, "UVCCamDevice: XU unit_id=%d vendor=%s controls=%d guid=%02x%02x%02x%02x\n",
+		xu->unit_id, xu->vendor_name, xu->num_controls,
+		xu->guid[0], xu->guid[1], xu->guid[2], xu->guid[3]);
 	printf("VC_EXTENSION_UNIT:\tid=%d, vendor=%s\n", xu->unit_id, xu->vendor_name);
 	printf("\tGUID: ");
 	for (int i = 0; i < 16; i++) {
