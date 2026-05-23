@@ -723,15 +723,34 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 		}
 	}
 
-	// Default to highest resolution (index 0) - high-bandwidth EHCI is now supported
-	// The Microdia 0c45:6409 workaround is no longer needed with modified EHCI driver
-	if (fUncompressedFrames.CountItems() > 0) {
-		fSelectedResolutionIndex = 0;  // First frame is typically highest resolution
+	// Choose a sensible default resolution:
+	// MJPEG: 640x480 (compressed, bandwidth is not an issue)
+	// YUY2: 320x240 (uncompressed, limited by USB 2.0 bandwidth)
+	{
+		BList* defaultList = (fMJPEGFrames.CountItems() > 0)
+			? &fMJPEGFrames : &fUncompressedFrames;
+		uint32 targetPixels = (fMJPEGFrames.CountItems() > 0)
+			? (640 * 480) : (320 * 240);
+		int32 bestIndex = 0;
+		uint32 bestDiff = UINT32_MAX;
+		for (int32 i = 0; i < defaultList->CountItems(); i++) {
+			usb_video_frame_descriptor* desc =
+				(usb_video_frame_descriptor*)defaultList->ItemAt(i);
+			if (desc == NULL) continue;
+			uint32 pixels = (uint32)desc->width * desc->height;
+			uint32 diff = (pixels > targetPixels)
+				? (pixels - targetPixels) : (targetPixels - pixels);
+			if (diff < bestDiff) {
+				bestDiff = diff;
+				bestIndex = i;
+			}
+		}
+		fSelectedResolutionIndex = bestIndex;
 		usb_video_frame_descriptor* desc =
-			(usb_video_frame_descriptor*)fUncompressedFrames.ItemAt(0);
+			(usb_video_frame_descriptor*)defaultList->ItemAt(bestIndex);
 		if (desc) {
-			syslog(LOG_INFO, "UVCCamDevice: Default resolution set to %ux%u (index 0)\n",
-				desc->width, desc->height);
+			syslog(LOG_INFO, "UVCCamDevice: Default resolution set to %ux%u (index %d)\n",
+				desc->width, desc->height, (int)bestIndex);
 		}
 	}
 
@@ -2924,14 +2943,20 @@ UVCCamDevice::AudioPumpThread()
 	const uint32 kPacketsPerTransfer = 16;
 	usb_iso_packet_descriptor packetDescs[kPacketsPerTransfer];
 
-	// Calculate expected bytes per packet based on sample rate
-	// 48kHz * 2ch * 2bytes / 1000 frames = 192 bytes per frame (1ms)
-	// For USB full-speed: 1 packet per frame = 192 bytes max
-	uint32 bytesPerPacket = (fAudioSampleRate * fAudioChannels * 2) / 1000;
-	if (bytesPerPacket == 0)
-		bytesPerPacket = 192;  // fallback for 48kHz stereo
-	if (bytesPerPacket > fAudioMaxPacketSize)
-		bytesPerPacket = fAudioMaxPacketSize;
+	// Use the endpoint's maxPacketSize for USB slot allocation.
+	// The actual payload per packet varies (e.g., 128 bytes for 32kHz stereo)
+	// but the kernel allocates fixed-size slots based on the transfer buffer.
+	// Using maxPacketSize ensures no data gets truncated.
+	uint32 bytesPerPacket = fAudioMaxPacketSize;
+	if (bytesPerPacket == 0) {
+		bytesPerPacket = (fAudioSampleRate * fAudioChannels * 2) / 1000;
+		if (bytesPerPacket == 0)
+			bytesPerPacket = 192;
+	}
+	syslog(LOG_INFO, "UVCCamDevice: Audio pump: maxPkt=%u, slotSize=%u, "
+		"rate=%u, ch=%u\n",
+		(unsigned)fAudioMaxPacketSize, (unsigned)bytesPerPacket,
+		(unsigned)fAudioSampleRate, (unsigned)fAudioChannels);
 
 	// Retry configuration (similar to video transfer retry logic)
 	const uint32 kMaxRetries = 3;
