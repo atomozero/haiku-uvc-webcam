@@ -4,6 +4,8 @@ A USB Video Class (UVC) driver for Haiku OS, providing support for standard USB 
 
 ## Screenshots
 
+![MJPEG streaming at 1280x720 with BubiCam](img/screenshot03.png)
+
 ![Webcam streaming in Cortex](img/screenshot01.png)
 
 ![Camera controls panel](img/screenshot02.png)
