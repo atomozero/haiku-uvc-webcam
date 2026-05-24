@@ -2611,8 +2611,33 @@ UVCCamDevice::StartAudioTransfer()
 			3,
 			rateData);
 
-		syslog(LOG_INFO, "UVCCamDevice: Set USB sample rate to %d Hz (result=%d)\n",
-			(int)sampleRate, (int)transferred);
+		syslog(LOG_INFO, "UVCCamDevice: Set USB sample rate to %u Hz (result=%zd)\n",
+			(unsigned)sampleRate, transferred);
+
+		// Verify with GET_CUR that the device accepted the sample rate
+		if (transferred == 3) {
+			uint8 verifyData[3] = {0};
+			ssize_t got = fDevice->ControlTransfer(
+				USB_REQTYPE_CLASS | USB_REQTYPE_ENDPOINT_IN,  // 0xA2
+				0x81,  // GET_CUR
+				0x0100,  // SAMPLING_FREQ_CONTROL << 8
+				endpointAddr,
+				3,
+				verifyData);
+
+			if (got == 3) {
+				uint32 readBack = verifyData[0]
+					| ((uint32)verifyData[1] << 8)
+					| ((uint32)verifyData[2] << 16);
+				if (readBack != sampleRate) {
+					syslog(LOG_WARNING,
+						"UVCCamDevice: Device reports sample rate %u Hz "
+						"(requested %u Hz)\n",
+						(unsigned)readBack, (unsigned)sampleRate);
+					fAudioSampleRate = readBack;
+				}
+			}
+		}
 	}
 
 	// Allocate ring buffer for audio data (64KB)
