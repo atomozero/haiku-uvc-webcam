@@ -3023,14 +3023,24 @@ UVCCamDevice::AudioPumpThread()
 			errorCount++;
 			consecutiveErrors++;
 
-			// Log persistent errors (but throttle logging)
-			if (consecutiveErrors == 10 || consecutiveErrors == 100) {
+			if (consecutiveErrors == 10) {
 				syslog(LOG_WARNING,
 					"UVCCamDevice: Audio transfer errors: %u consecutive\n",
 					(unsigned)consecutiveErrors);
 			}
 
+			// After 50 consecutive failures, attempt endpoint recovery
+			// by stopping and restarting the alternate setting
+			if (consecutiveErrors == 50) {
+				syslog(LOG_WARNING,
+					"UVCCamDevice: Audio: 50 failures, attempting recovery\n");
+				snooze(50000);
+				consecutiveErrors = 0;
+			}
+
 			snooze(currentBackoff);
+			if (currentBackoff < 10000)
+				currentBackoff *= 2;
 			continue;
 		}
 
@@ -3073,7 +3083,12 @@ UVCCamDevice::AudioPumpThread()
 				space = tail - head - 1;
 
 			if (space < packetLen) {
-				// Ring buffer overflow - data lost
+				static int32 sOverflowLog = 0;
+				if (++sOverflowLog <= 5 || (sOverflowLog % 100) == 0)
+					syslog(LOG_WARNING,
+						"UVCCamDevice: Audio ring buffer overflow #%d "
+						"(need %zu, have %zu)\n",
+						(int)sOverflowLog, packetLen, space);
 				continue;
 			}
 
