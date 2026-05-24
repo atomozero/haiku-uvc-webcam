@@ -2710,9 +2710,10 @@ UVCCamDevice::ReadAudioData(void* buffer, size_t size)
 	if (fAudioRingBuffer == NULL || buffer == NULL || size == 0)
 		return 0;
 
-	// FIX BUG 4: Usare operazioni atomiche per il ring buffer
-	// Wait for enough data (with timeout)
-	int retries = 50;  // 50 x 1ms = 50ms max wait
+	// Wait for enough data with timeout.
+	// Use 200ms to accommodate USB controllers with variable isochronous
+	// latency (XHCI controllers can batch multiple microframes).
+	int retries = 200;
 	size_t available = 0;
 
 	while (retries-- > 0) {
