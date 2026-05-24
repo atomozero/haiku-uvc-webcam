@@ -3122,17 +3122,32 @@ UVCCamDevice::AudioPumpThread()
 			uint8* packetData = fAudioBuffer + (i * bytesPerPacket);
 			size_t packetLen = packetDescs[i].actual_length;
 
+			// Validate packet length against buffer size
+			if (packetLen > bytesPerPacket)
+				packetLen = bytesPerPacket;
+
 			// Calculate space in ring buffer
 			int32 head = atomic_get(&fAudioRingHead);
 			int32 tail = atomic_get(&fAudioRingTail);
-			size_t space;
 
+			// Validate pointers are within bounds
+			if (head < 0 || (size_t)head >= fAudioRingSize
+				|| tail < 0 || (size_t)tail >= fAudioRingSize) {
+				atomic_set(&fAudioRingHead, 0);
+				atomic_set(&fAudioRingTail, 0);
+				continue;
+			}
+
+			ssize_t space;
 			if (head >= tail)
-				space = fAudioRingSize - head + tail - 1;
+				space = (ssize_t)fAudioRingSize - head + tail - 1;
 			else
 				space = tail - head - 1;
 
-			if (space < packetLen) {
+			if (space < 0)
+				space = 0;
+
+			if ((size_t)space < packetLen) {
 				static int32 sOverflowLog = 0;
 				if (++sOverflowLog <= 5 || (sOverflowLog % 100) == 0)
 					syslog(LOG_WARNING,
