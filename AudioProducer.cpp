@@ -28,9 +28,10 @@
 #define TOUCH(x) ((void)(x))
 
 // Audio buffer configuration
-#define AUDIO_BUFFER_SIZE 512		// Bytes per buffer (smaller for USB timing)
-#define AUDIO_BUFFER_COUNT 16		// Number of buffers in group
-#define AUDIO_RING_BUFFER_SIZE 65536	// 64KB ring buffer for USB data
+// Buffer size is ~10ms of audio at the connected sample rate.
+// Calculated dynamically in NodeRegistered() and Connect().
+#define AUDIO_BUFFER_SIZE_DEFAULT 512	// Fallback if format unknown
+#define AUDIO_BUFFER_COUNT 16			// Number of buffers in group
 
 // Define static member variable
 int32 AudioProducer::fInstances = 0;
@@ -80,7 +81,7 @@ AudioProducer::AudioProducer(
 
 	// Ring buffer for USB audio data
 	fAudioRingBuffer = NULL;
-	fRingBufferSize = AUDIO_RING_BUFFER_SIZE;
+	fRingBufferSize = 65536;
 	fRingBufferHead = 0;
 	fRingBufferTail = 0;
 	fRingBufferSem = -1;
@@ -218,7 +219,17 @@ AudioProducer::NodeRegistered()
 		fOutput.format.u.raw_audio.frame_rate = 48000.0f;
 		syslog(LOG_WARNING, "AudioProducer: No device info, using defaults\n");
 	}
-	fOutput.format.u.raw_audio.buffer_size = AUDIO_BUFFER_SIZE;
+	// ~10ms of audio data per buffer, scaled to sample rate and channels
+	{
+		uint32 rate = (uint32)fOutput.format.u.raw_audio.frame_rate;
+		uint32 channels = fOutput.format.u.raw_audio.channel_count;
+		uint32 bufSize = (rate * channels * 2) / 100;  // 10ms
+		if (bufSize < 256) bufSize = 256;
+		if (bufSize > 4096) bufSize = 4096;
+		// Align to frame size (channels * 2 bytes)
+		bufSize -= bufSize % (channels * 2);
+		fOutput.format.u.raw_audio.buffer_size = bufSize;
+	}
 
 	SetPriority(B_REAL_TIME_PRIORITY);
 	Run();
@@ -453,7 +464,7 @@ AudioProducer::SetBufferGroup(const media_source &for_source,
 		if (fBufferGroup == NULL && fConnected) {
 			size_t bufSize = fConnectedFormat.buffer_size;
 			if (bufSize == 0)
-				bufSize = AUDIO_BUFFER_SIZE;
+				bufSize = AUDIO_BUFFER_SIZE_DEFAULT;
 			fBufferGroup = new BBufferGroup(bufSize, AUDIO_BUFFER_COUNT);
 			if (fBufferGroup->InitCheck() != B_OK) {
 				delete fBufferGroup;
@@ -529,7 +540,7 @@ AudioProducer::Connect(status_t error, const media_source &source,
 	if (fConnectedFormat.frame_rate <= 0)
 		fConnectedFormat.frame_rate = 32000.0f;
 	if (fConnectedFormat.buffer_size == 0)
-		fConnectedFormat.buffer_size = AUDIO_BUFFER_SIZE;
+		fConnectedFormat.buffer_size = AUDIO_BUFFER_SIZE_DEFAULT;
 	if (fConnectedFormat.byte_order == 0)
 		fConnectedFormat.byte_order = B_MEDIA_LITTLE_ENDIAN;
 

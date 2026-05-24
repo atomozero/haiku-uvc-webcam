@@ -2640,8 +2640,14 @@ UVCCamDevice::StartAudioTransfer()
 		}
 	}
 
-	// Allocate ring buffer for audio data (64KB)
-	fAudioRingSize = 65536;
+	// Allocate ring buffer sized for ~2 seconds of audio.
+	// Scale with actual sample rate and channel count to avoid
+	// underruns at high rates or wasted memory at low rates.
+	fAudioRingSize = fAudioSampleRate * fAudioChannels * 2 * 2;
+	if (fAudioRingSize < 16384)
+		fAudioRingSize = 16384;
+	if (fAudioRingSize > 262144)
+		fAudioRingSize = 262144;
 	fAudioRingBuffer = (uint8*)malloc(fAudioRingSize);
 	if (!fAudioRingBuffer) {
 		syslog(LOG_ERR, "UVCCamDevice::StartAudioTransfer: Failed to allocate ring buffer\n");
