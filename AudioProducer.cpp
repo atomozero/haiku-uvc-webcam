@@ -70,6 +70,10 @@ AudioProducer::AudioProducer(
 	fVolume = 1.0f;
 	fLastParamChange = 0;
 
+	// Mono microphone detection
+	fMonoDominantChannel = -1;
+	fMonoLastCheck = 0;
+
 	// Group 8: Initialize audio statistics
 	fAudioStats.Reset();
 	fLastStatsReport = 0;
@@ -954,27 +958,46 @@ AudioProducer::AudioGenerator()
 		}
 
 		// Mono microphone fix: many webcams have a single microphone but
-		// report stereo format. One channel has the signal, the other is
-		// silent or noise. Detect which channel is stronger and duplicate
-		// it to both channels for balanced audio output.
+		// report stereo format. Detect which channel carries the signal
+		// and duplicate it to both channels. Check every 5 seconds to
+		// avoid per-buffer overhead and prevent state oscillation.
 		if (fConnectedFormat.channel_count == 2 && bytesRead >= 8) {
-			size_t samplePairs = bytesRead / 4;  // 2 channels x 2 bytes
-			int32 sumL = 0, sumR = 0;
-			// Sample first 64 pairs to detect imbalance
-			size_t checkCount = (samplePairs < 64) ? samplePairs : 64;
-			for (size_t i = 0; i < checkCount; i++) {
-				sumL += abs(audioData[i * 2]);
-				sumR += abs(audioData[i * 2 + 1]);
+			bigtime_t now = system_time();
+			if (now - fMonoLastCheck > 5000000) {
+				fMonoLastCheck = now;
+				size_t samplePairs = bytesRead / 4;
+				int32 sumL = 0, sumR = 0;
+				size_t checkCount = (samplePairs < 256) ? samplePairs : 256;
+				for (size_t i = 0; i < checkCount; i++) {
+					sumL += abs(audioData[i * 2]);
+					sumR += abs(audioData[i * 2 + 1]);
+				}
+				int32 prev = fMonoDominantChannel;
+				if (sumR == 0 || (sumL > 0 && sumL > sumR * 10)) {
+					fMonoDominantChannel = 0;
+				} else if (sumL == 0 || (sumR > 0 && sumR > sumL * 10)) {
+					fMonoDominantChannel = 1;
+				} else {
+					fMonoDominantChannel = -1;
+				}
+				if (fMonoDominantChannel != prev) {
+					syslog(LOG_INFO, "AudioProducer: Mono detect: %s "
+						"(L=%d R=%d)\n",
+						fMonoDominantChannel == 0 ? "LEFT dominant" :
+						fMonoDominantChannel == 1 ? "RIGHT dominant" :
+						"balanced",
+						(int)sumL, (int)sumR);
+				}
 			}
-			// If one channel has < 10% of the other's energy, duplicate
-			if (sumL > sumR * 10 || sumR < sumL / 10) {
-				// Left is dominant - copy L to R
-				for (size_t i = 0; i < samplePairs; i++)
-					audioData[i * 2 + 1] = audioData[i * 2];
-			} else if (sumR > sumL * 10 || sumL < sumR / 10) {
-				// Right is dominant - copy R to L
-				for (size_t i = 0; i < samplePairs; i++)
-					audioData[i * 2] = audioData[i * 2 + 1];
+			if (fMonoDominantChannel >= 0) {
+				size_t samplePairs = bytesRead / 4;
+				if (fMonoDominantChannel == 0) {
+					for (size_t i = 0; i < samplePairs; i++)
+						audioData[i * 2 + 1] = audioData[i * 2];
+				} else {
+					for (size_t i = 0; i < samplePairs; i++)
+						audioData[i * 2] = audioData[i * 2 + 1];
+				}
 			}
 		}
 

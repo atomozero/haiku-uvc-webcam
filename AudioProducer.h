@@ -241,6 +241,10 @@ static	int32				_audio_generator_(void *data);
 		volatile size_t		fRingBufferTail;
 		sem_id				fRingBufferSem;
 
+		// Mono microphone detection state
+		int32				fMonoDominantChannel;	// -1=balanced, 0=left, 1=right
+		bigtime_t			fMonoLastCheck;
+
 		// Group 8: Audio statistics
 		audio_timing_stats	fAudioStats;
 		bigtime_t			fLastStatsReport;
