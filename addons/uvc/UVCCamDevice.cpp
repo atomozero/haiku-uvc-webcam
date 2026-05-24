@@ -2759,9 +2759,18 @@ UVCCamDevice::ReadAudioData(void* buffer, size_t size)
 	if (available == 0)
 		return 0;
 
-	// Read up to 'size' bytes (or whatever is available)
+	// Re-read tail atomically to ensure consistency with the pump thread.
+	// Between the availability check above and the copy below, the pump
+	// thread could have advanced head, but tail is only modified by us.
 	size_t toRead = (available < size) ? available : size;
 	int32 tail = atomic_get(&fAudioRingTail);
+
+	// Validate tail pointer
+	if (tail < 0 || (size_t)tail >= fAudioRingSize) {
+		atomic_set(&fAudioRingTail, 0);
+		return 0;
+	}
+
 	size_t firstChunk = fAudioRingSize - tail;
 
 	if (firstChunk >= toRead) {
