@@ -111,7 +111,7 @@ WebCamMediaAddOn::CountFlavors()
 
 	int32 videoCount = fRoster->CountCameras();
 
-	// Count cameras with audio support
+	// Count audio-capable cameras
 	int32 audioCount = 0;
 	fRoster->Lock();
 	for (int32 i = 0; i < videoCount; i++) {
@@ -232,18 +232,11 @@ WebCamMediaAddOn::InstantiateNodeFor(
 		return NULL;
 
 	if (isAudioFlavor) {
-		// Instantiate AudioProducer for audio flavor
-		UVCCamDevice* uvcCam = dynamic_cast<UVCCamDevice*>(cam);
-		if (uvcCam == NULL || !uvcCam->HasAudio())
-			return NULL;
-
-		char audioName[256];
-		snprintf(audioName, sizeof(audioName), "%s Audio", cam->FlavorInfo()->name);
-
-		AudioProducer *audioNode = new AudioProducer(this, cam, audioName, info->internal_id);
+		AudioProducer *audioNode = new AudioProducer(this, cam,
+			cam->FlavorInfo()->name, cam->FlavorInfo()->internal_id);
 		if (audioNode != NULL && audioNode->InitCheck() < B_OK) {
 			delete audioNode;
-			audioNode = NULL;
+			return NULL;
 		}
 		return audioNode;
 	} else {

@@ -463,47 +463,64 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 
 				fStreamingIndex = interface->Index();
 
-				// First try base interface (alternate 0)
+				// Parse VS class-specific descriptors.
+				// Try base interface first, then alternates if needed.
+				// Retry with increasing delays if USB stack hasn't
+				// populated descriptors yet (common on device hotplug).
 				uint32 descCount = 0;
-				for (uint32 k = 0; interface->OtherDescriptorAt(k, generic,
-					sizeof(buffer)) == B_OK; k++) {
-					descCount++;
-					syslog(LOG_INFO, "UVCCamDevice: VS desc %u: type=0x%02x subtype=%u len=%u\n",
-						k, generic->generic.descriptor_type,
-						((const usbvc_class_descriptor*)generic)->descriptorSubtype,
-						generic->generic.length);
-					if (generic->generic.descriptor_type != (USB_REQTYPE_CLASS
-						| USB_DESCRIPTOR_INTERFACE))
-						continue;
-					_ParseVideoStreaming((const usbvc_class_descriptor*)generic,
-						generic->generic.length);
-				}
-				syslog(LOG_INFO, "UVCCamDevice: Found %u VS descriptors, uncompressed=%d mjpeg=%d\n",
-					descCount, (int)fUncompressedFrames.CountItems(),
-					(int)fMJPEGFrames.CountItems());
-
-				// If no frames found, try alternates (some devices put descriptors there)
-				if (fUncompressedFrames.CountItems() == 0 && fMJPEGFrames.CountItems() == 0) {
-					printf("UVCCamDevice: No frames in base, checking alternates...\n");
-					for (uint32 alt = 0; alt < interface->CountAlternates(); alt++) {
-						const BUSBInterface* alternate = interface->AlternateAt(alt);
-						if (alternate == NULL)
-							continue;
-						printf("UVCCamDevice: Checking alternate %u\n", alt);
-						for (uint32 k = 0; alternate->OtherDescriptorAt(k, generic,
-							sizeof(buffer)) == B_OK; k++) {
-							printf("UVCCamDevice: Alt %u desc %u: type=0x%02x, len=%u\n",
-								alt, k, generic->generic.descriptor_type, generic->generic.length);
-							if (generic->generic.descriptor_type != (USB_REQTYPE_CLASS
-								| USB_DESCRIPTOR_INTERFACE))
-								continue;
-							_ParseVideoStreaming((const usbvc_class_descriptor*)generic,
-								generic->generic.length);
-						}
-						if (fUncompressedFrames.CountItems() > 0 || fMJPEGFrames.CountItems() > 0)
-							break;
+				for (int attempt = 0; attempt < 3; attempt++) {
+					if (attempt > 0) {
+						snooze(200000 * attempt);
+						syslog(LOG_INFO, "UVCCamDevice: VS descriptor retry %d\n",
+							attempt);
 					}
+
+					descCount = 0;
+					for (uint32 k = 0; interface->OtherDescriptorAt(k, generic,
+						sizeof(buffer)) == B_OK; k++) {
+						descCount++;
+						if (generic->generic.descriptor_type != (USB_REQTYPE_CLASS
+							| USB_DESCRIPTOR_INTERFACE))
+							continue;
+						_ParseVideoStreaming(
+							(const usbvc_class_descriptor*)generic,
+							generic->generic.length);
+					}
+
+					// Also check alternate interfaces
+					if (descCount == 0) {
+						for (uint32 alt = 0;
+							alt < interface->CountAlternates(); alt++) {
+							const BUSBInterface* alternate
+								= interface->AlternateAt(alt);
+							if (alternate == NULL)
+								continue;
+							for (uint32 k = 0;
+								alternate->OtherDescriptorAt(k, generic,
+									sizeof(buffer)) == B_OK; k++) {
+								descCount++;
+								if (generic->generic.descriptor_type
+									!= (USB_REQTYPE_CLASS
+										| USB_DESCRIPTOR_INTERFACE))
+									continue;
+								_ParseVideoStreaming(
+									(const usbvc_class_descriptor*)generic,
+									generic->generic.length);
+							}
+							if (fUncompressedFrames.CountItems() > 0
+								|| fMJPEGFrames.CountItems() > 0)
+								break;
+						}
+					}
+
+					if (fUncompressedFrames.CountItems() > 0
+						|| fMJPEGFrames.CountItems() > 0)
+						break;
 				}
+				syslog(LOG_INFO, "UVCCamDevice: Found %u VS descriptors, "
+					"uncompressed=%d mjpeg=%d\n", descCount,
+					(int)fUncompressedFrames.CountItems(),
+					(int)fMJPEGFrames.CountItems());
 
 				printf("UVCCamDevice: Total frames found: uncompressed=%d, mjpeg=%d\n",
 					(int)fUncompressedFrames.CountItems(), (int)fMJPEGFrames.CountItems());
