@@ -538,7 +538,7 @@ AudioProducer::Connect(status_t error, const media_source &source,
 	if (fConnectedFormat.channel_count == 0)
 		fConnectedFormat.channel_count = 2;
 	if (fConnectedFormat.frame_rate <= 0)
-		fConnectedFormat.frame_rate = 32000.0f;
+		fConnectedFormat.frame_rate = 48000.0f;
 	if (fConnectedFormat.buffer_size == 0)
 		fConnectedFormat.buffer_size = AUDIO_BUFFER_SIZE_DEFAULT;
 	if (fConnectedFormat.byte_order == 0)
