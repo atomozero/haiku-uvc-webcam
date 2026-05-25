@@ -1350,24 +1350,28 @@ VideoProducer::FrameGenerator()
 
 		bigtime_t now = system_time();
 		bigtime_t stamp = 0;
-		if (fCamDevice) {
-			err = fCamDevice->FillFrameBuffer(buffer, &stamp);
-			if (err < B_OK) {
-				if (frameLog < 10) {
-					syslog(LOG_WARNING, "Producer: FillFrameBuffer FAILED #%d: %s\n", frameLog, strerror(err));
-					frameLog++;
-				}
-				fStats[0].missed++;
-				buffer->Recycle();
-				continue;
-			}
-			if (frameLog < 10) {
-				syslog(LOG_INFO, "Producer: FillFrameBuffer OK #%d\n", frameLog);
-				frameLog++;
-			}
-		} else {
+
+		// Capture device pointer to avoid race with hot-unplug.
+		// Another thread may clear fCamDevice between check and use.
+		CamDevice* device = fCamDevice;
+		if (device == NULL || !device->IsPlugged()) {
 			buffer->Recycle();
 			continue;
+		}
+
+		err = device->FillFrameBuffer(buffer, &stamp);
+		if (err < B_OK) {
+			if (frameLog < 10) {
+				syslog(LOG_WARNING, "Producer: FillFrameBuffer FAILED #%d: %s\n", frameLog, strerror(err));
+				frameLog++;
+			}
+			fStats[0].missed++;
+			buffer->Recycle();
+			continue;
+		}
+		if (frameLog < 10) {
+			syslog(LOG_INFO, "Producer: FillFrameBuffer OK #%d\n", frameLog);
+			frameLog++;
 		}
 #ifdef UseGetFrameBitmap
 		BBitmap *bm;
