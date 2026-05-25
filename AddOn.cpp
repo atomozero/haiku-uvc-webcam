@@ -5,6 +5,7 @@
 
 #include <support/Autolock.h>
 #include <media/MediaFormats.h>
+#include <Notification.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -257,6 +258,15 @@ WebCamMediaAddOn::CameraAdded(CamDevice* device)
 {
 	PRINT((CH "()" CT));
 	NotifyFlavorChange();
+
+	BNotification notification(B_INFORMATION_NOTIFICATION);
+	notification.SetGroup("USB Webcam");
+	notification.SetTitle("Webcam connected");
+	BString message;
+	message.SetToFormat("%s %s", device->BrandName(), device->ModelName());
+	notification.SetContent(message);
+	notification.Send();
+
 	return B_OK;
 }
 
@@ -266,6 +276,15 @@ WebCamMediaAddOn::CameraRemoved(CamDevice* device)
 {
 	PRINT((CH "()" CT));
 	NotifyFlavorChange();
+
+	BNotification notification(B_INFORMATION_NOTIFICATION);
+	notification.SetGroup("USB Webcam");
+	notification.SetTitle("Webcam disconnected");
+	BString message;
+	message.SetToFormat("%s %s", device->BrandName(), device->ModelName());
+	notification.SetContent(message);
+	notification.Send();
+
 	return B_OK;
 }
 
