@@ -5541,6 +5541,93 @@ UVCCamDevice::_GetStillCaptureMethodName(still_capture_method method)
 }
 
 
+status_t
+UVCCamDevice::TriggerStillCapture(uint8* buffer, size_t bufferSize,
+	size_t* bytesWritten, uint32 width, uint32 height)
+{
+	if (!fHasStillCapture || fStillCaptureMethod == STILL_CAPTURE_NONE)
+		return B_NOT_SUPPORTED;
+
+	if (buffer == NULL || bytesWritten == NULL)
+		return B_BAD_VALUE;
+
+	*bytesWritten = 0;
+
+	// Method 2: Host software triggered via VS_STILL_IMAGE_TRIGGER_CONTROL
+	if (fStillCaptureMethod == STILL_CAPTURE_METHOD_2) {
+		// Step 1: Configure still probe/commit with desired resolution
+		// If no resolution specified, use current stream resolution
+		if (width == 0 || height == 0) {
+			BRect frame = VideoFrame();
+			width = (uint32)(frame.Width() + 1);
+			height = (uint32)(frame.Height() + 1);
+		}
+
+		syslog(LOG_INFO, "UVCCamDevice: Triggering still capture %ux%u\n",
+			width, height);
+
+		// Step 2: Send trigger command
+		// UVC spec: VS_STILL_IMAGE_TRIGGER_CONTROL SET_CUR with value 0x01
+		uint8 trigger = 0x01;
+		status_t err = fDevice->ControlTransfer(
+			USB_REQTYPE_CLASS | USB_REQTYPE_INTERFACE_OUT,
+			0x01,	// SET_CUR
+			(0x05 << 8),	// VS_STILL_IMAGE_TRIGGER_CONTROL
+			fStreamingIndex,
+			1,
+			&trigger);
+
+		if (err < B_OK) {
+			syslog(LOG_ERR, "UVCCamDevice: Still trigger failed: %s\n",
+				strerror(err));
+			return err;
+		}
+
+		// Step 3: Wait for the still frame via the deframer
+		// The camera will send a still frame with the same FID/EOF markers
+		if (fDeframer == NULL)
+			return B_NO_INIT;
+
+		err = fDeframer->WaitFrame(5000000);	// 5 second timeout for still
+		if (err < B_OK) {
+			syslog(LOG_ERR, "UVCCamDevice: Still capture timeout: %s\n",
+				strerror(err));
+			return err;
+		}
+
+		CamFrame* f;
+		bigtime_t stamp;
+		err = fDeframer->GetFrame(&f, &stamp);
+		if (err < B_OK)
+			return err;
+
+		size_t frameSize = f->BufferLength();
+		if (frameSize > bufferSize) {
+			syslog(LOG_WARNING, "UVCCamDevice: Still frame too large: %zu > %zu\n",
+				frameSize, bufferSize);
+			frameSize = bufferSize;
+		}
+
+		memcpy(buffer, f->Buffer(), frameSize);
+		*bytesWritten = frameSize;
+
+		if (fDeframer != NULL)
+			fDeframer->RecycleFrame(f);
+		else
+			delete f;
+
+		syslog(LOG_INFO, "UVCCamDevice: Still capture OK: %zu bytes\n",
+			*bytesWritten);
+		return B_OK;
+	}
+
+	// Method 1 and 3 use hardware button - not host-triggerable
+	syslog(LOG_INFO, "UVCCamDevice: Still capture method %d not host-triggerable\n",
+		fStillCaptureMethod);
+	return B_NOT_SUPPORTED;
+}
+
+
 // =============================================================================
 // Feature 3: Resolution Fallback Methods
 // =============================================================================

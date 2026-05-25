@@ -107,10 +107,25 @@ Example: `export WEBCAM_DEBUG=verbose`
 - Resolution changes require stream restart for proper buffer reallocation
 - Uses atomic operations for thread-safe transfer state (`fTransferEnabled`)
 - Memory leak fixed: CamDevice properly cleaned up on unplug
+- Microdia 0c45:6409 (Sonix): YUY2-only camera with known horizontal tearing issue due to USB stream byte misalignment. The camera responds to Sonix XU ASIC read commands (unit 4) but blocks format register writes. No MJPEG support in firmware.
+- UVC Extension Units: Detected and parsed for Sonix, Microsoft, Logitech, Realtek vendors. Sonix XU GUID matching implemented for LED and face detection capabilities.
+
+## Still Image Capture
+
+The driver supports UVC still image capture via `TriggerStillCapture()`:
+- Method 2 (Host Software Triggered): Sends VS_STILL_IMAGE_TRIGGER_CONTROL SET_CUR
+- Parses VS_STILL_IMAGE_FRAME descriptors for available resolutions
+- Returns raw frame data (MJPEG or YUY2 depending on active format)
+- Methods 1 and 3 (hardware button) are detected but not host-triggerable
 
 ## Haiku USB Bug Workaround
 
 The driver includes a workaround for a bug in Haiku's `BUSBInterface::SetAlternate()`. A patch file is provided in `patches/` directory for upstream contribution.
+
+## Known Haiku USB Issues
+
+- EHCI isochronous transfers may cause kernel panic ("General Protection Exception" in `EHCI::FinishIsochronousTransfers`) after prolonged streaming. This is a race condition in the Haiku EHCI driver, not in this media addon.
+- EHCI "host system error" may occur during sustained high-bandwidth isochronous transfers, causing the USB controller to stop responding.
 
 ## Performance Optimizations
 

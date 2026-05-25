@@ -407,6 +407,14 @@ private:
 									const usb_video_still_image_frame_descriptor* descriptor);
 			void				_LogStillImageCapabilities();
 			const char*			_GetStillCaptureMethodName(still_capture_method method);
+	public:
+			status_t			TriggerStillCapture(uint8* buffer, size_t bufferSize,
+									size_t* bytesWritten, uint32 width = 0,
+									uint32 height = 0);
+			bool				HasStillCapture() const
+									{ return fHasStillCapture
+										&& fStillCaptureMethod != STILL_CAPTURE_NONE; }
+	private:
 
 	// Resolution fallback methods (Feature 3)
 			void				_EvaluatePacketLoss();
