@@ -1253,6 +1253,20 @@ UVCCamDevice::_ParseVideoControl(const usbvc_class_descriptor* _descriptor,
 				= (const usb_video_processing_unit_descriptor*)_descriptor;
 			fControlRequestIndex = fControlIndex + (descriptor->unit_id << 8);
 			fProcessingUnitID = descriptor->unit_id;
+			{
+				uint8 controls = descriptor->control_size >= 1
+					? descriptor->controls[0] : 0;
+				syslog(LOG_INFO, "UVCCamDevice: Processing Unit id=%d controls=0x%02x"
+					" (%s%s%s%s%s%s%s)\n",
+					descriptor->unit_id, controls,
+					(controls & 0x01) ? "Brightness " : "",
+					(controls & 0x02) ? "Contrast " : "",
+					(controls & 0x04) ? "Hue " : "",
+					(controls & 0x08) ? "Saturation " : "",
+					(controls & 0x10) ? "Sharpness " : "",
+					(controls & 0x20) ? "Gamma " : "",
+					(controls & 0x40) ? "WB-Temp " : "");
+			}
 			printf("VC_PROCESSING_UNIT:\t unit id=%d,src id=%d, digmul=%d\n",
 				descriptor->unit_id, descriptor->source_id,
 				descriptor->max_multiplier);
