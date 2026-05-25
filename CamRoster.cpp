@@ -127,11 +127,15 @@ CamRoster::DeviceRemoved(BUSBDevice* _device)
 			cam->Unplugged();
 
 			// Notify Media Kit that the flavor is no longer available
-			// This should trigger node cleanup
+			// This triggers node cleanup in the Media Kit
 			fAddon->CameraRemoved(cam);
 
-			// Now safe to delete: Unplugged() has stopped all threads
-			// and cleared all USB pointers
+			// Give the Media Kit time to stop the node's control loop
+			// thread. Without this delay, the VideoProducer's
+			// BMediaEventLooper may still be processing messages when
+			// we delete the CamDevice, causing a segment violation.
+			snooze(200000);
+
 			delete cam;
 			return;
 		}
