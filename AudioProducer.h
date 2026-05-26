@@ -234,13 +234,6 @@ static	int32				_audio_generator_(void *data);
 		float				fVolume;
 		bigtime_t			fLastParamChange;
 
-		// Audio buffer ring
-		uint8*				fAudioRingBuffer;
-		size_t				fRingBufferSize;
-		volatile size_t		fRingBufferHead;
-		volatile size_t		fRingBufferTail;
-		sem_id				fRingBufferSem;
-
 		// Mono microphone detection state
 		int32				fMonoDominantChannel;	// -1=balanced, 0=left, 1=right
 		bigtime_t			fMonoLastCheck;

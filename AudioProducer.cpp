@@ -79,13 +79,6 @@ AudioProducer::AudioProducer(
 	fAudioStats.Reset();
 	fLastStatsReport = 0;
 
-	// Ring buffer for USB audio data
-	fAudioRingBuffer = NULL;
-	fRingBufferSize = 65536;
-	fRingBufferHead = 0;
-	fRingBufferTail = 0;
-	fRingBufferSem = -1;
-
 	fOutput.destination = media_destination::null;
 
 	AddNodeKind(B_PHYSICAL_INPUT);
@@ -101,16 +94,6 @@ AudioProducer::~AudioProducer()
 			Disconnect(fOutput.source, fOutput.destination);
 		if (fRunning)
 			HandleStop();
-	}
-
-	if (fAudioRingBuffer) {
-		free(fAudioRingBuffer);
-		fAudioRingBuffer = NULL;
-	}
-
-	if (fRingBufferSem >= 0) {
-		delete_sem(fRingBufferSem);
-		fRingBufferSem = -1;
 	}
 
 	atomic_add(&fInstances, -1);
@@ -584,27 +567,6 @@ AudioProducer::Connect(status_t error, const media_source &source,
 		return;
 	}
 
-	// Allocate ring buffer for USB audio data
-	fAudioRingBuffer = (uint8*)malloc(fRingBufferSize);
-	if (!fAudioRingBuffer) {
-		syslog(LOG_ERR, "AudioProducer: Failed to allocate ring buffer\n");
-		delete fBufferGroup;
-		fBufferGroup = NULL;
-		return;
-	}
-	fRingBufferHead = 0;
-	fRingBufferTail = 0;
-
-	fRingBufferSem = create_sem(0, "audio ring buffer");
-	if (fRingBufferSem < 0) {
-		syslog(LOG_ERR, "AudioProducer: Failed to create ring buffer sem\n");
-		free(fAudioRingBuffer);
-		fAudioRingBuffer = NULL;
-		delete fBufferGroup;
-		fBufferGroup = NULL;
-		return;
-	}
-
 	fConnected = true;
 	fEnabled = true;
 
@@ -632,16 +594,6 @@ AudioProducer::Disconnect(const media_source &source,
 	delete fBufferGroup;
 	fBufferGroup = NULL;
 	fLock.Unlock();
-
-	if (fAudioRingBuffer) {
-		free(fAudioRingBuffer);
-		fAudioRingBuffer = NULL;
-	}
-
-	if (fRingBufferSem >= 0) {
-		delete_sem(fRingBufferSem);
-		fRingBufferSem = -1;
-	}
 
 	fConnected = false;
 }
