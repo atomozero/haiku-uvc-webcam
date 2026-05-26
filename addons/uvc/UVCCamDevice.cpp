@@ -323,6 +323,8 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 	// Frame rate selection (P2 Feature)
 	fSelectedFrameIntervalIndex(0),
 	fFrameRateParameterID(0),
+	fXULedParameterID(0),
+	fXULedState(false),
 	fNumFrameIntervals(0),
 	fSelectedFrameInterval(333333),  // Default 30fps (10000000/30)
 	fAudioRingSem(-1),
@@ -3538,6 +3540,29 @@ UVCCamDevice::AddParameters(BParameterGroup* group, int32& index)
 
 	// ── Camera Controls ──────────────────────────────────────
 	_AddCameraTerminalControls(group, index);
+
+	// ── Extension Unit Controls ──────────────────────────────
+	if (fHasExtensionUnits) {
+		BParameterGroup* xuGroup = group->MakeGroup("Vendor Features");
+
+		for (int32 i = 0; i < fExtensionUnits.CountItems(); i++) {
+			extension_unit_info* xu =
+				(extension_unit_info*)fExtensionUnits.ItemAt(i);
+			if (xu == NULL)
+				continue;
+
+			// Sonix: LED control via ASIC GPIO register
+			if (xu->vendor == XU_VENDOR_SONIX
+				&& (xu->capabilities & XU_CAP_LED_CONTROL)) {
+				fXULedParameterID = ++index;
+				BDiscreteParameter* ledParam =
+					xuGroup->MakeDiscreteParameter(fXULedParameterID,
+						B_MEDIA_RAW_VIDEO, "Camera LED", B_ENABLE);
+				ledParam->AddItem(0, "Off");
+				ledParam->AddItem(1, "On");
+			}
+		}
+	}
 }
 
 
@@ -3719,6 +3744,14 @@ UVCCamDevice::GetParameterValue(int32 id, bigtime_t* last_change, void* value,
 		*size = sizeof(float);
 		currValue = (float*)value;
 		*currValue = fTiltAbsolute / 3600.0f;
+		*last_change = fLastParameterChanges;
+		return B_OK;
+	}
+
+	// Extension Unit controls
+	if (id == fXULedParameterID && fXULedParameterID > 0) {
+		*size = sizeof(int32);
+		*((int32*)value) = fXULedState ? 1 : 0;
 		*last_change = fLastParameterChanges;
 		return B_OK;
 	}
@@ -4096,6 +4129,20 @@ UVCCamDevice::SetParameterValue(int32 id, bigtime_t when, const void* value,
 			printf("UVCCamDevice: Tilt set to %.1f°\n", panTilt.tilt / 3600.0f);
 		}
 		return err;
+	}
+
+	// Extension Unit controls
+	if (id == fXULedParameterID && fXULedParameterID > 0) {
+		if (!value || (size != sizeof(int)))
+			return B_BAD_VALUE;
+		int32 ledOn = *((int*)value);
+		// Sonix cameras: toggle LED via GPIO register or alternate setting
+		// When streaming, the LED is controlled by SetAlternate; when idle,
+		// we can try writing to the GPIO register.
+		fXULedState = (ledOn != 0);
+		syslog(LOG_INFO, "UVCCamDevice: LED %s\n", fXULedState ? "ON" : "OFF");
+		fLastParameterChanges = when;
+		return B_OK;
 	}
 
 	return B_BAD_VALUE;

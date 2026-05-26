@@ -565,6 +565,10 @@ private:
 			uint8				fNumFrameIntervals;           // Number of intervals available
 			uint32				fSelectedFrameInterval;       // Actual interval value in 100ns units
 
+			// Extension Unit controls
+			int32				fXULedParameterID;
+			bool				fXULedState;
+
 			sem_id				fAudioRingSem;
 
 			// Frame validation state (Feature 1)
