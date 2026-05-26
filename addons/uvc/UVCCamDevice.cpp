@@ -2775,47 +2775,23 @@ UVCCamDevice::ReadAudioData(void* buffer, size_t size)
 	if (fAudioRingBuffer == NULL || buffer == NULL || size == 0)
 		return 0;
 
-	// Wait for data using semaphore (signaled by AudioPumpThread).
-	// Use short timeout (2ms) to match USB audio frame rate (~1ms per packet).
-	// Total max wait: 50 retries * 2ms = 100ms.
-	size_t available = 0;
-	int retries = 50;
-
-	while (retries-- > 0) {
-		int32 head = atomic_get(&fAudioRingHead);
-		int32 tail = atomic_get(&fAudioRingTail);
-
-		if (head >= tail)
-			available = head - tail;
-		else
-			available = fAudioRingSize - tail + head;
-
-		if (available >= size)
-			break;
-
-		// Wait for producer to signal new data (2ms timeout)
-		status_t err = acquire_sem_etc(fAudioRingSem, 1,
-			B_RELATIVE_TIMEOUT, 2000);
-		if (err == B_BAD_SEM_ID)
-			return 0;	// semaphore deleted, audio stopped
-	}
-
-	if (available == 0)
+	// Wait briefly for data, then return whatever is available.
+	// The AudioProducer pads short reads with silence, so it's better
+	// to deliver partial data on time than full data late.
+	status_t err = acquire_sem_etc(fAudioRingSem, 1,
+		B_RELATIVE_TIMEOUT, 4000);	// 4ms = one buffer period at 32kHz
+	if (err == B_BAD_SEM_ID)
 		return 0;
 
-	// Re-read both pointers atomically for the actual copy.
-	// The pump thread may have advanced head since the wait loop.
-	// Tail is only modified by us, so it's stable.
 	int32 tail = atomic_get(&fAudioRingTail);
 	int32 head = atomic_get(&fAudioRingHead);
 
-	// Validate pointers
 	if (tail < 0 || (size_t)tail >= fAudioRingSize) {
 		atomic_set(&fAudioRingTail, 0);
 		return 0;
 	}
 
-	// Recalculate available with fresh pointer values
+	size_t available;
 	if (head >= tail)
 		available = head - tail;
 	else
