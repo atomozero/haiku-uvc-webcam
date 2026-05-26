@@ -54,6 +54,33 @@ AudioProducer (AudioProducer.cpp)    ↓
 
 Both formats write payload to `fFixedBuffer` (4MB pre-allocated). The old `fInputBuffer` (BMallocIO) is NOT used for data — only `fFixedBuffer`.
 
+## Extension Unit (XU) Controls
+
+UVC Extension Units allow vendor-specific features beyond the standard controls.
+
+**Primitives** (in UVCCamDevice):
+- `_XUSetCur(unitId, selector, data, len)` / `_XUGetCur()` / `_XUGetMin()` / `_XUGetMax()` — standard UVC class requests to XU
+- `_XUGetInfo(unitId, selector, &info)` — query capability bitmap (bit 0=GET, bit 1=SET)
+- `_FindXU(vendor)` — look up extension_unit_info by vendor enum
+
+**Sonix helpers**:
+- `_SonixAsicRead(addr, &val)` / `_SonixAsicWrite(addr, val)` — read/write bridge registers via XU selector 0x01 (ASIC_RW)
+
+**Auto-discovery**: during AddParameters(), each XU's selectors are probed with GET_INFO + GET_CUR and logged via syslog.
+
+**Exposed controls**:
+- Sonix LED toggle (BParameterWeb "Vendor Features" group)
+- Parameter IDs use dynamic allocation (fXULedParameterID) consistent with Camera Terminal controls
+
+**Known XU GUIDs**:
+| Vendor | GUID prefix | Unit IDs |
+|--------|------------|----------|
+| Sonix SYS | `7033f028` | typically 3 or 4 |
+| Sonix USR | `9473dfdd` or `3fae1228` | typically 4 or 5 |
+| Microsoft H264 | `a9c86c04` | varies |
+| Logitech | `82066163` | varies |
+| Realtek | `70ea6d28` | varies |
+
 ## Known Device Quirks
 
 - **Microdia 0c45:6409**: Stride quirk only when `srcSize > expectedSize`. Sonix XU readable (unit 4, GUID `7033f028`) but format registers read-only. YUY2-only, tearing is a firmware limitation.
