@@ -121,20 +121,21 @@ CamRoster::DeviceRemoved(BUSBDevice* _device)
 
 			fCameras.RemoveItem(i);
 
-			// PHASE 2: Proper cleanup on device disconnect
-			// First, stop all transfers and wait for threads to finish
-			// This is now safe because Unplugged() waits for the data pump thread
+			// Stop all USB transfers and wait for threads to finish
 			cam->Unplugged();
 
-			// Stop the VideoProducer's event loop before deleting.
-			// Without this, the BMediaEventLooper control thread may still
-			// be processing messages when we delete the CamDevice, causing
-			// a segment violation in VideoProducer::Stop().
+			// Invalidate the VideoProducer's device pointer and stop it.
+			// The Media Kit may still send messages to the node after
+			// StopNode returns, so we must NOT delete the CamDevice here.
 			cam->QuitVideoNode();
 
 			// Notify Media Kit that the flavor is no longer available
 			fAddon->CameraRemoved(cam);
 
+			// Defer deletion: the Media Kit event loop may still reference
+			// the VideoProducer (and its CamDevice) after CameraRemoved.
+			// Wait long enough for pending messages to drain, then delete.
+			snooze(200000);
 			delete cam;
 			return;
 		}

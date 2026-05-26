@@ -866,26 +866,13 @@ AudioProducer::AudioGenerator()
 	bigtime_t bufferDuration = (bigtime_t)(framesPerBuffer * 1000000LL
 		/ (bigtime_t)frameRate);
 
-	bigtime_t nextBufferTime = system_time();
-
 	while (fRunning) {
-		status_t err = acquire_sem_etc(fFrameSync, 1, B_ABSOLUTE_TIMEOUT, nextBufferTime);
-
-		if (err == B_BAD_SEM_ID) {
-			if (!fRunning)
-				break;
-			snooze(10000);
+		// For live audio capture, timing is driven by USB data arrival.
+		// ReadAudioData blocks until data is available, so no timer needed.
+		if (!fEnabled) {
+			snooze(bufferDuration);
 			continue;
 		}
-
-		if (err == B_OK) {
-			// Timing change signal - recalculate
-			nextBufferTime = system_time() + bufferDuration;
-			continue;
-		}
-
-		if (!fRunning || !fEnabled)
-			continue;
 
 		BAutolock _(fLock);
 
@@ -896,8 +883,7 @@ AudioProducer::AudioGenerator()
 			bufferDuration);
 		if (!buffer) {
 			fAudioStats.buffers_dropped++;
-			syslog(LOG_WARNING, "AudioProducer: No buffer available\n");
-			nextBufferTime = system_time() + bufferDuration;
+			snooze(bufferDuration);
 			continue;
 		}
 
@@ -1018,7 +1004,6 @@ AudioProducer::AudioGenerator()
 		}
 
 		fFramesSent += framesPerBuffer;
-		nextBufferTime = system_time() + bufferDuration;
 
 		// Group 8: Periodic statistics report (every 30 seconds)
 		bigtime_t now = system_time();
