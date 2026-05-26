@@ -181,10 +181,9 @@ WebCamMediaAddOn::GetFlavorAt(int32 n, const flavor_info **out_info)
 						cam->FlavorInfo()->internal_id | 0x80000000;
 
 					// Build name with device name
-					static char audioName[256];
-					snprintf(audioName, sizeof(audioName), "%s Audio",
-						cam->FlavorInfo()->name);
-					fDefaultAudioFlavorInfo.name = audioName;
+					snprintf(fAudioFlavorName, sizeof(fAudioFlavorName),
+						"%s Audio", cam->FlavorInfo()->name);
+					fDefaultAudioFlavorInfo.name = fAudioFlavorName;
 
 					*out_info = &fDefaultAudioFlavorInfo;
 					fRoster->Unlock();

@@ -49,6 +49,7 @@ private:
 	status_t			fInitStatus;
 	flavor_info			fDefaultFlavorInfo;
 	flavor_info			fDefaultAudioFlavorInfo;
+	char				fAudioFlavorName[256];
 	media_format		fMediaFormat;
 	media_format		fAudioMediaFormat;
 	CamRoster*			fRoster;

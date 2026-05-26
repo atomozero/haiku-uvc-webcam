@@ -1352,9 +1352,14 @@ VideoProducer::FrameGenerator()
 		bigtime_t stamp = 0;
 
 		// Capture device pointer to avoid race with hot-unplug.
-		// Another thread may clear fCamDevice between check and use.
+		// SetCamDevice(NULL) is called before device destruction,
+		// so checking fCamDevice here is safe.
 		CamDevice* device = fCamDevice;
-		if (device == NULL || !device->IsPlugged()) {
+		if (device == NULL) {
+			buffer->Recycle();
+			break;	// device gone, exit loop
+		}
+		if (!device->IsPlugged()) {
 			buffer->Recycle();
 			continue;
 		}
@@ -1375,7 +1380,7 @@ VideoProducer::FrameGenerator()
 		}
 #ifdef UseGetFrameBitmap
 		BBitmap *bm;
-		err = fCamDevice->GetFrameBitmap(&bm, &stamp);
+		err = device->GetFrameBitmap(&bm, &stamp);
 		if (err >= B_OK) {
 			;//XXX handle error
 			fStats[0].missed++;
