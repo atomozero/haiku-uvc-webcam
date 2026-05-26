@@ -3162,9 +3162,24 @@ UVCCamDevice::AudioPumpThread()
 			uint8* packetData = fAudioBuffer + (i * bytesPerPacket);
 			size_t packetLen = packetDescs[i].actual_length;
 
+			// Log first few packets to diagnose distortion
+			static int32 sAudioPktLog = 0;
+			if (++sAudioPktLog <= 10) {
+				syslog(LOG_INFO, "AUDIO pkt[%u]: actual=%zu slot=%u first8=[%02x %02x %02x %02x %02x %02x %02x %02x]\n",
+					i, packetLen, (unsigned)bytesPerPacket,
+					packetData[0], packetData[1], packetData[2], packetData[3],
+					packetData[4], packetData[5], packetData[6], packetData[7]);
+			}
+
 			// Validate packet length against buffer size
 			if (packetLen > bytesPerPacket)
 				packetLen = bytesPerPacket;
+
+			// Ensure packet length is aligned to sample frame boundary
+			// (channels * 2 bytes per sample). Unaligned data causes distortion.
+			uint32 frameSize = fAudioChannels * 2;
+			if (frameSize > 0)
+				packetLen -= packetLen % frameSize;
 
 			// Calculate space in ring buffer
 			int32 head = atomic_get(&fAudioRingHead);
