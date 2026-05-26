@@ -325,6 +325,11 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 	fFrameRateParameterID(0),
 	fXULedParameterID(0),
 	fXULedState(false),
+	fExposureRelID(-1),
+	fFocusRelID(-1),
+	fZoomRelID(-1),
+	fPanRelID(-1),
+	fTiltRelID(-1),
 	fNumFrameIntervals(0),
 	fSelectedFrameInterval(333333),  // Default 30fps (10000000/30)
 	fAudioRingSem(-1),
@@ -3771,6 +3776,18 @@ UVCCamDevice::GetParameterValue(int32 id, bigtime_t* last_change, void* value,
 		return B_OK;
 	}
 
+	// Relative controls always return 0 (stopped)
+	if ((id == fExposureRelID && fExposureRelID >= 0)
+		|| (id == fFocusRelID && fFocusRelID >= 0)
+		|| (id == fZoomRelID && fZoomRelID >= 0)
+		|| (id == fPanRelID && fPanRelID >= 0)
+		|| (id == fTiltRelID && fTiltRelID >= 0)) {
+		*size = sizeof(int32);
+		*((int32*)value) = 0;
+		*last_change = fLastParameterChanges;
+		return B_OK;
+	}
+
 	// Extension Unit controls
 	if (id == fXULedParameterID && fXULedParameterID > 0) {
 		*size = sizeof(int32);
@@ -4154,14 +4171,61 @@ UVCCamDevice::SetParameterValue(int32 id, bigtime_t when, const void* value,
 		return err;
 	}
 
+	// Relative controls - send directional command to camera
+	if (id == fExposureRelID && fExposureRelID >= 0) {
+		if (!value || (size != sizeof(int)))
+			return B_BAD_VALUE;
+		int8 dir = (int8)*((int*)value);
+		return _SetCTControlValue(
+			USB_VIDEO_CT_EXPOSURE_TIME_RELATIVE_CONTROL, &dir, 1);
+	}
+	if (id == fFocusRelID && fFocusRelID >= 0) {
+		if (!value || (size != sizeof(int)))
+			return B_BAD_VALUE;
+		int8 data[2];
+		data[0] = (int8)*((int*)value);	// direction
+		data[1] = (data[0] != 0) ? 1 : 0;	// speed (1=default)
+		return _SetCTControlValue(
+			USB_VIDEO_CT_FOCUS_RELATIVE_CONTROL, data, 2);
+	}
+	if (id == fZoomRelID && fZoomRelID >= 0) {
+		if (!value || (size != sizeof(int)))
+			return B_BAD_VALUE;
+		int8 data[3];
+		data[0] = (int8)*((int*)value);	// optical zoom direction
+		data[1] = 0;						// digital zoom (unused)
+		data[2] = (data[0] != 0) ? 1 : 0;	// speed
+		return _SetCTControlValue(
+			USB_VIDEO_CT_ZOOM_RELATIVE_CONTROL, data, 3);
+	}
+	if (id == fPanRelID && fPanRelID >= 0) {
+		if (!value || (size != sizeof(int)))
+			return B_BAD_VALUE;
+		int8 data[4];
+		data[0] = (int8)*((int*)value);	// pan direction
+		data[1] = (data[0] != 0) ? 1 : 0;	// pan speed
+		data[2] = 0;						// tilt direction (unchanged)
+		data[3] = 0;						// tilt speed
+		return _SetCTControlValue(
+			USB_VIDEO_CT_PANTILT_RELATIVE_CONTROL, data, 4);
+	}
+	if (id == fTiltRelID && fTiltRelID >= 0) {
+		if (!value || (size != sizeof(int)))
+			return B_BAD_VALUE;
+		int8 data[4];
+		data[0] = 0;						// pan direction (unchanged)
+		data[1] = 0;						// pan speed
+		data[2] = (int8)*((int*)value);	// tilt direction
+		data[3] = (data[2] != 0) ? 1 : 0;	// tilt speed
+		return _SetCTControlValue(
+			USB_VIDEO_CT_PANTILT_RELATIVE_CONTROL, data, 4);
+	}
+
 	// Extension Unit controls
 	if (id == fXULedParameterID && fXULedParameterID > 0) {
 		if (!value || (size != sizeof(int)))
 			return B_BAD_VALUE;
 		int32 ledOn = *((int*)value);
-		// Sonix cameras: toggle LED via GPIO register or alternate setting
-		// When streaming, the LED is controlled by SetAlternate; when idle,
-		// we can try writing to the GPIO register.
 		fXULedState = (ledOn != 0);
 		syslog(LOG_INFO, "UVCCamDevice: LED %s\n", fXULedState ? "ON" : "OFF");
 		fLastParameterChanges = when;
@@ -5405,7 +5469,70 @@ UVCCamDevice::_AddCameraTerminalControls(BParameterGroup* group, int32& index)
 		}
 	}
 
-	printf("UVCCamDevice: Added Camera Terminal controls\n");
+	// ── Relative Controls ────────────────────────────────────
+	// Relative controls send directional commands: -1 (decrease),
+	// 0 (stop), +1 (increase). Exposed as discrete parameters.
+
+	// Exposure Time Relative (bit 4)
+	if (fCameraTerminalControls & (1 << 4)) {
+		fExposureRelID = index++;
+		BDiscreteParameter* expRel = ctGroup->MakeDiscreteParameter(
+			fExposureRelID, B_MEDIA_RAW_VIDEO, "Exposure +/-", B_GENERIC);
+		if (expRel) {
+			expRel->AddItem(-1, "Decrease");
+			expRel->AddItem(0, "Stop");
+			expRel->AddItem(1, "Increase");
+		}
+	}
+
+	// Focus Relative (bit 6) - 2 bytes: direction (int8) + speed (uint8)
+	if (fCameraTerminalControls & (1 << 6)) {
+		fFocusRelID = index++;
+		BDiscreteParameter* focusRel = ctGroup->MakeDiscreteParameter(
+			fFocusRelID, B_MEDIA_RAW_VIDEO, "Focus +/-", B_GENERIC);
+		if (focusRel) {
+			focusRel->AddItem(-1, "Near");
+			focusRel->AddItem(0, "Stop");
+			focusRel->AddItem(1, "Far");
+		}
+	}
+
+	// Zoom Relative (bit 10) - 3 bytes: direction (int8), digital (int8), speed (uint8)
+	if (fCameraTerminalControls & (1 << 10)) {
+		fZoomRelID = index++;
+		BDiscreteParameter* zoomRel = ctGroup->MakeDiscreteParameter(
+			fZoomRelID, B_MEDIA_RAW_VIDEO, "Zoom +/-", B_GENERIC);
+		if (zoomRel) {
+			zoomRel->AddItem(-1, "Wide");
+			zoomRel->AddItem(0, "Stop");
+			zoomRel->AddItem(1, "Tele");
+		}
+	}
+
+	// Pan/Tilt Relative (bit 12) - 4 bytes: panDir (int8), panSpeed (uint8),
+	//                                        tiltDir (int8), tiltSpeed (uint8)
+	if (fCameraTerminalControls & (1 << 12)) {
+		fPanRelID = index++;
+		BDiscreteParameter* panRel = ctGroup->MakeDiscreteParameter(
+			fPanRelID, B_MEDIA_RAW_VIDEO, "Pan +/-", B_GENERIC);
+		if (panRel) {
+			panRel->AddItem(-1, "Left");
+			panRel->AddItem(0, "Stop");
+			panRel->AddItem(1, "Right");
+		}
+
+		fTiltRelID = index++;
+		BDiscreteParameter* tiltRel = ctGroup->MakeDiscreteParameter(
+			fTiltRelID, B_MEDIA_RAW_VIDEO, "Tilt +/-", B_GENERIC);
+		if (tiltRel) {
+			tiltRel->AddItem(-1, "Down");
+			tiltRel->AddItem(0, "Stop");
+			tiltRel->AddItem(1, "Up");
+		}
+	}
+
+	syslog(LOG_INFO, "UVCCamDevice: Camera Terminal controls added "
+		"(bitmap=0x%08x)\n", fCameraTerminalControls);
 }
 
 

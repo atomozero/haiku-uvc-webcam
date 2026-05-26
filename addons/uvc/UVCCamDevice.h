@@ -569,6 +569,13 @@ private:
 			int32				fXULedParameterID;
 			bool				fXULedState;
 
+			// Relative control parameter IDs
+			int32				fExposureRelID;
+			int32				fFocusRelID;
+			int32				fZoomRelID;
+			int32				fPanRelID;
+			int32				fTiltRelID;
+
 			sem_id				fAudioRingSem;
 
 			// Frame validation state (Feature 1)
