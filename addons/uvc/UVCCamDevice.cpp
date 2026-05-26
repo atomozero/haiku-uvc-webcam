@@ -2775,9 +2775,11 @@ UVCCamDevice::ReadAudioData(void* buffer, size_t size)
 	if (fAudioRingBuffer == NULL || buffer == NULL || size == 0)
 		return 0;
 
-	// Wait for data using semaphore (signaled by AudioPumpThread)
+	// Wait for data using semaphore (signaled by AudioPumpThread).
+	// Use short timeout (2ms) to match USB audio frame rate (~1ms per packet).
+	// Total max wait: 50 retries * 2ms = 100ms.
 	size_t available = 0;
-	int retries = 20;  // Max 20 waits of 10ms each = 200ms timeout
+	int retries = 50;
 
 	while (retries-- > 0) {
 		int32 head = atomic_get(&fAudioRingHead);
@@ -2791,9 +2793,9 @@ UVCCamDevice::ReadAudioData(void* buffer, size_t size)
 		if (available >= size)
 			break;
 
-		// Wait for producer to signal new data
+		// Wait for producer to signal new data (2ms timeout)
 		status_t err = acquire_sem_etc(fAudioRingSem, 1,
-			B_RELATIVE_TIMEOUT, 10000);
+			B_RELATIVE_TIMEOUT, 2000);
 		if (err == B_BAD_SEM_ID)
 			return 0;	// semaphore deleted, audio stopped
 	}
