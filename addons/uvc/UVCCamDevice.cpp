@@ -3551,7 +3551,7 @@ UVCCamDevice::AddParameters(BParameterGroup* group, int32& index)
 			if (xu == NULL)
 				continue;
 
-			// Sonix: LED control via ASIC GPIO register
+			// Sonix: LED control
 			if (xu->vendor == XU_VENDOR_SONIX
 				&& (xu->capabilities & XU_CAP_LED_CONTROL)) {
 				fXULedParameterID = ++index;
@@ -3560,6 +3560,29 @@ UVCCamDevice::AddParameters(BParameterGroup* group, int32& index)
 						B_MEDIA_RAW_VIDEO, "Camera LED", B_ENABLE);
 				ledParam->AddItem(0, "Off");
 				ledParam->AddItem(1, "On");
+			}
+
+			// Probe each XU selector to discover available controls
+			// UVC GET_INFO returns a bitmap: bit 0 = GET supported,
+			// bit 1 = SET supported. We only expose readable controls.
+			for (uint8 sel = 1; sel <= xu->num_controls; sel++) {
+				uint8 info = 0;
+				if (_XUGetInfo(xu->unit_id, sel, &info) != B_OK)
+					continue;
+				if ((info & 0x01) == 0)
+					continue;	// not readable
+
+				// Try GET_CUR to see if this selector responds
+				uint8 probe[64];
+				memset(probe, 0, sizeof(probe));
+				if (_XUGetCur(xu->unit_id, sel, probe, 1) != B_OK)
+					continue;
+
+				// Log discovered control
+				syslog(LOG_INFO, "UVCCamDevice: XU[%d] sel=%d info=0x%02x "
+					"cur=0x%02x %s\n",
+					xu->unit_id, sel, info, probe[0],
+					(info & 0x02) ? "(rw)" : "(ro)");
 			}
 		}
 	}
