@@ -5492,6 +5492,162 @@ UVCCamDevice::_LogExtensionUnits()
 
 
 // =============================================================================
+// Extension Unit Control Transfer Primitives
+// =============================================================================
+
+
+status_t
+UVCCamDevice::_XUSetCur(uint8 unitId, uint8 selector,
+	const uint8* data, uint16 length)
+{
+	if (fDevice == NULL || data == NULL || length == 0)
+		return B_BAD_VALUE;
+
+	ssize_t ret = fDevice->ControlTransfer(
+		USB_REQTYPE_CLASS | USB_REQTYPE_INTERFACE_OUT,
+		USB_VIDEO_RC_SET_CUR,
+		(uint16)selector << 8,
+		(uint16)unitId << 8 | fControlIndex,
+		length,
+		(void*)data);
+
+	return (ret >= 0) ? B_OK : B_ERROR;
+}
+
+
+status_t
+UVCCamDevice::_XUGetCur(uint8 unitId, uint8 selector,
+	uint8* data, uint16 length)
+{
+	if (fDevice == NULL || data == NULL || length == 0)
+		return B_BAD_VALUE;
+
+	ssize_t ret = fDevice->ControlTransfer(
+		USB_REQTYPE_CLASS | USB_REQTYPE_INTERFACE_IN,
+		USB_VIDEO_RC_GET_CUR,
+		(uint16)selector << 8,
+		(uint16)unitId << 8 | fControlIndex,
+		length,
+		data);
+
+	return (ret >= 0) ? B_OK : B_ERROR;
+}
+
+
+status_t
+UVCCamDevice::_XUGetMin(uint8 unitId, uint8 selector,
+	uint8* data, uint16 length)
+{
+	if (fDevice == NULL || data == NULL || length == 0)
+		return B_BAD_VALUE;
+
+	ssize_t ret = fDevice->ControlTransfer(
+		USB_REQTYPE_CLASS | USB_REQTYPE_INTERFACE_IN,
+		USB_VIDEO_RC_GET_MIN,
+		(uint16)selector << 8,
+		(uint16)unitId << 8 | fControlIndex,
+		length,
+		data);
+
+	return (ret >= 0) ? B_OK : B_ERROR;
+}
+
+
+status_t
+UVCCamDevice::_XUGetMax(uint8 unitId, uint8 selector,
+	uint8* data, uint16 length)
+{
+	if (fDevice == NULL || data == NULL || length == 0)
+		return B_BAD_VALUE;
+
+	ssize_t ret = fDevice->ControlTransfer(
+		USB_REQTYPE_CLASS | USB_REQTYPE_INTERFACE_IN,
+		USB_VIDEO_RC_GET_MAX,
+		(uint16)selector << 8,
+		(uint16)unitId << 8 | fControlIndex,
+		length,
+		data);
+
+	return (ret >= 0) ? B_OK : B_ERROR;
+}
+
+
+status_t
+UVCCamDevice::_XUGetInfo(uint8 unitId, uint8 selector, uint8* info)
+{
+	if (fDevice == NULL || info == NULL)
+		return B_BAD_VALUE;
+
+	ssize_t ret = fDevice->ControlTransfer(
+		USB_REQTYPE_CLASS | USB_REQTYPE_INTERFACE_IN,
+		USB_VIDEO_RC_GET_INFO,
+		(uint16)selector << 8,
+		(uint16)unitId << 8 | fControlIndex,
+		1,
+		info);
+
+	return (ret >= 0) ? B_OK : B_ERROR;
+}
+
+
+extension_unit_info*
+UVCCamDevice::_FindXU(extension_unit_vendor vendor)
+{
+	for (int32 i = 0; i < fExtensionUnits.CountItems(); i++) {
+		extension_unit_info* xu = (extension_unit_info*)fExtensionUnits.ItemAt(i);
+		if (xu != NULL && xu->vendor == vendor)
+			return xu;
+	}
+	return NULL;
+}
+
+
+status_t
+UVCCamDevice::_SonixAsicRead(uint16 addr, uint8* value)
+{
+	extension_unit_info* xu = _FindXU(XU_VENDOR_SONIX);
+	if (xu == NULL)
+		return B_NOT_SUPPORTED;
+
+	uint8 data[4];
+	data[0] = addr & 0xFF;
+	data[1] = (addr >> 8) & 0xFF;
+	data[2] = 0x00;
+	data[3] = 0xFF;		// dummy write flag
+
+	status_t err = _XUSetCur(xu->unit_id, 0x01, data, 4);
+	if (err != B_OK)
+		return err;
+
+	snooze(5000);
+
+	err = _XUGetCur(xu->unit_id, 0x01, data, 4);
+	if (err != B_OK)
+		return err;
+
+	*value = data[2];
+	return B_OK;
+}
+
+
+status_t
+UVCCamDevice::_SonixAsicWrite(uint16 addr, uint8 value)
+{
+	extension_unit_info* xu = _FindXU(XU_VENDOR_SONIX);
+	if (xu == NULL)
+		return B_NOT_SUPPORTED;
+
+	uint8 data[4];
+	data[0] = addr & 0xFF;
+	data[1] = (addr >> 8) & 0xFF;
+	data[2] = value;
+	data[3] = 0x00;		// write flag
+
+	return _XUSetCur(xu->unit_id, 0x01, data, 4);
+}
+
+
+// =============================================================================
 // Still Image Capture Methods
 // =============================================================================
 

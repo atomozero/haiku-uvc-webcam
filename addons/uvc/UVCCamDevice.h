@@ -402,6 +402,23 @@ private:
 			const char*			_GetXUVendorName(extension_unit_vendor vendor);
 			void				_LogExtensionUnits();
 
+	// XU control transfer primitives
+			status_t			_XUSetCur(uint8 unitId, uint8 selector,
+									const uint8* data, uint16 length);
+			status_t			_XUGetCur(uint8 unitId, uint8 selector,
+									uint8* data, uint16 length);
+			status_t			_XUGetMin(uint8 unitId, uint8 selector,
+									uint8* data, uint16 length);
+			status_t			_XUGetMax(uint8 unitId, uint8 selector,
+									uint8* data, uint16 length);
+			status_t			_XUGetInfo(uint8 unitId, uint8 selector,
+									uint8* info);
+			extension_unit_info*	_FindXU(extension_unit_vendor vendor);
+
+	// Sonix-specific XU helpers
+			status_t			_SonixAsicRead(uint16 addr, uint8* value);
+			status_t			_SonixAsicWrite(uint16 addr, uint8 value);
+
 	// Still image capture methods
 			void				_ParseStillImageFrame(
 									const usb_video_still_image_frame_descriptor* descriptor);
