@@ -2783,7 +2783,10 @@ UVCCamDevice::ReadAudioData(void* buffer, size_t size)
 			break;
 
 		// Wait for producer to signal new data
-		acquire_sem_etc(fAudioRingSem, 1, B_RELATIVE_TIMEOUT, 10000);
+		status_t err = acquire_sem_etc(fAudioRingSem, 1,
+			B_RELATIVE_TIMEOUT, 10000);
+		if (err == B_BAD_SEM_ID)
+			return 0;	// semaphore deleted, audio stopped
 	}
 
 	if (available == 0)

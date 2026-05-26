@@ -28,6 +28,7 @@ public:
 virtual					~VideoProducer();
 
 virtual	status_t		InitCheck() const { return fInitStatus; }
+		void			SetCamDevice(CamDevice* dev) { fCamDevice = dev; }
 
 
 /* BMediaNode */

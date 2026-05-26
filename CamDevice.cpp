@@ -9,6 +9,7 @@
 #include "CamDeframer.h"
 #include "CamDebug.h"
 #include "AddOn.h"
+#include "Producer.h"
 
 #include <OS.h>
 #include <Autolock.h>
@@ -243,14 +244,26 @@ CamDevice::QuitVideoNode()
 	if (fVideoNode == NULL)
 		return;
 
-	// Send a stop request to the node and wait for the control thread
-	// to finish processing. This prevents use-after-free when the
-	// event loop tries to call methods on a deleted VideoProducer.
+	// Send a stop request and then release the node via the Media Kit.
+	// The Media Kit owns the node lifetime; we must not delete it directly.
+	// ReleaseNode() tells the Kit we're done with the node, which will
+	// eventually destroy it after all pending messages are processed.
 	BMediaRoster* roster = BMediaRoster::Roster();
 	if (roster != NULL) {
 		media_node node = fVideoNode->Node();
-		syslog(LOG_INFO, "CamDevice: Stopping video node %d\n", (int)node.node);
+		syslog(LOG_INFO, "CamDevice: Stopping and releasing video node %d\n",
+			(int)node.node);
+		// Invalidate the VideoProducer's back-pointer to us BEFORE stopping.
+		// This must happen first because the Media Kit event loop may still
+		// deliver messages during and after StopNode.
+		VideoProducer* vp = dynamic_cast<VideoProducer*>(fVideoNode);
+		if (vp != NULL)
+			vp->SetCamDevice(NULL);
+
 		roster->StopNode(node, 0, true);	// synchronous stop
+
+		// Give the event loop time to process pending messages
+		snooze(50000);
 	}
 	fVideoNode = NULL;
 }

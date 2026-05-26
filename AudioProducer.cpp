@@ -999,7 +999,7 @@ AudioProducer::AudioGenerator()
 		// Set buffer header
 		media_header *h = buffer->Header();
 		h->type = B_MEDIA_RAW_AUDIO;
-		h->size_used = bytesRead > 0 ? bytesToFill : 0;
+		h->size_used = bytesToFill;
 		h->time_source = TimeSource()->ID();
 
 		// Use current performance time for live audio
