@@ -2576,8 +2576,10 @@ UVCCamDevice::StartAudioTransfer()
 	// Apply fallback values for missing audio parameters
 	// These defaults match common USB webcam microphone configurations
 	if (fAudioSampleRate == 0) {
-		fAudioSampleRate = 48000;  // Most common USB audio sample rate
-		syslog(LOG_WARNING, "UVCCamDevice: Using fallback sample rate: %u Hz\n",
+		// Try common rates; SET_CUR + GET_CUR later will correct if wrong
+		fAudioSampleRate = 16000;
+		syslog(LOG_WARNING, "UVCCamDevice: No sample rate from descriptors, "
+			"trying %u Hz (will verify with device)\n",
 			(unsigned)fAudioSampleRate);
 	}
 	if (fAudioChannels == 0) {
