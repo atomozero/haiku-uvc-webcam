@@ -2723,17 +2723,21 @@ UVCCamDevice::StopAudioTransfer()
 	// Signal thread to stop
 	fAudioTransferRunning = false;
 
-	// Wake up thread if waiting on semaphore
-	if (fAudioRingSem >= 0) {
-		delete_sem(fAudioRingSem);
-		fAudioRingSem = -1;
-	}
+	// Wake thread if blocked on semaphore (don't delete yet)
+	if (fAudioRingSem >= 0)
+		release_sem(fAudioRingSem);
 
 	// Wait for thread to exit
 	if (fAudioPumpThread >= 0) {
 		status_t threadStatus;
 		wait_for_thread_etc(fAudioPumpThread, B_RELATIVE_TIMEOUT, 5000000, &threadStatus);
 		fAudioPumpThread = -1;
+	}
+
+	// Now safe to delete the semaphore
+	if (fAudioRingSem >= 0) {
+		delete_sem(fAudioRingSem);
+		fAudioRingSem = -1;
 	}
 
 	// Free ring buffer
