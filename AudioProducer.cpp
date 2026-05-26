@@ -754,6 +754,19 @@ AudioProducer::HandleStart(bigtime_t performance_time)
 			delete_sem(fFrameSync);
 			return;
 		}
+
+		// Re-read sample rate after StartAudioTransfer - the device may
+		// report a different rate than what was parsed from descriptors.
+		// Without this, audio plays at wrong speed (too fast or too slow).
+		uint32 actualRate = uvcDev->AudioSampleRate();
+		if (actualRate > 0
+			&& actualRate != (uint32)fOutput.format.u.raw_audio.frame_rate) {
+			syslog(LOG_WARNING, "AudioProducer: Sample rate changed %u -> %u "
+				"after USB negotiation\n",
+				(unsigned)fOutput.format.u.raw_audio.frame_rate,
+				(unsigned)actualRate);
+			fOutput.format.u.raw_audio.frame_rate = (float)actualRate;
+		}
 	} else {
 		syslog(LOG_WARNING, "AudioProducer: Device has no audio support\n");
 	}
@@ -924,8 +937,10 @@ AudioProducer::AudioGenerator()
 		// report stereo format. Detect which channel carries the signal
 		// and duplicate it to both channels. Check every 5 seconds to
 		// avoid per-buffer overhead and prevent state oscillation.
-		// Align bytesRead to stereo sample pair boundary (4 bytes per pair)
-		bytesRead &= ~3;
+		// Align bytesRead to audio frame boundary
+		size_t frameBytes = fConnectedFormat.channel_count * sizeof(int16);
+		if (frameBytes > 0)
+			bytesRead -= bytesRead % frameBytes;
 		if (fConnectedFormat.channel_count == 2 && bytesRead >= 8) {
 			bigtime_t now = system_time();
 			if (now - fMonoLastCheck > 5000000) {
@@ -984,7 +999,7 @@ AudioProducer::AudioGenerator()
 		// Set buffer header
 		media_header *h = buffer->Header();
 		h->type = B_MEDIA_RAW_AUDIO;
-		h->size_used = bytesToFill;
+		h->size_used = bytesRead > 0 ? bytesToFill : 0;
 		h->time_source = TimeSource()->ID();
 
 		// Use current performance time for live audio

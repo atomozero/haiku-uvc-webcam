@@ -2766,11 +2766,9 @@ UVCCamDevice::ReadAudioData(void* buffer, size_t size)
 	if (fAudioRingBuffer == NULL || buffer == NULL || size == 0)
 		return 0;
 
-	// Wait for enough data with timeout.
-	// Use 200ms to accommodate USB controllers with variable isochronous
-	// latency (XHCI controllers can batch multiple microframes).
-	int retries = 200;
+	// Wait for data using semaphore (signaled by AudioPumpThread)
 	size_t available = 0;
+	int retries = 20;  // Max 20 waits of 10ms each = 200ms timeout
 
 	while (retries-- > 0) {
 		int32 head = atomic_get(&fAudioRingHead);
@@ -2784,7 +2782,8 @@ UVCCamDevice::ReadAudioData(void* buffer, size_t size)
 		if (available >= size)
 			break;
 
-		snooze(1000);  // Wait 1ms for more data
+		// Wait for producer to signal new data
+		acquire_sem_etc(fAudioRingSem, 1, B_RELATIVE_TIMEOUT, 10000);
 	}
 
 	if (available == 0)
@@ -3195,7 +3194,7 @@ UVCCamDevice::AudioPumpThread()
 
 			ssize_t space;
 			if (head >= tail)
-				space = (ssize_t)fAudioRingSize - head + tail - 1;
+				space = (ssize_t)fAudioRingSize - (head - tail) - 1;
 			else
 				space = tail - head - 1;
 
@@ -3223,6 +3222,9 @@ UVCCamDevice::AudioPumpThread()
 			}
 
 			atomic_set(&fAudioRingHead, (head + packetLen) % fAudioRingSize);
+
+			// Signal consumer that data is available
+			release_sem_etc(fAudioRingSem, 1, B_DO_NOT_RESCHEDULE);
 		}
 	}
 
