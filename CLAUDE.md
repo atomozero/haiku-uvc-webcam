@@ -106,9 +106,12 @@ Example: `export WEBCAM_DEBUG=verbose`
 - High-bandwidth USB endpoints (3 transactions/microframe) are not used due to Haiku EHCI driver limitations
 - Resolution changes require stream restart for proper buffer reallocation
 - Uses atomic operations for thread-safe transfer state (`fTransferEnabled`)
-- Memory leak fixed: CamDevice properly cleaned up on unplug
-- Microdia 0c45:6409 (Sonix): YUY2-only camera with known horizontal tearing issue due to USB stream byte misalignment. The camera responds to Sonix XU ASIC read commands (unit 4) but blocks format register writes. No MJPEG support in firmware.
+- Camera disconnect safety: `SetCamDevice(NULL)` is called before device destruction to prevent use-after-free in the VideoProducer event loop
+- Microdia 0c45:6409 (Sonix): YUY2-only camera with known horizontal tearing issue due to USB stream byte misalignment. The camera responds to Sonix XU ASIC read commands (unit 4, GUID 7033f028) but blocks format register writes. No MJPEG support in firmware. The chip ID reads as 0x01 (unknown Sonix variant, not SN9C291/292). On Linux this device is NOT supported by any specific driver.
 - UVC Extension Units: Detected and parsed for Sonix, Microsoft, Logitech, Realtek vendors. Sonix XU GUID matching implemented for LED and face detection capabilities.
+- Audio ring buffer uses semaphore-based synchronization: producer (AudioPumpThread) signals `release_sem()` after writing, consumer (ReadAudioData) waits with `acquire_sem_etc()` with timeout. Handles `B_BAD_SEM_ID` for clean shutdown.
+- Stride quirk for Microdia 0c45:6409 only activates when source data has actual row padding (`srcSize > expectedSize`), preventing incorrect stride application on cameras that send standard row-aligned YUY2.
+- MJPEG deframer uses fixed buffer (`fFixedBuffer`) for both YUY2 and MJPEG frame assembly. Frame completion on FID toggle reads from fixed buffer, not BMallocIO.
 
 ## Still Image Capture
 
@@ -341,3 +344,14 @@ g++ -O2 -o test_audio test_audio.cpp -lbe
    - Buffer send/drop counts and rates
    - Timing interval distribution
    - Peak and RMS audio levels
+
+6. **Ring buffer synchronization**:
+   - Producer (AudioPumpThread) signals semaphore after each write
+   - Consumer (ReadAudioData) uses `acquire_sem_etc()` with 10ms timeout
+   - Handles `B_BAD_SEM_ID` for clean shutdown when audio stops
+   - Space calculation: `fAudioRingSize - (head - tail) - 1` (guard byte prevents empty/full confusion)
+
+7. **Safety**:
+   - All `release_sem(fFrameSync)` calls guarded with `fFrameSync >= 0` check
+   - `strlcpy()` used for all media node name strings (no buffer overflows)
+   - Audio frame alignment uses dynamic `channel_count * sizeof(int16)` not hardcoded 4
