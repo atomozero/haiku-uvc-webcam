@@ -2775,27 +2775,43 @@ UVCCamDevice::ReadAudioData(void* buffer, size_t size)
 	if (fAudioRingBuffer == NULL || buffer == NULL || size == 0)
 		return 0;
 
-	// Wait briefly for data, then return whatever is available.
-	// The AudioProducer pads short reads with silence, so it's better
-	// to deliver partial data on time than full data late.
-	status_t err = acquire_sem_etc(fAudioRingSem, 1,
-		B_RELATIVE_TIMEOUT, 4000);	// 4ms = one buffer period at 32kHz
-	if (err == B_BAD_SEM_ID)
-		return 0;
+	// Block until the ring buffer has enough data for a full audio buffer.
+	// This matches the multi_audio driver pattern: the loop is paced by
+	// hardware data arrival (USB isochronous), not software timers.
+	// The pump thread releases the semaphore after each USB packet (~128 bytes).
+	// We acquire repeatedly until we have enough data or timeout.
+	bigtime_t deadline = system_time() + 50000;	// 50ms max wait
+	size_t available = 0;
+
+	while (system_time() < deadline) {
+		int32 head = atomic_get(&fAudioRingHead);
+		int32 tail = atomic_get(&fAudioRingTail);
+
+		if (tail < 0 || (size_t)tail >= fAudioRingSize) {
+			atomic_set(&fAudioRingTail, 0);
+			return 0;
+		}
+
+		if (head >= tail)
+			available = head - tail;
+		else
+			available = fAudioRingSize - tail + head;
+
+		if (available >= size)
+			break;
+
+		// Wait for next USB audio packet
+		status_t err = acquire_sem_etc(fAudioRingSem, 1,
+			B_RELATIVE_TIMEOUT, 2000);
+		if (err == B_BAD_SEM_ID)
+			return 0;
+	}
 
 	int32 tail = atomic_get(&fAudioRingTail);
-	int32 head = atomic_get(&fAudioRingHead);
-
 	if (tail < 0 || (size_t)tail >= fAudioRingSize) {
 		atomic_set(&fAudioRingTail, 0);
 		return 0;
 	}
-
-	size_t available;
-	if (head >= tail)
-		available = head - tail;
-	else
-		available = fAudioRingSize - tail + head;
 
 	if (available == 0)
 		return 0;
