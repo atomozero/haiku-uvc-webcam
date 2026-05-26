@@ -2230,15 +2230,20 @@ UVCCamDevice::_EstimateMaxFps(uint32 width, uint32 height, bool isMJPEG)
 bool
 UVCCamDevice::_IsResolutionSupportable(uint32 width, uint32 height, bool isMJPEG)
 {
-	// Check if a resolution can achieve minimum acceptable FPS
-	// We require at least 5 FPS for reasonable video playback
+	// Estimate if a resolution can achieve minimum acceptable FPS.
+	// If bandwidth is unknown (0), allow the resolution anyway and let
+	// Probe/Commit handle negotiation - don't block all resolutions.
 
-	const float kMinAcceptableFps = 5.0f;
 	float maxFps = _EstimateMaxFps(width, height, isMJPEG);
 
+	if (maxFps == 0.0f) {
+		// Bandwidth unknown (no usable endpoints found yet), allow anyway
+		return true;
+	}
+
+	const float kMinAcceptableFps = 5.0f;
 	if (maxFps < kMinAcceptableFps) {
-		syslog(LOG_WARNING, "UVCCamDevice: Resolution %ux%u (%s) limited to %.1f fps "
-			"(requires high-bandwidth endpoints)\n",
+		syslog(LOG_WARNING, "UVCCamDevice: Resolution %ux%u (%s) limited to %.1f fps\n",
 			width, height, isMJPEG ? "MJPEG" : "YUY2", maxFps);
 		return false;
 	}
