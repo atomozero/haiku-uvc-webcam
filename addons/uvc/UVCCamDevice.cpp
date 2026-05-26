@@ -1151,6 +1151,8 @@ UVCCamDevice::_ParseVideoControl(const usbvc_class_descriptor* _descriptor,
 				break;
 			}
 			fHeaderDescriptor = (usbvc_interface_header_descriptor*)malloc(len);
+			if (fHeaderDescriptor == NULL)
+				break;
 			memcpy(fHeaderDescriptor, _descriptor, len);
 			printf("VC_HEADER:\tUVC v%x.%02x, clk %.5f MHz\n",
 				fHeaderDescriptor->version >> 8,

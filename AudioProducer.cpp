@@ -134,7 +134,7 @@ AudioProducer::Preroll()
 void
 AudioProducer::SetTimeSource(BTimeSource* /*time_source*/)
 {
-	release_sem(fFrameSync);
+	if (fFrameSync >= 0) release_sem(fFrameSync);
 }
 
 
@@ -175,7 +175,7 @@ AudioProducer::NodeRegistered()
 	fOutput.source.port = ControlPort();
 	fOutput.source.id = 0;
 	fOutput.destination = media_destination::null;
-	strcpy(fOutput.name, Name());
+	strlcpy(fOutput.name, Name(), sizeof(fOutput.name));
 
 	// Configure audio format based on device capabilities
 	fOutput.format.type = B_MEDIA_RAW_AUDIO;
@@ -489,7 +489,7 @@ AudioProducer::PrepareToConnect(const media_source &source,
 	}
 
 	*out_source = fOutput.source;
-	strcpy(out_name, fOutput.name);
+	strlcpy(out_name, fOutput.name, B_MEDIA_NAME_LENGTH);
 
 	fOutput.destination = destination;
 
@@ -510,7 +510,7 @@ AudioProducer::Connect(status_t error, const media_source &source,
 		return;
 
 	fOutput.destination = destination;
-	strcpy(io_name, fOutput.name);
+	strlcpy(io_name, fOutput.name, B_MEDIA_NAME_LENGTH);
 
 	fConnectedFormat = format.u.raw_audio;
 
@@ -570,7 +570,7 @@ AudioProducer::Connect(status_t error, const media_source &source,
 	fConnected = true;
 	fEnabled = true;
 
-	release_sem(fFrameSync);
+	if (fFrameSync >= 0) release_sem(fFrameSync);
 }
 
 
@@ -618,7 +618,7 @@ AudioProducer::LateNoticeReceived(const media_source &source,
 
 	// Try to reduce latency by speeding up buffer delivery
 	// Signal the generator thread to recalculate timing
-	release_sem(fFrameSync);
+	if (fFrameSync >= 0) release_sem(fFrameSync);
 }
 
 
@@ -825,7 +825,7 @@ AudioProducer::HandleTimeWarp(bigtime_t performance_time)
 	TOUCH(performance_time);
 	fStartTime = system_time();
 	fFramesSent = 0;
-	release_sem(fFrameSync);
+	if (fFrameSync >= 0) release_sem(fFrameSync);
 }
 
 
@@ -835,7 +835,7 @@ AudioProducer::HandleSeek(bigtime_t performance_time)
 	TOUCH(performance_time);
 	fStartTime = system_time();
 	fFramesSent = 0;
-	release_sem(fFrameSync);
+	if (fFrameSync >= 0) release_sem(fFrameSync);
 }
 
 
