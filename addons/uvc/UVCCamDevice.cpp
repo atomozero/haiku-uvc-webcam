@@ -3076,14 +3076,16 @@ UVCCamDevice::AudioPumpThread()
 		uint32 retryCount = 0;
 
 		while (retryCount < kMaxRetries && fAudioTransferRunning) {
-			if (fAudioIsoIn == NULL) {
+			// Snapshot endpoint pointer to avoid TOCTOU race with hot-unplug
+			const BUSBEndpoint* isoIn = fAudioIsoIn;
+			if (isoIn == NULL) {
 				syslog(LOG_WARNING,
 					"UVCCamDevice: Audio endpoint lost during transfer\n");
 				fAudioTransferRunning = false;
 				break;
 			}
 
-			transferred = fAudioIsoIn->IsochronousTransfer(fAudioBuffer,
+			transferred = isoIn->IsochronousTransfer(fAudioBuffer,
 				bytesPerPacket * kPacketsPerTransfer, packetDescs,
 				kPacketsPerTransfer);
 
