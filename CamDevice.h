@@ -433,6 +433,11 @@ class CamDevice {
 	virtual status_t	GetFrameBitmap(BBitmap **bm, bigtime_t *stamp=NULL);
 	virtual status_t	FillFrameBuffer(BBuffer *buffer, bigtime_t *stamp=NULL);
 
+	// node lifecycle
+	void				SetVideoNode(BMediaNode* node) { fVideoNode = node; }
+	BMediaNode*			VideoNode() const { return fVideoNode; }
+	void				QuitVideoNode();
+
 	// locking
 	bool				Lock();
 	void				Unlock();
@@ -527,6 +532,7 @@ static	int32			sInstanceCounter;		// Global counter for unique IDs
 		size_t			fBufferLen;
 		BRect			fVideoFrame;
 		int fDumpFD;
+	BMediaNode*		fVideoNode;
 
 		// PHASE 3/4: USB packet statistics for error tracking
 		uint32			fPacketSuccessCount;

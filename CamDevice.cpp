@@ -12,6 +12,7 @@
 
 #include <OS.h>
 #include <Autolock.h>
+#include <MediaRoster.h>
 #include <syslog.h>
 
 /* PRODUCTION BUILD: Disable all file I/O to prevent BFS corruption */
@@ -172,7 +173,7 @@ CamDevice::CamDevice(CamDeviceAddon &_addon, BUSBDevice* _device)
 	fFlavorInfoInfoStr << fFlavorInfoNameStr;
 	fFlavorInfo.name = fFlavorInfoNameStr.String();
 	fFlavorInfo.info = fFlavorInfoInfoStr.String();
-	// Initialize fDumpFD to prevent invalid close() in destructor
+	fVideoNode = NULL;
 	fDumpFD = -1;
 #ifdef DEBUG_WRITE_DUMP
 	fDumpFD = open("/boot/home/webcam.out", O_CREAT|O_RDWR, 0644);
@@ -233,6 +234,25 @@ BUSBDevice*
 CamDevice::GetDevice()
 {
 	return fDevice;
+}
+
+
+void
+CamDevice::QuitVideoNode()
+{
+	if (fVideoNode == NULL)
+		return;
+
+	// Send a stop request to the node and wait for the control thread
+	// to finish processing. This prevents use-after-free when the
+	// event loop tries to call methods on a deleted VideoProducer.
+	BMediaRoster* roster = BMediaRoster::Roster();
+	if (roster != NULL) {
+		media_node node = fVideoNode->Node();
+		syslog(LOG_INFO, "CamDevice: Stopping video node %d\n", (int)node.node);
+		roster->StopNode(node, 0, true);	// synchronous stop
+	}
+	fVideoNode = NULL;
 }
 
 

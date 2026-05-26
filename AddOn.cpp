@@ -248,6 +248,8 @@ WebCamMediaAddOn::InstantiateNodeFor(
 			delete videoNode;
 			videoNode = NULL;
 		}
+		if (videoNode != NULL)
+			cam->SetVideoNode(videoNode);
 		return videoNode;
 	}
 }
