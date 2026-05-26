@@ -39,12 +39,12 @@ A USB Video Class (UVC) driver for Haiku OS, providing support for standard USB 
 
 | Device | VID:PID | Format | Status |
 |--------|---------|--------|--------|
-| AUKEY PC-LM1E | 1BCF:0001 | MJPEG + YUY2 | Working (tested up to 1280x720) |
-| Microdia Motion Eye | 0C45:6409 | YUY2 only | Partial (tearing, firmware limitation) |
+| AUKEY PC-LM1E | 1BCF:0001 | MJPEG + YUY2 | Working (MJPEG up to 1280x720, audio OK) |
+| Microdia Motion Eye | 0C45:6409 | YUY2 only | Tearing (Sonix chip, no MJPEG in firmware) |
 | Realtek USB Camera | 0BDA:5843 | MJPEG + YUY2 | Supported |
 | Generic UVC webcams | Various | Varies | Should work |
 
-The driver auto-detects any UVC-compliant webcam. Devices not in the list may still work. MJPEG webcams are recommended for best results.
+The driver auto-detects any UVC-compliant webcam. Devices not in the list may still work. **MJPEG webcams are recommended** — YUY2-only cameras may show tearing on USB 2.0 due to bandwidth constraints.
 
 ## Installation
 
@@ -120,25 +120,28 @@ This is fixed in the driver. If you experience issues:
 1. Avoid changing resolution while streaming
 2. Stop the stream before changing settings
 
-## Diagnostics
+## Diagnostic Tools
 
-### UVC Benchmark Tool
+The `tools/` directory contains standalone utilities for debugging:
 
+| Tool | Purpose |
+|------|---------|
+| `sonix_xu_probe` | Probe Sonix webcam registers via UVC Extension Units |
+| `analyze_tearing` | Analyze YUY2 frame data for horizontal tearing |
+| `simulate_itd` | Simulate EHCI iTD offset calculations |
+| `yuv2bmp` / `raw2bmp` | Convert raw YUY2/RGB32 frames to BMP |
+
+Build any tool with:
 ```bash
-cd tests
-g++ -O2 -o uvc_benchmark uvc_benchmark.cpp -lbe -ldevice
-./uvc_benchmark
+cd tools
+g++ -O2 -o <tool_name> <tool_name>.cpp -lbe -ldevice
 ```
-
-Shows detailed UVC compliance and compatibility score.
 
 ### Debug Logging
 
 Set environment variable before launching media services:
 ```bash
 export WEBCAM_DEBUG=verbose
-media_client quit
-media_client launch
 ```
 
 Debug levels: `none`, `error`, `warn`, `info`, `verbose`, `trace`
@@ -174,11 +177,12 @@ Debug levels: `none`, `error`, `warn`, `info`, `verbose`, `trace`
 
 ## Known Limitations
 
-- Cameras with YUY2-only output (no MJPEG) may show tearing on USB 2.0 due to bandwidth constraints
-- Still image capture: Detection only (no hardware trigger support)
-- USB 1.1 (OHCI/UHCI): Limited bandwidth, low resolutions only
-- Some vendor Extension Units: Detected but controls not exposed
-- Long streaming sessions may trigger EHCI host system error on some Intel controllers
+- **YUY2-only cameras** (no MJPEG): may show horizontal tearing on USB 2.0. This is a bandwidth issue — MJPEG cameras are not affected
+- **Microdia 0c45:6409**: Sonix chip with proprietary firmware. Outputs only YUY2, does not respond to format change commands via Extension Units. On Linux this device has no specific driver support either
+- **EHCI host system error**: long streaming sessions (>2 min) may crash the Intel EHCI controller on some laptops. This is a Haiku kernel issue, not a driver bug
+- **High-bandwidth endpoints** (mult>1): disabled by default due to Haiku EHCI limitations. Cameras fall back to single-transaction mode (max 1024 bytes/microframe)
+- **Still image capture**: detection only, no hardware trigger support
+- **USB 1.1**: limited bandwidth, low resolutions only
 
 ## License
 
