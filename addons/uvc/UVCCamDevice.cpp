@@ -2956,6 +2956,8 @@ UVCCamDevice::_SelectAudioAlternate()
 	fAudioMaxPacketSize = bestBandwidth;
 
 	// Allocate audio buffer for isochronous transfers
+	// Free previous buffer if re-entering after a restart
+	free(fAudioBuffer);
 	const uint32 kAudioPackets = 16;
 	fAudioBufferLen = fAudioMaxPacketSize * kAudioPackets;
 	fAudioBuffer = (uint8*)malloc(fAudioBufferLen);
