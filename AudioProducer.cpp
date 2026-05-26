@@ -924,6 +924,8 @@ AudioProducer::AudioGenerator()
 		// report stereo format. Detect which channel carries the signal
 		// and duplicate it to both channels. Check every 5 seconds to
 		// avoid per-buffer overhead and prevent state oscillation.
+		// Align bytesRead to stereo sample pair boundary (4 bytes per pair)
+		bytesRead &= ~3;
 		if (fConnectedFormat.channel_count == 2 && bytesRead >= 8) {
 			bigtime_t now = system_time();
 			if (now - fMonoLastCheck > 5000000) {
