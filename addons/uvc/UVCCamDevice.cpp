@@ -2807,11 +2807,19 @@ UVCCamDevice::ReadAudioData(void* buffer, size_t size)
 			return 0;
 	}
 
+	// Recalculate available data with fresh head/tail after the wait loop
+	int32 head = atomic_get(&fAudioRingHead);
 	int32 tail = atomic_get(&fAudioRingTail);
-	if (tail < 0 || (size_t)tail >= fAudioRingSize) {
+	if (tail < 0 || (size_t)tail >= fAudioRingSize
+		|| head < 0 || (size_t)head >= fAudioRingSize) {
 		atomic_set(&fAudioRingTail, 0);
 		return 0;
 	}
+
+	if (head >= tail)
+		available = head - tail;
+	else
+		available = fAudioRingSize - tail + head;
 
 	if (available == 0)
 		return 0;
