@@ -749,13 +749,13 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 	}
 
 	// Choose a sensible default resolution:
-	// MJPEG: 640x480 (compressed, bandwidth is not an issue)
+	// MJPEG: 1280x720 (compressed, bandwidth is sufficient on USB 2.0)
 	// YUY2: 320x240 (uncompressed, limited by USB 2.0 bandwidth)
 	{
 		BList* defaultList = (fMJPEGFrames.CountItems() > 0)
 			? &fMJPEGFrames : &fUncompressedFrames;
 		uint32 targetPixels = (fMJPEGFrames.CountItems() > 0)
-			? (640 * 480) : (320 * 240);
+			? (1280 * 720) : (320 * 240);
 		int32 bestIndex = 0;
 		uint32 bestDiff = UINT32_MAX;
 		for (int32 i = 0; i < defaultList->CountItems(); i++) {
@@ -1522,9 +1522,10 @@ UVCCamDevice::SuggestVideoFrame(uint32& width, uint32& height)
 
 	// Suggest a resolution that fits the available bandwidth.
 	// For MJPEG: prefer 640x480 (good quality, low bandwidth due to compression).
+	// For MJPEG: prefer 720p (compressed, USB 2.0 has enough bandwidth).
 	// For YUY2: prefer 320x240 (uncompressed needs more bandwidth).
-	uint32 targetW = fIsMJPEG ? 640 : 320;
-	uint32 targetH = fIsMJPEG ? 480 : 240;
+	uint32 targetW = fIsMJPEG ? 1280 : 320;
+	uint32 targetH = fIsMJPEG ? 720 : 240;
 
 	if (frameList->CountItems() > 0) {
 		// Find the resolution closest to target
