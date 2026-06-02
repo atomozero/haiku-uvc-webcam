@@ -111,6 +111,25 @@ Extensive testing confirmed the YUY2 tearing on this camera is NOT a driver bug:
 - On Linux, this device has no specific driver either (not in uvcvideo, gspca, or sn9c20x)
 - The Windows driver `snp2uvc.sys` likely uses proprietary initialization not publicly documented
 
+## AUKEY 1bcf:0001 (Working Reference Camera)
+
+Verified working with MJPEG streaming at 320x240 through 1280x720:
+- MJPEG: 6 resolutions up to 1920x1080, FID toggles correctly per-frame
+- YUY2: 6 resolutions up to 1920x1080
+- Audio: 2 channel, 16-bit, 32000 Hz (UAC)
+- UVC controls: Brightness, Contrast, Gain, Hue, Saturation, Sharpness, Gamma, WB Temperature, Backlight Compensation, Auto-Exposure, Exposure Time
+- No zoom/pan/tilt (not supported by hardware)
+- Streaming crashes after ~2 min due to EHCI host system error (Intel controller bug, not driver)
+
+## Diagnostic Tools
+
+Located in `tools/`:
+- `sonix_probe` — probe Sonix bridge registers via vendor USB transfers
+- `sonix_xu_probe` — probe Sonix XU via UVC Extension Unit protocol
+- `uvc_controls_probe` — discover supported UVC camera/processing controls
+- `analyze_tearing` — analyze YUY2 frame for horizontal tearing artifacts
+- `simulate_itd` — simulate EHCI iTD offset calculation
+
 ## Running Tests
 
 ```bash
