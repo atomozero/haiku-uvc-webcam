@@ -65,6 +65,7 @@ usb_webcam_support_descriptor kSupportedDevices[] = {
 
 	// Alcor Micro
 	{{ 0, 0, 0, 0x058f, 0x3820, }, "Alcor Micro",   "AU3820 PC USB Webcam",            "??" },
+	{{ 0, 0, 0, 0x058f, 0x5608, }, "Alcor Micro",   "USB 2.0 Camera",                  "??" },
 
 	// OmniVision
 	{{ 0, 0, 0, 0x05a9, 0x2640, }, "OmniVision",    "Dell XPS m1530",                  "??" },
@@ -2439,23 +2440,37 @@ UVCCamDevice::_SelectBestAlternate()
 		syslog(LOG_INFO, "UVCCamDevice: Changing alternate from %u to %u\n",
 			fCurrentVideoAlternate, alternateIndex);
 
-		// Log endpoint counts to diagnose potential crashes
 		const BUSBInterface* oldAlt = streaming->AlternateAt(fCurrentVideoAlternate);
 		const BUSBInterface* newAlt = streaming->AlternateAt(alternateIndex);
 		uint32 oldEndpoints = oldAlt ? oldAlt->CountEndpoints() : 0;
 		uint32 newEndpoints = newAlt ? newAlt->CountEndpoints() : 0;
-		syslog(LOG_INFO, "UVCCamDevice: Endpoint count: old=%u new=%u\n",
-			oldEndpoints, newEndpoints);
 
-		// CRITICAL: If switching from 0 endpoints to N endpoints, the Haiku bug
-		// will trigger. Log a warning so user knows to apply kernel patch.
+		// WORKAROUND: Haiku's SetAlternate() has a double-free bug when switching
+		// between alternates with different endpoint counts (e.g., 0→1).
+		// To reduce crash risk, if going from 0 to N endpoints, first switch to
+		// an intermediate alternate that has the same endpoint count as the target.
+		// This avoids the 0→N transition that triggers the bug.
 		if (oldEndpoints == 0 && newEndpoints > 0) {
-			syslog(LOG_WARNING, "UVCCamDevice: Risky transition (0->%u endpoints) - "
-				"may crash on unpatched Haiku. Apply kernel patch if crash occurs.\n",
-				newEndpoints);
+			// Find an intermediate alternate with >0 endpoints and lower bandwidth
+			for (uint32 mid = 1; mid < streaming->CountAlternates(); mid++) {
+				if (mid == alternateIndex)
+					continue;
+				const BUSBInterface* midAlt = streaming->AlternateAt(mid);
+				if (midAlt && midAlt->CountEndpoints() > 0) {
+					syslog(LOG_INFO, "UVCCamDevice: Using intermediate alternate %u "
+						"to avoid 0->%u endpoint transition\n", mid, newEndpoints);
+					((BUSBInterface*)streaming)->SetAlternate(mid);
+					streaming = config->InterfaceAt(fStreamingIndex);
+					if (streaming == NULL) {
+						syslog(LOG_ERR, "UVCCamDevice: Interface lost after "
+							"intermediate SetAlternate\n");
+						return B_BAD_INDEX;
+					}
+					break;
+				}
+			}
 		}
 
-		// Call SetAlternate - may crash on unpatched Haiku due to double-free bug
 		status_t setAltResult = ((BUSBInterface*)streaming)->SetAlternate(alternateIndex);
 		if (setAltResult != B_OK) {
 			syslog(LOG_ERR, "UVCCamDevice: SetAlternate(%u) failed: %s\n",
@@ -2466,8 +2481,7 @@ UVCCamDevice::_SelectBestAlternate()
 		syslog(LOG_INFO, "UVCCamDevice: SetAlternate(%u) successful\n", alternateIndex);
 		fCurrentVideoAlternate = alternateIndex;
 
-		// CRITICAL: Re-fetch ALL references immediately to avoid using corrupted pointers
-		// The SetAlternate call may have corrupted the old streaming pointer
+		// Re-fetch references - SetAlternate may invalidate old pointers
 		streaming = config->InterfaceAt(fStreamingIndex);
 		if (streaming == NULL) {
 			syslog(LOG_ERR, "UVCCamDevice: Interface lost after SetAlternate\n");
@@ -3047,8 +3061,11 @@ UVCCamDevice::AudioPumpThread()
 	if (fAudioIsoIn == NULL || fAudioBuffer == NULL || fAudioRingBuffer == NULL)
 		return B_ERROR;
 
-	// Use multiple packets like FreeBSD (but fewer due to EHCI issues)
-	const uint32 kPacketsPerTransfer = 16;
+	// Audio USB class sends 1 packet per 1ms USB frame.
+	// With EHCI, not all packet slots get filled. Using fewer packets
+	// per transfer means more frequent transfers and better data capture.
+	// 4 packets = 4ms per transfer - minimizes empty slots.
+	const uint32 kPacketsPerTransfer = 4;
 	usb_iso_packet_descriptor packetDescs[kPacketsPerTransfer];
 
 	// Use the endpoint's maxPacketSize for USB slot allocation.
