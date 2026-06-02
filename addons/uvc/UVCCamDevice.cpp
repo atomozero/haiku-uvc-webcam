@@ -6418,17 +6418,18 @@ UVCCamDevice::_HandleResolutionChange(uint32 width, uint32 height)
 	bool wasTransferring = TransferEnabled();
 
 	// Step 1: Stop transfer if running
-	// Skip idle alternate switch - StartTransfer will set a new one anyway
+	// Use full StopTransfer (including idle alternate) to cleanly reset
+	// the USB endpoint state before reconfiguring at a new resolution
 	if (wasTransferring) {
 		syslog(LOG_INFO, "UVCCamDevice: Stopping transfer for resolution change\n");
-		result = CamDevice::StopTransfer();
+		result = StopTransfer();
 		if (result != B_OK) {
 			syslog(LOG_ERR, "UVCCamDevice: Failed to stop transfer: %s\n",
 				strerror(result));
 			return result;
 		}
 
-		snooze(20000);  // 20ms for hardware to settle
+		snooze(100000);  // 100ms for USB endpoint to fully reset
 	}
 
 	// Step 2: Apply the new resolution
@@ -6464,7 +6465,15 @@ UVCCamDevice::_HandleResolutionChange(uint32 width, uint32 height)
 	// Reset fallback warning flag
 	fFallbackWarningShown = false;
 
-	// Step 4: Restart transfer if it was running
+	// Step 4: Flush deframer to discard stale frames
+	if (fDeframer) {
+		fDeframer->Flush();
+	}
+
+	// Reset bad frame counter so we don't immediately trigger another downgrade
+	fConsecutiveBadFrames = 0;
+
+	// Step 5: Restart transfer if it was running
 	if (wasTransferring) {
 		syslog(LOG_INFO, "UVCCamDevice: Restarting transfer with new resolution\n");
 		result = StartTransfer();
