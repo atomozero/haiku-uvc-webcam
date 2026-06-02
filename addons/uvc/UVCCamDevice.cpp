@@ -6061,6 +6061,13 @@ UVCCamDevice::_EvaluatePacketLoss()
 {
 	bigtime_t now = system_time();
 
+	// Grace period after stream start: skip evaluation for the first 5 seconds
+	// to avoid false alarms from empty packets during USB endpoint initialization.
+	// This prevents the "packet loss 100% → fallback → restart → 100% again"
+	// death spiral that kills the stream after resolution changes.
+	if (now - fTransferStartTime < 5000000)
+		return;
+
 	// Start new evaluation window if needed
 	if (fEvalWindowStartTime == 0) {
 		fEvalWindowStartTime = now;

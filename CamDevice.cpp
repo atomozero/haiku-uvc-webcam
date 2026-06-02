@@ -526,6 +526,12 @@ CamDevice::GetPacketLossRate() const
 bool
 CamDevice::ShouldReduceResolution()
 {
+	// Grace period after stream start/restart: don't monitor packet loss
+	// for the first 5 seconds. This prevents false alarms during USB
+	// endpoint initialization when the first packets may be empty.
+	if (system_time() - fTransferStartTime < 5000000)
+		return false;
+
 	// Check if we have enough data
 	uint32 total = fPacketSuccessCount + fPacketErrorCount;
 	if (total < kMinPacketsForStats)
@@ -568,6 +574,7 @@ CamDevice::ResetPacketStatistics()
 	fPacketErrorCount = 0;
 	fConsecutiveHighLossEvents = 0;
 	fLastStatsReport = system_time();
+	fTransferStartTime = system_time();
 }
 
 
