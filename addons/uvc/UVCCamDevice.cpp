@@ -6418,18 +6418,17 @@ UVCCamDevice::_HandleResolutionChange(uint32 width, uint32 height)
 	bool wasTransferring = TransferEnabled();
 
 	// Step 1: Stop transfer if running
-	// This is safe because we're in the reconfig thread, not the data pump
+	// Skip idle alternate switch - StartTransfer will set a new one anyway
 	if (wasTransferring) {
 		syslog(LOG_INFO, "UVCCamDevice: Stopping transfer for resolution change\n");
-		result = StopTransfer();
+		result = CamDevice::StopTransfer();
 		if (result != B_OK) {
 			syslog(LOG_ERR, "UVCCamDevice: Failed to stop transfer: %s\n",
 				strerror(result));
 			return result;
 		}
 
-		// Give the hardware a moment to settle
-		snooze(50000);  // 50ms
+		snooze(20000);  // 20ms for hardware to settle
 	}
 
 	// Step 2: Apply the new resolution
