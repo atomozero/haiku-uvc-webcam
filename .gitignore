@@ -27,6 +27,24 @@ test_*
 *.bak
 *.orig
 
+# Tool binaries (keep .cpp sources)
+tools/align_test
+tools/analyze_raw_usb
+tools/analyze_tearing
+tools/analyze_yuv
+tools/check_blocks
+tools/compare_frames
+tools/find_headers
+tools/find_seams
+tools/raw2bmp
+tools/rgb32tobmp24
+tools/simulate_itd
+tools/sonix_probe
+tools/sonix_xu_probe
+tools/try_layouts
+tools/uvc_controls_probe
+tools/yuv2bmp
+
 # Build directories
 build/
 dist/
