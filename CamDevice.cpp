@@ -156,8 +156,14 @@ CamDevice::CamDevice(CamDeviceAddon &_addon, BUSBDevice* _device)
 		fFlavorInfoNameStr << "USB Webcam";
 	}
 
-	// Multi-camera support: Add unique identifier for multiple cameras
-	// Use serial number if available, otherwise instance number for duplicates
+	// Multi-camera support: Add VID:PID and unique identifier so users
+	// can distinguish between different webcam models and instances
+	if (fDevice != NULL) {
+		fFlavorInfoNameStr << " ("
+			<< BString().SetToFormat("%04x:%04x",
+				fDevice->VendorID(), fDevice->ProductID())
+			<< ")";
+	}
 	if (usbSerial != NULL && usbSerial[0] != '\0') {
 		// Append shortened serial (last 6 chars) for uniqueness
 		size_t serialLen = strlen(usbSerial);
