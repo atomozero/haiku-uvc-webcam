@@ -1049,15 +1049,29 @@ CamDevice::DataPumpThread()
 				consecutiveFailures++;
 				OnConsecutiveTransferFailures(consecutiveFailures);
 
-				// If too many consecutive failures, log and consider brief pause
 				if (consecutiveFailures == 10) {
 					syslog(LOG_WARNING, "USB: 10 consecutive transfer failures (err=%zd)\n", len);
 				}
-				if (consecutiveFailures >= 50) {
-					// Brief pause to let USB subsystem recover
-					syslog(LOG_WARNING, "USB: 50+ failures, pausing 10ms for recovery\n");
+				if (consecutiveFailures >= 50 && consecutiveFailures < 200) {
 					snooze(10000);
-					consecutiveFailures = 0;  // Reset counter after recovery attempt
+					consecutiveFailures = 0;
+				}
+				if (consecutiveFailures >= 200) {
+					// Likely EHCI host system error - controller may be dead.
+					// Try to recover by clearing the endpoint stall and
+					// re-initializing the isochronous pipe.
+					syslog(LOG_ERR, "USB: 200+ consecutive failures, "
+						"attempting endpoint recovery\n");
+					{
+						BAutolock lock(fLocker);
+						if (fIsoIn != NULL) {
+							fIsoIn->ClearStall();
+							syslog(LOG_INFO, "USB: Endpoint stall cleared, "
+								"resuming after 500ms\n");
+						}
+					}
+					snooze(500000);
+					consecutiveFailures = 0;
 				}
 				// Don't return or continue - fall through to process any completed packets!
 			} else {
