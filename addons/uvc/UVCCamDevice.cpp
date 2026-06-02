@@ -2360,8 +2360,39 @@ UVCCamDevice::_SelectBestAlternate()
 			bestBandwidth);
 	}
 
+	// PASS 1.5: For MJPEG, if the probe's maxPayloadTransfer exceeds the best
+	// single-transaction bandwidth, try high-bandwidth endpoints that match
+	// the required payload size. MJPEG works well with high-bandwidth because
+	// compressed frames are small and don't stress the USB bus continuously.
+	if (fIsMJPEG && fMaxPayloadTransferSize > bestBandwidth && bestBandwidth > 0) {
+		syslog(LOG_INFO, "UVCCamDevice: MJPEG needs %u bytes/uframe but single-transaction max is %u, "
+			"trying high-bandwidth\n", fMaxPayloadTransferSize, bestBandwidth);
+
+		for (uint32 i = 0; i < streaming->CountAlternates(); i++) {
+			const BUSBInterface* alternate = streaming->AlternateAt(i);
+			for (uint32 j = 0; j < alternate->CountEndpoints(); j++) {
+				const BUSBEndpoint* endpoint = alternate->EndpointAt(j);
+				if (!endpoint->IsIsochronous() || !endpoint->IsInput())
+					continue;
+				uint32 rawMaxPacketSize = endpoint->MaxPacketSize();
+				uint32 basePacketSize = rawMaxPacketSize & 0x7FF;
+				uint32 transactions = ((rawMaxPacketSize >> 11) & 0x3) + 1;
+				uint32 totalBandwidth = basePacketSize * transactions;
+
+				if (transactions > 1 && totalBandwidth >= fMaxPayloadTransferSize
+					&& totalBandwidth > bestBandwidth) {
+					bestBandwidth = totalBandwidth;
+					endpointIndex = j;
+					alternateIndex = i;
+					syslog(LOG_INFO, "UVCCamDevice: MJPEG high-bandwidth: alt %u, "
+						"%u bytes/uframe (mult=%u)\n",
+						i, totalBandwidth, transactions);
+				}
+			}
+		}
+	}
+
 	// PASS 2: If no single-transaction endpoint found OR if user forces high-bandwidth
-	// and we found a higher bandwidth option, use high-bandwidth endpoint
 	if (bestBandwidth == 0 && allowHighBandwidth) {
 		syslog(LOG_WARNING, "UVCCamDevice: Pass 2 - no single-transaction endpoint found, "
 			"trying high-bandwidth (may fail on Haiku XHCI)\n");
@@ -2409,15 +2440,22 @@ UVCCamDevice::_SelectBestAlternate()
 	if (fMaxVideoFrameSize > 0 && bestBandwidth > 0) {
 		/* USB 2.0 high-speed: 8000 microframes/second */
 		uint32 bytesPerSecond = bestBandwidth * 8000;
-		float maxFps = (float)bytesPerSecond / fMaxVideoFrameSize;
-		syslog(LOG_INFO, "UVCCamDevice: Selected bandwidth %u bytes (~%.1f MB/s, max %.1f fps for frame size %u)\n",
-			bestBandwidth, bytesPerSecond / 1048576.0f, maxFps, fMaxVideoFrameSize);
 
-		/* Warn if bandwidth is likely insufficient */
-		if (maxFps < 5.0f) {
-			syslog(LOG_WARNING, "UVCCamDevice: Bandwidth may be insufficient for this resolution (max %.1f fps)\n",
-				maxFps);
-			syslog(LOG_WARNING, "UVCCamDevice: Consider using a lower resolution or USB 3.0 port if available\n");
+		if (fIsMJPEG) {
+			/* MJPEG: bandwidth estimate based on uncompressed size is meaningless.
+			 * MJPEG typically compresses 10-50x, so real throughput is much higher
+			 * than the uncompressed calculation suggests. */
+			syslog(LOG_INFO, "UVCCamDevice: Selected bandwidth %u bytes (~%.1f MB/s) for MJPEG stream\n",
+				bestBandwidth, bytesPerSecond / 1048576.0f);
+		} else {
+			float maxFps = (float)bytesPerSecond / fMaxVideoFrameSize;
+			syslog(LOG_INFO, "UVCCamDevice: Selected bandwidth %u bytes (~%.1f MB/s, max %.1f fps for frame size %u)\n",
+				bestBandwidth, bytesPerSecond / 1048576.0f, maxFps, fMaxVideoFrameSize);
+
+			if (maxFps < 5.0f) {
+				syslog(LOG_WARNING, "UVCCamDevice: Bandwidth may be insufficient (max %.1f fps)\n",
+					maxFps);
+			}
 		}
 	}
 
