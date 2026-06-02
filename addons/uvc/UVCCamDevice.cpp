@@ -1672,12 +1672,14 @@ UVCCamDevice::AcceptVideoFrame(uint32& width, uint32& height)
 			 */
 			if (fIsMJPEG) {
 				fMJPEGFrameIndex = descriptor->frame_index;
+				// MJPEG frames are variable size - use FID/EOF for boundaries
+				if (fDeframer)
+					((UVCDeframer*)fDeframer)->SetExpectedFrameSize(0);
 			} else {
 				fUncompressedFrameIndex = descriptor->frame_index;
 				// Set expected frame size for YUY2
-				if (fDeframer) {
+				if (fDeframer)
 					((UVCDeframer*)fDeframer)->SetExpectedFrameSize(width * height * 2);
-				}
 			}
 
 			// Update current resolution level for correct fallback direction
@@ -3949,9 +3951,10 @@ UVCCamDevice::SetParameterValue(int32 id, bigtime_t when, const void* value,
 					/* Task 3: Update frame indices for UVC format negotiation */
 					if (fIsMJPEG) {
 						fMJPEGFrameIndex = frameDesc->frame_index;
+						if (fDeframer)
+							((UVCDeframer*)fDeframer)->SetExpectedFrameSize(0);
 					} else {
 						fUncompressedFrameIndex = frameDesc->frame_index;
-						/* Set expected frame size for YUY2 deframer */
 						if (fDeframer) {
 							((UVCDeframer*)fDeframer)->SetExpectedFrameSize(
 								frameDesc->width * frameDesc->height * 2);
