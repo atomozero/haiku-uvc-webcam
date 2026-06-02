@@ -4057,10 +4057,12 @@ UVCCamDevice::SetParameterValue(int32 id, bigtime_t when, const void* value,
 					/* If transfer is running, we need to renegotiate */
 					if (TransferEnabled()) {
 						syslog(LOG_INFO, "UVCCamDevice: Transfer running, stopping to change resolution\n");
-						StopTransfer();
+						/* Stop pump thread but skip idle alternate switch (we're about
+						 * to start a new transfer with a different alternate anyway) */
+						CamDevice::StopTransfer();
 
-						/* Small delay for camera to process format change */
-						snooze(50000);  // 50ms
+						/* Brief delay for camera to process format change */
+						snooze(20000);  // 20ms
 
 						status_t err = StartTransfer();
 						if (err != B_OK) {
@@ -4105,9 +4107,9 @@ UVCCamDevice::SetParameterValue(int32 id, bigtime_t when, const void* value,
 				/* If transfer is running, renegotiate format */
 				if (TransferEnabled()) {
 					syslog(LOG_INFO, "UVCCamDevice: Transfer running, stopping to change frame rate\n");
-					StopTransfer();
+					CamDevice::StopTransfer();
 
-					snooze(50000);  // 50ms delay
+					snooze(20000);  // 20ms delay
 
 					status_t err = StartTransfer();
 					if (err != B_OK) {
@@ -4509,10 +4511,23 @@ UVCCamDevice::FillFrameBuffer(BBuffer* buffer, bigtime_t* stamp)
 	fEvalWindowErrors += deltaError;
 	_EvaluatePacketLoss();
 
-	// Warn if too many consecutive bad frames
+	// Auto-downgrade resolution on too many consecutive bad frames
 	if (fConsecutiveBadFrames == kMaxConsecutiveBadFrames) {
-		syslog(LOG_WARNING, "UVCCamDevice: %u consecutive bad frames detected, "
-			"consider lowering resolution\n", fConsecutiveBadFrames);
+		int32 maxLevel = _GetMaxResolutionLevel();
+		if (fCurrentResolutionLevel < maxLevel && !HasPendingReconfigRequest()) {
+			int32 targetLevel = fCurrentResolutionLevel + 1;
+			uint32 newWidth, newHeight;
+			_GetResolutionAtLevel(targetLevel, &newWidth, &newHeight);
+			syslog(LOG_WARNING, "UVCCamDevice: %u consecutive bad frames, "
+				"auto-downgrading to %ux%u\n",
+				fConsecutiveBadFrames, newWidth, newHeight);
+			RequestResolutionChange(newWidth, newHeight);
+			fCurrentResolutionLevel = targetLevel;
+		} else if (fCurrentResolutionLevel >= maxLevel) {
+			syslog(LOG_WARNING, "UVCCamDevice: %u consecutive bad frames at "
+				"minimum resolution\n", fConsecutiveBadFrames);
+		}
+		fConsecutiveBadFrames = 0;  // Reset to allow retry
 	}
 
 	if (buffer->SizeAvailable() >= bufferSize) {
