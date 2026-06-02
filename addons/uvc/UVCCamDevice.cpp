@@ -4451,6 +4451,18 @@ UVCCamDevice::FillFrameBuffer(BBuffer* buffer, bigtime_t* stamp)
 	// Use delta from last check to update the evaluation window
 	uint32 currentSuccess = fPacketSuccessCount;
 	uint32 currentError = fPacketErrorCount;
+
+	// Guard against counter reset (e.g. after resolution change restarts stream)
+	// If current < last, the base class reset its counters - resync
+	if (currentSuccess < fLastPacketSuccessCount
+		|| currentError < fLastPacketErrorCount) {
+		fLastPacketSuccessCount = currentSuccess;
+		fLastPacketErrorCount = currentError;
+		fEvalWindowPackets = 0;
+		fEvalWindowErrors = 0;
+		fEvalWindowStartTime = system_time();
+	}
+
 	uint32 deltaSuccess = currentSuccess - fLastPacketSuccessCount;
 	uint32 deltaError = currentError - fLastPacketErrorCount;
 	fLastPacketSuccessCount = currentSuccess;
