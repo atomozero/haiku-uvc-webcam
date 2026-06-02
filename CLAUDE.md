@@ -90,11 +90,26 @@ UVC Extension Units allow vendor-specific features beyond the standard controls.
 
 Threshold: 1% of raw YUY2 size (min 1024 bytes). Evaluation after 60 frames with 10s cooldown. Prevents false "bandwidth insufficient" alarms on highly compressed streams.
 
+## SetAlternate Crash Workaround
+
+Haiku's `BUSBInterface::SetAlternate()` has a double-free bug in `_UpdateDescriptorAndEndpoints()` when switching between alternates with different endpoint counts (0→N). The driver works around this by first switching to an intermediate alternate with >0 endpoints before switching to the target. This avoids the 0→N transition. Reported on hrev57937 with SuYin HP Truevision webcam.
+
 ## Haiku USB Limitations
 
 - EHCI high-bandwidth endpoints (mult>1) don't deliver payload data — disabled by default
 - EHCI "host system error" after ~2 min sustained isochronous streaming on some Intel controllers
-- `BUSBInterface::SetAlternate()` bug patched in `patches/` directory
+- `BUSBInterface::SetAlternate()` double-free bug — workaround in `_SelectBestAlternate()`, kernel patch in `patches/`
+- Isochronous transfers are synchronous (single-buffer) — no multi-URB queuing like Linux
+
+## Microdia 0c45:6409 Investigation Summary
+
+Extensive testing confirmed the YUY2 tearing on this camera is NOT a driver bug:
+- USB data arrives correctly (same PTS, no gaps between transfers)
+- EHCI kernel driver offset calculations are correct (verified by simulation)
+- The chip is a Sonix variant with UVC-only firmware (does not respond to SN9C20x proprietary protocol)
+- Sonix XU ASIC registers are readable (unit 4) but format registers are write-protected
+- On Linux, this device has no specific driver either (not in uvcvideo, gspca, or sn9c20x)
+- The Windows driver `snp2uvc.sys` likely uses proprietary initialization not publicly documented
 
 ## Running Tests
 

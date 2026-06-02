@@ -40,11 +40,14 @@ A USB Video Class (UVC) driver for Haiku OS, providing support for standard USB 
 | Device | VID:PID | Format | Status |
 |--------|---------|--------|--------|
 | AUKEY PC-LM1E | 1BCF:0001 | MJPEG + YUY2 | Working (MJPEG up to 1280x720, audio OK) |
+| SuYin HP Truevision | Various | MJPEG + YUY2 | Tested (see crash workaround below) |
 | Microdia Motion Eye | 0C45:6409 | YUY2 only | Tearing (Sonix chip, no MJPEG in firmware) |
 | Realtek USB Camera | 0BDA:5843 | MJPEG + YUY2 | Supported |
 | Generic UVC webcams | Various | Varies | Should work |
 
 The driver auto-detects any UVC-compliant webcam. Devices not in the list may still work. **MJPEG webcams are recommended** — YUY2-only cameras may show tearing on USB 2.0 due to bandwidth constraints.
+
+> **Note for older Haiku versions** (before hrev58000): a bug in Haiku's `BUSBInterface::SetAlternate()` can cause a crash when starting video capture. The driver includes a workaround, but if you experience crashes, update to a newer Haiku nightly or apply the kernel patch from `patches/`.
 
 ## Installation
 
