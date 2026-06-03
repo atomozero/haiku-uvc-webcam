@@ -1521,11 +1521,10 @@ UVCCamDevice::SuggestVideoFrame(uint32& width, uint32& height)
 	frameList = fIsMJPEG ? &fMJPEGFrames : &fUncompressedFrames;
 
 	// Suggest a resolution that fits the available bandwidth.
-	// For MJPEG: prefer 640x480 (good quality, low bandwidth due to compression).
-	// For MJPEG: prefer 720p (compressed, USB 2.0 has enough bandwidth).
+	// For MJPEG: prefer 640x480 (good quality/bandwidth balance on USB 2.0).
 	// For YUY2: prefer 320x240 (uncompressed needs more bandwidth).
-	uint32 targetW = fIsMJPEG ? 1280 : 320;
-	uint32 targetH = fIsMJPEG ? 720 : 240;
+	uint32 targetW = fIsMJPEG ? 640 : 320;
+	uint32 targetH = fIsMJPEG ? 480 : 240;
 
 	if (frameList->CountItems() > 0) {
 		// Find the resolution closest to target
