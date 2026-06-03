@@ -32,14 +32,11 @@ UVCDeframer::UVCDeframer(CamDevice* device)
 	fTotalBytesThisFrame(0),
 	fLastDiagReport(0)
 {
-	// Allocate fixed buffer for YUY2 frames (max 1920x1080x2 = 4MB)
-	fFixedBufferSize = 4 * 1024 * 1024;
+	// Start with a small buffer; resized dynamically in SetExpectedFrameSize()
+	fFixedBufferSize = 64 * 1024;
 	fFixedBuffer = (uint8*)malloc(fFixedBufferSize);
-	if (fFixedBuffer) {
-		syslog(LOG_INFO, "UVCDeframer: Allocated %zu byte fixed buffer\n", fFixedBufferSize);
-	} else {
-		syslog(LOG_ERR, "UVCDeframer: Failed to allocate fixed buffer!\n");
-	}
+	if (fFixedBuffer == NULL)
+		syslog(LOG_ERR, "UVCDeframer: Failed to allocate frame buffer!\n");
 }
 
 
@@ -81,8 +78,22 @@ void
 UVCDeframer::SetExpectedFrameSize(size_t size)
 {
 	fExpectedFrameSize = size;
-	syslog(LOG_INFO, "UVCDeframer: SetExpectedFrameSize(%zu) this=%p fFrameSem=%d\n",
-		size, (void*)this, fFrameSem);
+
+	// Resize buffer to fit the frame with some headroom for MJPEG variability.
+	// For YUY2 (size > 0): exact frame size + 10% margin.
+	// For MJPEG (size == 0): keep current buffer (MJPEG frames are variable size).
+	size_t needed = (size > 0) ? size + size / 10 : 256 * 1024;
+	if (needed > fFixedBufferSize) {
+		free(fFixedBuffer);
+		fFixedBufferSize = needed;
+		fFixedBuffer = (uint8*)malloc(fFixedBufferSize);
+		if (fFixedBuffer == NULL) {
+			syslog(LOG_ERR, "UVCDeframer: Failed to allocate %zu byte buffer!\n",
+				fFixedBufferSize);
+			fFixedBufferSize = 0;
+		}
+	}
+	fFixedBufferPos = 0;
 }
 
 

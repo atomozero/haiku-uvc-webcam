@@ -1122,7 +1122,8 @@ VideoProducer::HandleStart(bigtime_t performance_time)
 	// The thread checks fRunning in its loop condition
 	fRunning = true;
 
-	fThread = spawn_thread(_frame_generator_, "frame generator", B_NORMAL_PRIORITY, this);
+	fThread = spawn_thread(_frame_generator_, "frame generator",
+		B_DISPLAY_PRIORITY, this);
 	if (fThread < B_OK) {
 		syslog(LOG_ERR, "Producer: HandleStart - spawn_thread failed: %d\n", fThread);
 		fRunning = false;

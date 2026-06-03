@@ -5032,7 +5032,8 @@ UVCCamDevice::_DecompressMJPEGtoRGB32(unsigned char* dst,
 
 	// Decompress directly to BGRA (RGB32 on Haiku)
 	int result = tjDecompress2(fJpegDecompressor, jpegStart, jpegSize, dst,
-	              decompressWidth, decompressPitch, decompressHeight, TJPF_BGRA, TJFLAG_FASTDCT);
+	              decompressWidth, decompressPitch, decompressHeight, TJPF_BGRA,
+	              TJFLAG_FASTDCT | TJFLAG_NOREALLOC);
 
 	if (result == 0) {
 		fMjpegSuccess++;
