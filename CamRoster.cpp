@@ -125,6 +125,21 @@ CamRoster::DeviceRemoved(BUSBDevice* _device)
 		if (cam == NULL)
 			continue;
 		if (cam->Matches(_device)) {
+			// Check if this is a real removal or a spurious re-enumeration.
+			// During SetAlternate(), Haiku may fire DeviceRemoved for devices
+			// still physically connected. Verify with a control transfer.
+			if (_device != NULL) {
+				uint16 status = 0;
+				ssize_t ret = _device->ControlTransfer(
+					USB_REQTYPE_DEVICE_IN | USB_REQTYPE_STANDARD,
+					USB_REQUEST_GET_STATUS, 0, 0, 2, &status);
+				if (ret >= 0) {
+					syslog(LOG_INFO, "CamRoster: DeviceRemoved called but device "
+						"still responds - ignoring spurious removal\n");
+					return;
+				}
+			}
+
 			PRINT((CH ": camera %s:%s removed" CT, cam->BrandName(), cam->ModelName()));
 
 			// PHASE 3: Cache device params before cleanup
