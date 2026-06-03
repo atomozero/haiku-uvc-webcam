@@ -2361,10 +2361,11 @@ UVCCamDevice::_SelectBestAlternate()
 	}
 
 	// PASS 1.5: For MJPEG, if the probe's maxPayloadTransfer exceeds the best
-	// single-transaction bandwidth, try high-bandwidth endpoints that match
-	// the required payload size. MJPEG works well with high-bandwidth because
-	// compressed frames are small and don't stress the USB bus continuously.
-	if (fIsMJPEG && fMaxPayloadTransferSize > bestBandwidth && bestBandwidth > 0) {
+	// single-transaction bandwidth, try high-bandwidth endpoints.
+	// DISABLED: High-bandwidth endpoints (mult>1) cause EHCI host system errors
+	// after sustained streaming on Intel EHCI controllers. MJPEG works fine with
+	// lower bandwidth - the camera simply adjusts JPEG compression on the fly.
+	if (false && fIsMJPEG && fMaxPayloadTransferSize > bestBandwidth && bestBandwidth > 0) {
 		syslog(LOG_INFO, "UVCCamDevice: MJPEG needs %u bytes/uframe but single-transaction max is %u, "
 			"trying high-bandwidth\n", fMaxPayloadTransferSize, bestBandwidth);
 
