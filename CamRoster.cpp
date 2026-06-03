@@ -53,6 +53,18 @@ CamRoster::DeviceAdded(BUSBDevice* _device)
 		return B_ERROR;
 	}
 
+	// Check if this device is already known (spurious re-enumeration).
+	// SetAlternate() on one webcam can trigger bus-level re-enumeration
+	// of ALL devices. Skip re-initialization if already tracked.
+	for (int32 i = 0; i < fCameras.CountItems(); i++) {
+		CamDevice* existing = (CamDevice*)fCameras.ItemAt(i);
+		if (existing != NULL && existing->Matches(_device)) {
+			syslog(LOG_INFO, "CamRoster: Device already known, skipping re-init "
+				"(spurious re-enumeration)\n");
+			return B_OK;
+		}
+	}
+
 	// PHASE 3: Clean up old cache entries periodically
 	CleanupOldCache();
 
