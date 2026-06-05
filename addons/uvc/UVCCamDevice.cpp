@@ -3631,15 +3631,40 @@ UVCCamDevice::AddParameters(BParameterGroup* group, int32& index)
 			// UVC GET_INFO returns a bitmap: bit 0 = GET supported,
 			// bit 1 = SET supported. We only expose readable controls.
 			//
-			// XU controls are variable-size, so the size MUST be
+			// CRITICAL: probe ONLY selectors the unit declares in its
+			// bmControls bitmap. An undeclared selector answers STALL,
+			// which halts the default control pipe; Haiku's xHCI does
+			// not always recover the halt, and the next ControlTransfer
+			// then blocks forever — wedging node instantiation. The
+			// Logitech C920's last XU declares selectors 1-4 and 7-11
+			// but leaves 5-6 as gaps, so a blind 1..num_controls walk
+			// hit those gaps and froze on Start (intermittently).
+			//
+			// XU controls are also variable-size, so the size MUST be
 			// discovered with GET_LEN before issuing GET_CUR — a
 			// GET_CUR shorter than the control's real size makes the
-			// device babble the default control pipe into a halt
-			// (UVC 1.1 §4.2.2.5; observed on the Logitech C920,
-			// whose six vendor XUs turned this loop into a babble →
-			// halt → reset storm that froze the calling thread).
+			// device babble the control pipe into a halt
+			// (UVC 1.1 §4.2.2.5).
+			//
+			// bmControls covers control_size * 8 selectors; fall back to
+			// num_controls only when the bitmap is absent.
 			int failures = 0;
-			for (uint8 sel = 1; sel <= xu->num_controls; sel++) {
+			uint16 maxSel = xu->control_size > 0
+				? (uint16)xu->control_size * 8 : xu->num_controls;
+			syslog(LOG_INFO, "UVCCamDevice: XU[%d] bmControls size=%u "
+				"bytes=%02x%02x (probing only declared selectors)\n",
+				xu->unit_id, xu->control_size, xu->controls[0],
+				xu->control_size > 1 ? xu->controls[1] : 0);
+			for (uint8 sel = 1; sel <= maxSel; sel++) {
+				// Skip selectors not present in the bmControls bitmap;
+				// probing them would STALL the control pipe.
+				if (xu->control_size > 0) {
+					uint8 byteIdx = (sel - 1) / 8;
+					uint8 bitIdx = (sel - 1) % 8;
+					if ((xu->controls[byteIdx] & (1 << bitIdx)) == 0)
+						continue;
+				}
+
 				// If the control pipe is wedged, every further probe
 				// just repeats the halt/reset cycle — give up on this
 				// unit instead of hammering the bus.
@@ -5687,6 +5712,22 @@ UVCCamDevice::_ParseExtensionUnit(
 		? descriptor->num_input_pins : 8;
 	for (uint8 i = 0; i < pinCount; i++) {
 		xu->source_ids[i] = descriptor->source_id[i];
+	}
+
+	// Capture the bmControls bitmap. A bit set at position (selector - 1)
+	// means that control selector is present; selectors with a clear bit
+	// are NOT implemented and return STALL if probed (which intermittently
+	// halts the control pipe and wedges node instantiation on Haiku's xHCI).
+	// AddParameters() consults this bitmap so it only ever touches declared
+	// controls — the same discipline Linux uvcvideo follows.
+	// ControlSize()/Controls() index source_id[num_input_pins ...], so only
+	// read them when num_input_pins is within the descriptor we trust.
+	if (descriptor->num_input_pins <= 8) {
+		uint8 ctrlSize = descriptor->ControlSize();
+		if (ctrlSize > sizeof(xu->controls))
+			ctrlSize = sizeof(xu->controls);
+		xu->control_size = ctrlSize;
+		memcpy(xu->controls, descriptor->Controls(), ctrlSize);
 	}
 
 	// Get description string from device

@@ -243,6 +243,8 @@ struct extension_unit_info {
 	uint8					num_controls;
 	uint8					num_input_pins;
 	uint8					source_ids[8];	// Up to 8 source pins
+	uint8					control_size;	// bControlSize: bytes in bmControls
+	uint8					controls[8];	// bmControls bitmap (up to 64 selectors)
 	char					description[64];
 	const char*				vendor_name;
 };
