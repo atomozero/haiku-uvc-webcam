@@ -293,11 +293,17 @@ VideoProducer::NodeRegistered()
 		}
 	}
 
+	/* Set run mode for physical input device.
+	 * B_RECORDING tells the Media Kit this is a capture device, which
+	 * affects TimeSource selection and node hierarchy placement.
+	 * Without this, the node may appear orphaned at root level instead
+	 * of under Video Inputs in Media Preferences.
+	 */
+	SetRunMode(B_RECORDING);
+
 	/* Start the BMediaEventLooper control loop */
-	syslog(LOG_INFO, "Producer: NodeRegistered - calling Run()\n");
 	SetPriority(B_REAL_TIME_PRIORITY);
 	Run();
-	syslog(LOG_INFO, "Producer: NodeRegistered COMPLETE - Run() returned\n");
 }
 
 
