@@ -3627,26 +3627,64 @@ UVCCamDevice::AddParameters(BParameterGroup* group, int32& index)
 				ledParam->AddItem(1, "On");
 			}
 
-			// Probe each XU selector to discover available controls
+			// Probe each XU selector to discover available controls.
 			// UVC GET_INFO returns a bitmap: bit 0 = GET supported,
 			// bit 1 = SET supported. We only expose readable controls.
+			//
+			// XU controls are variable-size, so the size MUST be
+			// discovered with GET_LEN before issuing GET_CUR — a
+			// GET_CUR shorter than the control's real size makes the
+			// device babble the default control pipe into a halt
+			// (UVC 1.1 §4.2.2.5; observed on the Logitech C920,
+			// whose six vendor XUs turned this loop into a babble →
+			// halt → reset storm that froze the calling thread).
+			int failures = 0;
 			for (uint8 sel = 1; sel <= xu->num_controls; sel++) {
+				// If the control pipe is wedged, every further probe
+				// just repeats the halt/reset cycle — give up on this
+				// unit instead of hammering the bus.
+				if (failures >= 3) {
+					syslog(LOG_WARNING, "UVCCamDevice: XU[%d] probing "
+						"aborted after repeated failures\n", xu->unit_id);
+					break;
+				}
+
 				uint8 info = 0;
-				if (_XUGetInfo(xu->unit_id, sel, &info) != B_OK)
+				if (_XUGetInfo(xu->unit_id, sel, &info) != B_OK) {
+					failures++;
 					continue;
+				}
 				if ((info & 0x01) == 0)
 					continue;	// not readable
 
-				// Try GET_CUR to see if this selector responds
-				uint8 probe[64];
-				memset(probe, 0, sizeof(probe));
-				if (_XUGetCur(xu->unit_id, sel, probe, 1) != B_OK)
+				uint16 length = 0;
+				if (_XUGetLen(xu->unit_id, sel, &length) != B_OK
+					|| length == 0) {
+					failures++;
 					continue;
+				}
+
+				uint8 probe[64];
+				if (length > sizeof(probe)) {
+					// Larger than anything we'd expose as a parameter;
+					// note it and move on without reading.
+					syslog(LOG_INFO, "UVCCamDevice: XU[%d] sel=%d "
+						"len=%u (skipped, too large)\n",
+						xu->unit_id, sel, length);
+					continue;
+				}
+
+				memset(probe, 0, sizeof(probe));
+				if (_XUGetCur(xu->unit_id, sel, probe, length) != B_OK) {
+					failures++;
+					continue;
+				}
+				failures = 0;
 
 				// Log discovered control
 				syslog(LOG_INFO, "UVCCamDevice: XU[%d] sel=%d info=0x%02x "
-					"cur=0x%02x %s\n",
-					xu->unit_id, sel, info, probe[0],
+					"len=%u cur=0x%02x %s\n",
+					xu->unit_id, sel, info, length, probe[0],
 					(info & 0x02) ? "(rw)" : "(ro)");
 			}
 		}
@@ -5873,6 +5911,37 @@ UVCCamDevice::_XUGetInfo(uint8 unitId, uint8 selector, uint8* info)
 		info);
 
 	return (ret >= 0) ? B_OK : B_ERROR;
+}
+
+
+/*! Query the size of an Extension Unit control (UVC 1.1 §4.2.2.5).
+	XU controls are vendor-defined and variable-size; the spec requires
+	discovering the size with GET_LEN before any GET_CUR/SET_CUR —
+	requesting fewer bytes than the control's actual size makes
+	spec-compliant devices ship their full payload anyway, which the
+	host controller flags as babble and answers by halting the
+	endpoint. (Exactly what the Logitech C920's six XUs did to the
+	default control pipe before this existed.) The response is a
+	2-byte little-endian length. */
+status_t
+UVCCamDevice::_XUGetLen(uint8 unitId, uint8 selector, uint16* length)
+{
+	if (fDevice == NULL || length == NULL)
+		return B_BAD_VALUE;
+
+	uint8 data[2] = { 0, 0 };
+	ssize_t ret = fDevice->ControlTransfer(
+		USB_REQTYPE_CLASS | USB_REQTYPE_INTERFACE_IN,
+		USB_VIDEO_RC_GET_LEN,
+		(uint16)selector << 8,
+		(uint16)unitId << 8 | fControlIndex,
+		2,
+		data);
+	if (ret < 0)
+		return B_ERROR;
+
+	*length = (uint16)data[0] | ((uint16)data[1] << 8);
+	return B_OK;
 }
 
 

@@ -413,6 +413,8 @@ private:
 									uint8* data, uint16 length);
 			status_t			_XUGetInfo(uint8 unitId, uint8 selector,
 									uint8* info);
+			status_t			_XUGetLen(uint8 unitId, uint8 selector,
+									uint16* length);
 			extension_unit_info*	_FindXU(extension_unit_vendor vendor);
 
 	// Sonix-specific XU helpers
