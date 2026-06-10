@@ -151,18 +151,28 @@ UVCDeframer::Write(const void* buffer, size_t size)
 			syslog(LOG_WARNING, "UVCDeframer: UVC error bit set in header\n");
 	}
 
-	// Debug: Log first few packets of first few frames to check header structure
-	static int32 sDebugFrames = 0;
-	static int32 sDebugPackets = 0;
-	if (sDebugFrames < 3 && sDebugPackets < 15) {
+	// P29: validate header layout against PTS/SCR flag bits. Previously this
+	// only ran for the first 15 packets of the first 3 frames, so a camera
+	// that consistently mis-reports bHeaderLength would slip past silently
+	// once the warm-up window closed. We trust buf[0] (camera's own
+	// bHeaderLength) for the payload offset because it matches what the
+	// hardware actually emitted, but we keep a counter so persistent
+	// firmware bugs show up in syslog with bounded noise.
+	{
 		bool hasPTS = (buf[1] & 0x04) != 0;
 		bool hasSCR = (buf[1] & 0x08) != 0;
 		int expectedHeaderLen = 2 + (hasPTS ? 4 : 0) + (hasSCR ? 6 : 0);
 		if (buf[0] != expectedHeaderLen) {
-			syslog(LOG_WARNING, "UVCDeframer: Header mismatch! bHeaderLength=%d expected=%d (PTS=%d SCR=%d) pkt=%zu\n",
-				buf[0], expectedHeaderLen, hasPTS ? 1 : 0, hasSCR ? 1 : 0, size);
+			static int32 sHeaderMismatch = 0;
+			if (++sHeaderMismatch <= 5 || (sHeaderMismatch % 500) == 0) {
+				syslog(LOG_WARNING,
+					"UVCDeframer: Header mismatch #%d! "
+					"bHeaderLength=%d expected=%d (PTS=%d SCR=%d) pkt=%zu — "
+					"trusting camera's bHeaderLength\n",
+					(int)sHeaderMismatch, buf[0], expectedHeaderLen,
+					hasPTS ? 1 : 0, hasSCR ? 1 : 0, size);
+			}
 		}
-		sDebugPackets++;
 	}
 
 	// Detect FID (Frame ID) changes for BOTH YUY2 and MJPEG
@@ -184,6 +194,7 @@ UVCDeframer::Write(const void* buffer, size_t size)
 		}
 
 		// Track debug frames and dump first packet header
+		static int32 sDebugFrames = 0;
 		if (sDebugFrames < 3) {
 			sDebugFrames++;
 			syslog(LOG_INFO, "UVCDeframer: New frame #%d started (FID=%d pkts=%d bufSize=%zu)\n",
