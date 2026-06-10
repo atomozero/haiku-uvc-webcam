@@ -2323,7 +2323,25 @@ UVCCamDevice::_ProbeCommitFormat()
 
 	usb_video_probe_and_commit_controls request;
 	memset(&request, 0, sizeof(request));
+	// bmHint (UVC spec table 4-46): set bits mean "this field's value in our
+	// request is meaningful, don't override it". We pin dwFrameInterval (we
+	// chose it deliberately) but leave wKeyFrameRate / wPFrameRate /
+	// wCompQuality flexible so the camera can pick sensible encoder
+	// defaults. Setting their hint bits on zero would force the camera to
+	// zero, which most firmwares reject — Linux uvcvideo uses the same
+	// pattern. WEBCAM_MJPEG_QUALITY (0..10000, UVC unit) lets advanced users
+	// override the quality for MJPEG streams (P21).
 	request._hint.frame_interval = 1;
+	const char* qualityEnv = getenv("WEBCAM_MJPEG_QUALITY");
+	if (qualityEnv != NULL && fIsMJPEG) {
+		int q = atoi(qualityEnv);
+		if (q > 0 && q <= 10000) {
+			request.comp_quality = (uint16)q;
+			request._hint.comp_quality = 1;
+			syslog(LOG_INFO, "UVCCamDevice: WEBCAM_MJPEG_QUALITY=%d pinned\n",
+				q);
+		}
+	}
 
 	/* P2 Feature: Use user-selected frame interval, fall back to device default */
 	uint32 frameInterval = 333333;  // Default 30 fps
