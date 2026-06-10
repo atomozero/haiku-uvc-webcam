@@ -342,6 +342,27 @@ UVCDeframer::Write(const void* buffer, size_t size)
 			if (++sCompletedLog <= 5)
 				syslog(LOG_INFO, "UVCDeframer: Frame complete by SIZE! size=%zu expected=%zu\n",
 					currentSize, fExpectedFrameSize);
+
+			// P32: previously, when fTotalBytesThisFrame > fExpectedFrameSize
+			// the excess payload was silently truncated, hiding cameras
+			// that pad rows beyond the advertised width (e.g. Microdia 0c45:6409
+			// at 320x240 sends 352-byte-wide rows). Flag the mismatch so
+			// stride quirks are easy to spot in syslog. >2% over expected
+			// avoids false positives from header alignment slack.
+			if (fTotalBytesThisFrame > fExpectedFrameSize
+					+ (fExpectedFrameSize / 50)) {
+				static int32 sOversizeLog = 0;
+				if (++sOversizeLog <= 5 || (sOversizeLog % 100) == 0) {
+					size_t excess = fTotalBytesThisFrame - fExpectedFrameSize;
+					syslog(LOG_WARNING,
+						"UVCDeframer: oversize YUY2 frame #%d: received=%zu "
+						"expected=%zu (+%zu bytes, %.1f%%) — camera may be "
+						"padding rows (stride quirk?)\n",
+						(int)sOversizeLog, fTotalBytesThisFrame,
+						fExpectedFrameSize, excess,
+						100.0f * excess / fExpectedFrameSize);
+				}
+			}
 		}
 	}
 	// EOF detection for MJPEG (when fExpectedFrameSize == 0)
