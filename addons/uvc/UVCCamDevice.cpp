@@ -634,11 +634,47 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 
 	generic = (usb_descriptor*)buffer;
 
+	// P2: pre-pass to find the configuration that actually owns the UVC
+	// VideoControl interface. Composite devices (Logitech firmwares with
+	// CONFIG 1=HID + CONFIG 2=UVC, some webcam+mic combos) used to have
+	// SetConfiguration called once per config in the main loop, which
+	// resets the device state on Haiku and reliably broke streaming on
+	// the second iteration. Now we pick the right config up front, call
+	// SetConfiguration at most once, and parse only that config.
+	uint32 uvcConfigIndex = 0;
+	int bestUvcScore = -1;
 	for (uint32 i = 0; i < _device->CountConfigurations(); i++) {
+		const BUSBConfiguration* probe = _device->ConfigurationAt(i);
+		if (probe == NULL)
+			continue;
+		int score = 0;
+		for (uint32 j = 0; j < probe->CountInterfaces(); j++) {
+			const BUSBInterface* intf = probe->InterfaceAt(j);
+			if (intf == NULL)
+				continue;
+			if (intf->Class() != USB_VIDEO_DEVICE_CLASS)
+				continue;
+			if (intf->Subclass()
+					== USB_VIDEO_INTERFACE_VIDEOCONTROL_SUBCLASS)
+				score += 10;
+			else if (intf->Subclass()
+					== USB_VIDEO_INTERFACE_VIDEOSTREAMING_SUBCLASS)
+				score += 5;
+		}
+		if (score > bestUvcScore) {
+			bestUvcScore = score;
+			uvcConfigIndex = i;
+		}
+	}
+
+	for (uint32 i = 0; i < _device->CountConfigurations(); i++) {
+		if (i != uvcConfigIndex)
+			continue;
 		config = _device->ConfigurationAt(i);
 		if (config == NULL)
 			continue;
-		_device->SetConfiguration(config);
+		if (_device->ActiveConfiguration() != config)
+			_device->SetConfiguration(config);
 
 		// P3 Phase A: pre-pass to pick the best VideoStreaming interface in
 		// this configuration. Multi-stream cameras (Intel RealSense,
