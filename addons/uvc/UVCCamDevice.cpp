@@ -1582,7 +1582,17 @@ UVCCamDevice::_ParseVideoControl(const usbvc_class_descriptor* _descriptor,
 		case USB_VIDEO_VC_HEADER:
 		{
 			if (fHeaderDescriptor != NULL) {
-				printf("ERROR: multiple VC_HEADER! Skipping...\n");
+				// P11: duplicate VC_HEADER. UVC requires exactly one per
+				// VideoControl interface; a second one usually means the
+				// camera exposes more than one VC, or that we're seeing
+				// the same one twice through the alternate-scan retry
+				// loop. Skip silently for the alternate-scan case but
+				// surface to syslog so unusual composite devices show up.
+				syslog(LOG_WARNING, "UVCCamDevice: Multiple VC_HEADER on "
+					"camera %04x:%04x, keeping first (v%x.%02x)\n",
+					fDevice->VendorID(), fDevice->ProductID(),
+					fHeaderDescriptor->version >> 8,
+					fHeaderDescriptor->version & 0xff);
 				break;
 			}
 			fHeaderDescriptor = (usbvc_interface_header_descriptor*)malloc(len);
