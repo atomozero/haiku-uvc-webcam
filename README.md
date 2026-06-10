@@ -14,8 +14,10 @@ A USB Video Class (UVC) driver for Haiku OS, providing support for standard USB 
 
 ### Video Support
 - **MJPEG** - Compressed format, recommended for HD resolutions (720p, 1080p)
-- **YUY2** - Uncompressed format, lower latency for video conferencing
-- **NV12** - YUV 4:2:0 planar format, reduced bandwidth
+- **Uncompressed formats**: YUY2/YUYV, UYVY, NV12, NV21, YV12, I420/IYUV, GREY/Y8
+- **H.264 / H.265 / VP8 / M-JPEG2000**: detected and logged (not yet decoded)
+- **Multi-stream cameras**: each VideoStreaming interface exposed as a separate
+  media flavor (Intel RealSense color/depth/IR, Sonix SN9C292, stereo cameras)
 
 ### Camera Controls
 - **Processing Unit**: Brightness, Contrast, Saturation, Sharpness, Gamma, Hue
@@ -60,9 +62,9 @@ make
 # Install to user add-ons
 make install
 
-# Restart media services
-media_client quit
-media_client launch
+# Restart media services so the new addon is picked up. Haiku's launch
+# daemon respawns media_server automatically after the kill:
+kill $(pidof media_server)
 ```
 
 ### Manual Installation
@@ -140,14 +142,20 @@ cd tools
 g++ -O2 -o <tool_name> <tool_name>.cpp -lbe -ldevice
 ```
 
-### Debug Logging
+### Environment variables
 
-Set environment variable before launching media services:
-```bash
-export WEBCAM_DEBUG=verbose
+| Variable | Effect |
+|---|---|
+| `WEBCAM_DEBUG=verbose` | Verbose Sniff/probe logging in syslog |
+| `WEBCAM_FORCE_HIGH_BANDWIDTH=1` | Allow mult>1 isochronous endpoints (requires kernel patches in `patches/`) |
+| `WEBCAM_DISABLE_HIGH_BANDWIDTH=1` | Force mult=1 only (default) |
+| `WEBCAM_MJPEG_QUALITY=N` | Pin MJPEG `wCompQuality` to N (0..10000, UVC units) |
+| `WEBCAM_PROBE_DELAY=N` | Extra delay (ms) before probe/commit (default 100 ms) |
+
+Set them before restarting `media_server`. Logs go to `/var/log/syslog`:
+```sh
+tail -f /var/log/syslog | grep -iE "UVCCamDevice|Sniff|UVCDeframer"
 ```
-
-Debug levels: `none`, `error`, `warn`, `info`, `verbose`, `trace`
 
 ## Architecture
 
@@ -172,20 +180,50 @@ Debug levels: `none`, `error`, `warn`, `info`, `verbose`, `trace`
 
 ## Performance Optimizations
 
-- **YUV-RGB Lookup Tables**: Pre-computed conversion tables for faster color space conversion
-- **Frame Pool Recycling**: Reduces memory allocation overhead
-- **Double Buffering**: Improved USB transfer efficiency
-- **Adaptive Timeout**: Dynamic timeout based on actual frame timing
-- **Log Throttling**: Reduced syslog overhead in production
+- **YUV-RGB lookup tables**: pre-computed conversion tables, no per-pixel multiplications
+- **Frame pool recycling**: reduces memory allocation overhead
+- **Larger isochronous batches**: 64 packets/transfer to limit the number of
+  blocking round-trips through the synchronous `IsochronousTransfer` API
+- **Drop-oldest queue**: a paused consumer gets the freshest frame instead of
+  a half-second stale burst on resume
+- **Adaptive FPS**: YUY2 streams clamp `frame_interval` to the bandwidth the
+  selected alternate can actually carry
+- **`GET_LEN` + extended probe size sweep**: 11 known probe/commit sizes,
+  with GET_LEN queried first on UVC 1.1+ firmwares
+- **`GET_MIN`/`GET_MAX`/`GET_DEF`**: probe bounds queried and used as a
+  strict-firmware safety net before SET_CUR
+
+## Documentation
+
+- `docs/haiku-ehci-isochronous-panic-report.md` — kernel-side EHCI panic analysis
+- `docs/haiku-xhci-isochronous-bug-report.md` — XHCI bandwidth allocation bug
+- `docs/XHCI_IMPLEMENTATION_TASKS.md` — XHCI optimization tracking
+- `patches/README.md` — kernel patches catalogue
+- `bin/README.md` — pre-built kernel binaries (USB host controllers)
+- `tests/README.md` — staleness notes on the source-pattern tests
 
 ## Known Limitations
 
-- **YUY2-only cameras** (no MJPEG): may show horizontal tearing on USB 2.0. This is a bandwidth issue — MJPEG cameras are not affected
-- **Microdia 0c45:6409**: Sonix chip with proprietary firmware. Outputs only YUY2, does not respond to format change commands via Extension Units. On Linux this device has no specific driver support either
-- **EHCI host system error**: long streaming sessions (>2 min) may crash the Intel EHCI controller on some laptops. This is a Haiku kernel issue, not a driver bug
-- **High-bandwidth endpoints** (mult>1): disabled by default due to Haiku EHCI limitations. Cameras fall back to single-transaction mode (max 1024 bytes/microframe)
-- **Still image capture**: detection only, no hardware trigger support
-- **USB 1.1**: limited bandwidth, low resolutions only
+- **EHCI host system error**: sustained isochronous streaming (>~2 min) on
+  some Intel EHCI controllers can panic the host. Kernel patch in
+  `patches/ehci-isochronous-host-error-panic-fix.patch`; the userspace
+  driver cannot work around this.
+- **`IsochronousTransfer` is synchronous on Haiku**: only one transfer in
+  flight at a time. We batch 64 microframes/call to minimise the gap, but
+  a proper fix would require URB queueing in the kernel USB stack.
+- **High-bandwidth endpoints (mult>1)**: disabled by default — both EHCI
+  and xHCI have known issues. Opt in via `WEBCAM_FORCE_HIGH_BANDWIDTH=1`
+  on a patched kernel; the driver auto-falls back to a lower resolution
+  if transfers start failing.
+- **Encoded streams** (H.264/H.265/VP8/M-JPEG2000): the driver detects
+  these formats but does not yet decode them. MJPEG and uncompressed
+  remain the active streaming formats.
+- **YUY2-only cameras** at HD resolutions may show tearing or dropped
+  frames on USB 2.0 due to bandwidth limits.
+- **Microdia 0c45:6409**: YUY2-only firmware; format change registers are
+  write-protected. Tearing is firmware-side, not a driver bug.
+- **Still image capture**: detected, exposed in syslog, but no hardware
+  trigger plumbing yet.
 
 ## License
 
