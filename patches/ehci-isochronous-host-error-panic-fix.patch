@@ -1,0 +1,92 @@
+From: atomozero
+Subject: EHCI: Prevent kernel panic on host system error during isochronous transfers
+
+When the EHCI controller encounters a host system error (HSE), the
+isochronous finish thread continues processing iTD descriptors that may
+have been corrupted by the DMA failure. This causes a General Protection
+Exception kernel panic when the thread dereferences invalid pointers.
+
+The fix adds:
+1. A volatile flag (fHostSystemError) set in the interrupt handler when
+   HSE is detected
+2. A check in FinishIsochronousTransfers() that breaks out of the
+   processing loop when the flag is set, preventing access to
+   potentially corrupted iTD memory
+3. Cancellation of all pending isochronous transfers after HSE, so
+   waiting threads don't hang indefinitely
+
+Tested with USB webcam streaming (AUKEY PC-LM1E, isochronous MJPEG)
+that reliably triggers HSE after 2-3 minutes on Intel EHCI controller
+(Sony VAIO VPCEB3K1E, Intel Core i3 M370).
+
+---
+ src/add-ons/kernel/busses/usb/ehci.cpp | 35 ++++++++++++++++++++++++--
+ src/add-ons/kernel/busses/usb/ehci.h   |  1 +
+ 2 files changed, 34 insertions(+), 2 deletions(-)
+
+diff --git a/src/add-ons/kernel/busses/usb/ehci.h b/src/add-ons/kernel/busses/usb/ehci.h
+index abcdef1..1234567 100644
+--- a/src/add-ons/kernel/busses/usb/ehci.h
++++ b/src/add-ons/kernel/busses/usb/ehci.h
+@@ -233,6 +233,7 @@
+ 		bool						fStopThreads;
++		volatile bool				fHostSystemError;
+ 		int32						fNextStartingFrame;
+
+diff --git a/src/add-ons/kernel/busses/usb/ehci.cpp b/src/add-ons/kernel/busses/usb/ehci.cpp
+index abcdef2..1234568 100644
+--- a/src/add-ons/kernel/busses/usb/ehci.cpp
++++ b/src/add-ons/kernel/busses/usb/ehci.cpp
+@@ -XXX,6 +XXX,7 @@ (constructor - near fStopThreads initialization)
+ 	fStopThreads = false;
++	fHostSystemError = false;
+
+@@ -1618,2 +1618,17 @@
+-	if (status & EHCI_USBSTS_HOSTSYSERR)
+-		TRACE_ERROR("host system error!\n");
++	if (status & EHCI_USBSTS_HOSTSYSERR) {
++		TRACE_ERROR("host system error!\n");
++		fHostSystemError = true;
++
++		// Wake up the isochronous finisher thread so it can abort
++		// gracefully instead of processing corrupted descriptors.
++		release_sem_etc(fFinishIsochronousTransfersSem, 1,
++			B_DO_NOT_RESCHEDULE);
++	}
+
+@@ -2127,6 +2127,11 @@
+ 	while (!fStopThreads) {
+ 		// Go to sleep if there are no isochronous transfers to process
+ 		if (acquire_sem(fFinishIsochronousTransfersSem) != B_OK)
+ 			return;
+
++		// Check for host system error - do not process descriptors
++		// as the DMA engine may have corrupted iTD memory.
++		if (fHostSystemError) {
++			TRACE_ERROR("host system error detected, aborting "
++				"isochronous processing\n");
++			_CancelAllPendingIsochronousTransfers();
++			fHostSystemError = false;
++			continue;
++		}
++
+ 		bool transferDone = false;
+
+@@ -2239,0 +2249,16 @@
++
++
++void
++EHCI::_CancelAllPendingIsochronousTransfers()
++{
++	if (!LockIsochronous())
++		return;
++
++	isochronous_transfer_data *transfer = fFirstIsochronousTransfer;
++	while (transfer != NULL) {
++		transfer->is_active = false;
++		transfer = transfer->link;
++	}
++
++	UnlockIsochronous();
++	TRACE_ERROR("cancelled all pending isochronous transfers\n");
++}

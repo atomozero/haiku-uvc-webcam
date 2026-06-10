@@ -48,3 +48,12 @@ tools/yuv2bmp
 # Build directories
 build/
 dist/
+release/
+
+# Patched kernel binaries (compiled output, not source)
+patches/ehci_patched
+patches/xhci_patched
+
+# Local AI tooling
+.claude/
+CLAUDE.md
