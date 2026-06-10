@@ -1,25 +1,17 @@
 # tests/
 
-These files are **pattern-grep tests on the source code**, not runtime
-unit tests. Each test reads a `.cpp`/`.h` file in the project and
-verifies that specific strings, constants or constructs are present.
+Self-contained C++ unit tests. Each file replicates a small piece of
+driver logic with synthetic data so it can be built and run without a
+USB camera, kernel patches, or even the rest of the driver compiled.
 
-They were written at various points during the development of this
-driver as smoke checks before installing the addon, and they have **not
-been kept in sync** with the recent batch of fixes (P1, P3, P7, P8,
-P12, P14, P15, P16, P19, P20, P22, P25, P29, P30, P32, P33, P34, P40,
-P41 — June 2026). Several tests now fail on current code simply
-because the patterns they search for have been rewritten:
-
-| Test | Why it is probably stale |
+| File | What it exercises |
 |---|---|
-| `test_probe_commit_size.cpp` | hard-codes `{ 34, 26, 48, 22 }` — the list is now 11 sizes |
-| `test_format_selection.cpp` | predates UYVY/NV21/YV12/I420/GREY support and per-stream selection |
-| `test_resolution_ordering.cpp` | predates `bDefaultFrameIndex` honour |
-| `test_nv12_support.cpp` | overlaps with the unified converter table |
-| `test_new_features.cpp` / `test_architecture.cpp` | broad pattern sweeps that drifted |
+| `test_deframer.cpp` | Deframer statistics counters and rate-limited logging |
+| `test_deframer_fix.cpp` | Frame boundary detection via EOF and FID toggle |
+| `test_memory_management.cpp` | CamFrame pool reuse, BMallocIO lifecycle |
+| `test_video_conversion.cpp` | YUV→RGB lookup tables (correctness and speed) |
 
-## How to build & run a test
+## Build & run
 
 ```sh
 cd tests
@@ -27,15 +19,30 @@ g++ -O2 -o test_<name> test_<name>.cpp -lbe
 ./test_<name>
 ```
 
-Most tests do not need a webcam — they read the source files via
-relative paths. A few (`test_deframer*.cpp`, `test_video_conversion.cpp`)
-operate on synthetic byte buffers.
+Each test prints PASS/FAIL summaries; non-zero exit means at least one
+assertion failed.
 
-## Status
+## What used to live here
 
-- Kept in-tree as historical reference and starting points for new
-  tests.
-- Don't treat a failure as a regression unless the failing pattern is
-  still meaningful for the current code.
-- If you take ownership of a test, please update it in the same commit
-  that touches the source file it inspects.
+Up until June 2026 `tests/` also held two other kinds of files:
+
+- **Pattern-grep tests** (~20 files) that opened the driver source as
+  text and searched for hard-coded strings or constants. After the
+  P1-P40 fix batch the patterns no longer match and the tests fail for
+  cosmetic reasons. They have been deleted; git history still has them
+  if anyone needs to revive one.
+
+- **Diagnostic data tools** (~11 files) that operate on YUY2 frame
+  dumps or hardware — `analyze_*`, `convert_*`, `find_*`,
+  `verify_alignment`, `visualize_yuv`, `uvc_benchmark`. They have been
+  moved to `tools/` next to their siblings.
+
+## Adding a new test
+
+Keep the tests in this directory honest:
+
+- No grep on `../addons/uvc/UVCCamDevice.cpp`. If you need to verify a
+  source-level invariant, write a real assertion against a small
+  reproduction of the data path.
+- No dependency on a connected webcam — tests must run in CI.
+- Update this README when you add a file so the table stays accurate.

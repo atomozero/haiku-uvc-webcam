@@ -29,20 +29,31 @@ test_*
 
 # Tool binaries (keep .cpp sources)
 tools/align_test
+tools/analyze_headers
 tools/analyze_raw_usb
 tools/analyze_tearing
 tools/analyze_yuv
+tools/analyze_yuv_discontinuity
 tools/check_blocks
+tools/check_interlace
 tools/compare_frames
+tools/convert_yuv
+tools/deinterlace
+tools/diagnose_shift
+tools/find_corruption
 tools/find_headers
 tools/find_seams
+tools/find_shifts
 tools/raw2bmp
 tools/rgb32tobmp24
 tools/simulate_itd
 tools/sonix_probe
 tools/sonix_xu_probe
 tools/try_layouts
+tools/uvc_benchmark
 tools/uvc_controls_probe
+tools/verify_alignment
+tools/visualize_yuv
 tools/yuv2bmp
 
 # Build directories
