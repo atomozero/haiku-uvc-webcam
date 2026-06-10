@@ -374,6 +374,16 @@ UVCDeframer::Write(const void* buffer, size_t size)
 						100.0f * excess / fExpectedFrameSize);
 				}
 			}
+
+			// Reset the per-frame payload counter now that this frame is
+			// being dispatched. Without this fTotalBytesThisFrame only ever
+			// resets on FID toggle (line ~244), so on cameras that never
+			// toggle FID at small resolutions (Microdia 0c45:6409 at
+			// 320x240, observed in field testing) the counter grows
+			// linearly across every frame and the P32 oversize warning
+			// fires with bogus "200%", "300%", "400%" deltas after the
+			// second frame.
+			fTotalBytesThisFrame = 0;
 		}
 	}
 	// EOF detection for MJPEG (when fExpectedFrameSize == 0)
