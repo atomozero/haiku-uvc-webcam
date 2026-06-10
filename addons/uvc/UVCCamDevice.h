@@ -544,6 +544,12 @@ private:
 			uint32				fUncompressedFrameIndex;
 			uint32				fMJPEGFormatIndex;
 			uint32				fMJPEGFrameIndex;
+			// bDefaultFrameIndex advertised by the camera in each VS_FORMAT_*
+			// descriptor. UVC prescribes using this value when the host has
+			// no specific preference. Tracked separately from the runtime
+			// fXxxFrameIndex (which follows user/Producer requests).
+			uint8				fDefaultMJPEGFrameIndex;
+			uint8				fDefaultUncompressedFrameIndex;
 			uint32				fMaxVideoFrameSize;
 			uint32				fMaxPayloadTransferSize;
 			size_t				fProbeCommitSize;		// Working probe/commit size (26, 34, or 48 bytes)

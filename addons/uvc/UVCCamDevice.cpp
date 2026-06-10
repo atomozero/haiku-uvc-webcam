@@ -459,6 +459,8 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 	fUncompressedFrameIndex(1),
 	fMJPEGFormatIndex(1),
 	fMJPEGFrameIndex(1),		// Initialize to 1, will be updated by AcceptVideoFrame
+	fDefaultMJPEGFrameIndex(0),
+	fDefaultUncompressedFrameIndex(0),
 	fMaxVideoFrameSize(0),
 	fMaxPayloadTransferSize(0),
 	fProbeCommitSize(34),		// Default UVC 1.1+ size, will be auto-detected
@@ -973,35 +975,64 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 		}
 	}
 
-	// Choose a sensible default resolution:
-	// MJPEG: 1280x720 (compressed, bandwidth is sufficient on USB 2.0)
-	// YUY2: 320x240 (uncompressed, limited by USB 2.0 bandwidth)
+	// Choose a sensible default resolution.
+	//
+	// P15: UVC requires the host to honour bDefaultFrameIndex advertised by
+	// the camera in each format descriptor. Some firmwares only allow probe
+	// negotiation to start from the default frame and reject everything
+	// else until a successful probe has established baseline. We try the
+	// camera's default first, then fall back to "nearest target pixel
+	// count" (MJPEG: 1280x720, uncompressed: 320x240) if the default is
+	// invalid or missing.
 	{
-		BList* defaultList = (fMJPEGFrames.CountItems() > 0)
-			? &fMJPEGFrames : &fUncompressedFrames;
-		uint32 targetPixels = (fMJPEGFrames.CountItems() > 0)
-			? (1280 * 720) : (320 * 240);
-		int32 bestIndex = 0;
-		uint32 bestDiff = UINT32_MAX;
-		for (int32 i = 0; i < defaultList->CountItems(); i++) {
-			usb_video_frame_descriptor* desc =
-				(usb_video_frame_descriptor*)defaultList->ItemAt(i);
-			if (desc == NULL) continue;
-			uint32 pixels = (uint32)desc->width * desc->height;
-			uint32 diff = (pixels > targetPixels)
-				? (pixels - targetPixels) : (targetPixels - pixels);
-			if (diff < bestDiff) {
-				bestDiff = diff;
-				bestIndex = i;
+		const bool prefersMJPEG = (fMJPEGFrames.CountItems() > 0);
+		BList* defaultList = prefersMJPEG ? &fMJPEGFrames : &fUncompressedFrames;
+		uint8 cameraDefault = prefersMJPEG
+			? fDefaultMJPEGFrameIndex : fDefaultUncompressedFrameIndex;
+		uint32 targetPixels = prefersMJPEG ? (1280 * 720) : (320 * 240);
+		int32 bestIndex = -1;
+
+		// 1) Honour the camera's bDefaultFrameIndex if present and valid.
+		if (cameraDefault != 0) {
+			for (int32 i = 0; i < defaultList->CountItems(); i++) {
+				const usb_video_frame_descriptor* desc =
+					(const usb_video_frame_descriptor*)defaultList->ItemAt(i);
+				if (desc != NULL && desc->frame_index == cameraDefault) {
+					bestIndex = i;
+					syslog(LOG_INFO, "UVCCamDevice: Default resolution from "
+						"camera bDefaultFrameIndex=%u: %ux%u (list index %d)\n",
+						cameraDefault, desc->width, desc->height, (int)i);
+					break;
+				}
 			}
 		}
-		fSelectedResolutionIndex = bestIndex;
-		usb_video_frame_descriptor* desc =
-			(usb_video_frame_descriptor*)defaultList->ItemAt(bestIndex);
-		if (desc) {
-			syslog(LOG_INFO, "UVCCamDevice: Default resolution set to %ux%u (index %d)\n",
-				desc->width, desc->height, (int)bestIndex);
+
+		// 2) Fall back to nearest-target heuristic.
+		if (bestIndex < 0) {
+			uint32 bestDiff = UINT32_MAX;
+			bestIndex = 0;
+			for (int32 i = 0; i < defaultList->CountItems(); i++) {
+				const usb_video_frame_descriptor* desc =
+					(const usb_video_frame_descriptor*)defaultList->ItemAt(i);
+				if (desc == NULL) continue;
+				uint32 pixels = (uint32)desc->width * desc->height;
+				uint32 diff = (pixels > targetPixels)
+					? (pixels - targetPixels) : (targetPixels - pixels);
+				if (diff < bestDiff) {
+					bestDiff = diff;
+					bestIndex = i;
+				}
+			}
+			const usb_video_frame_descriptor* desc =
+				(const usb_video_frame_descriptor*)defaultList->ItemAt(bestIndex);
+			if (desc) {
+				syslog(LOG_INFO, "UVCCamDevice: Default resolution "
+					"(target-nearest fallback): %ux%u (index %d)\n",
+					desc->width, desc->height, (int)bestIndex);
+			}
 		}
+
+		fSelectedResolutionIndex = bestIndex;
 	}
 
 	// Initialize TurboJPEG decompressor
@@ -1243,6 +1274,8 @@ UVCCamDevice::_ParseVideoStreaming(const usbvc_class_descriptor* _descriptor,
 						> preferenceRank(fUncompressedPixelFormat)) {
 				fUncompressedPixelFormat = detected;
 				fUncompressedFormatIndex = descriptor->formatIndex;
+				fDefaultUncompressedFrameIndex
+					= descriptor->uncompressed.defaultFrameIndex;
 				fIsNV12 = (detected == UVC_FMT_NV12);
 			}
 			printf("VS_FORMAT_UNCOMPRESSED:\tbFormatIdx=%d,#frmdesc=%d,guid=",
@@ -1393,6 +1426,7 @@ UVCCamDevice::_ParseVideoStreaming(const usbvc_class_descriptor* _descriptor,
 			const usbvc_format_descriptor* descriptor
 				= (const usbvc_format_descriptor*)_descriptor;
 			fMJPEGFormatIndex = descriptor->formatIndex;
+			fDefaultMJPEGFrameIndex = descriptor->mjpeg.defaultFrameIndex;
 			printf("VS_FORMAT_MJPEG:\tbFormatIdx=%d,#frmdesc=%d\n",
 				descriptor->formatIndex, descriptor->numFrameDescriptors);
 			printf("\t#flgs=%d,optfrmidx=%d,aspRX=%d,aspRY=%d\n",
