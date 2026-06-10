@@ -53,6 +53,14 @@ private:
 	media_format		fMediaFormat;
 	media_format		fAudioMediaFormat;
 	CamRoster*			fRoster;
+
+	// P3 fase B: scratch buffers used to synthesise per-stream video
+	// flavor info on the fly. GetFlavorAt may rewrite these on every call,
+	// which is allowed by the Media Kit contract: "the pointer to the
+	// flavor received only needs to be valid between successive calls to
+	// BMediaAddOn::GetFlavorAt()".
+	flavor_info			fStreamFlavorInfo;
+	char				fStreamFlavorName[256];
 };
 
 #endif

@@ -6,6 +6,7 @@
 #include <support/Autolock.h>
 #include <media/MediaFormats.h>
 #include <Notification.h>
+#include <String.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -110,23 +111,29 @@ WebCamMediaAddOn::CountFlavors()
 		return fInitStatus;
 	}
 
-	int32 videoCount = fRoster->CountCameras();
+	int32 cameraCount = fRoster->CountCameras();
+	int32 videoFlavors = 0;
+	int32 audioFlavors = 0;
 
-	// Count audio-capable cameras
-	int32 audioCount = 0;
 	fRoster->Lock();
-	for (int32 i = 0; i < videoCount; i++) {
+	for (int32 i = 0; i < cameraCount; i++) {
 		CamDevice* cam = fRoster->CameraAt(i);
-		if (cam != NULL) {
-			UVCCamDevice* uvcCam = dynamic_cast<UVCCamDevice*>(cam);
-			if (uvcCam != NULL && uvcCam->HasAudio())
-				audioCount++;
-		}
+		if (cam == NULL)
+			continue;
+		// P3 fase B: each VideoStreaming interface gets its own flavor
+		// (depth/IR/secondary color on RealSense, SN9C292 etc.).
+		UVCCamDevice* uvcCam = dynamic_cast<UVCCamDevice*>(cam);
+		int32 streams = (uvcCam != NULL) ? uvcCam->NumStreams() : 1;
+		if (streams < 1)
+			streams = 1;
+		videoFlavors += streams;
+		if (uvcCam != NULL && uvcCam->HasAudio())
+			audioFlavors++;
 	}
 	fRoster->Unlock();
 
-	PRINT((CH ": %d video + %d audio flavors" CT, videoCount, audioCount));
-	return videoCount + audioCount;
+	PRINT((CH ": %d video + %d audio flavors" CT, videoFlavors, audioFlavors));
+	return videoFlavors + audioFlavors;
 }
 
 
@@ -145,53 +152,93 @@ WebCamMediaAddOn::GetFlavorAt(int32 n, const flavor_info **out_info)
 	if (fInitStatus < B_OK)
 		return fInitStatus;
 
-	int32 videoCount = fRoster->CountCameras();
-	PRINT((CH ": %d cameras" CT, videoCount));
-
 	if (n < 0)
 		return B_BAD_INDEX;
 
 	fRoster->Lock();
+	int32 cameraCount = fRoster->CountCameras();
 
-	// First: video flavors (indices 0 to videoCount-1)
-	if (n < videoCount) {
-		CamDevice* cam = fRoster->CameraAt(n);
-		*out_info = &fDefaultFlavorInfo;
-		if (cam && cam->FlavorInfo())
-			*out_info = cam->FlavorInfo();
-		fRoster->Unlock();
-		PRINT((CH ": returning VIDEO flavor for %d, internal_id %d" CT, n, (*out_info)->internal_id));
-		return B_OK;
+	// P3 fase B internal_id encoding (32 bits):
+	//   bit 31      audio (1) / video (0)
+	//   bits 24-30  stream index for video flavors (0..127)
+	//   bits 0-23   camera internal id (FlavorInfo->internal_id)
+	// Stream 0 keeps the camera's original internal_id unchanged so the
+	// existing InstantiateNodeFor lookup stays backward compatible.
+
+	// First: walk video flavors (one per VS interface per camera).
+	int32 videoWalker = 0;
+	for (int32 i = 0; i < cameraCount; i++) {
+		CamDevice* cam = fRoster->CameraAt(i);
+		if (cam == NULL || cam->FlavorInfo() == NULL)
+			continue;
+		UVCCamDevice* uvcCam = dynamic_cast<UVCCamDevice*>(cam);
+		int32 streams = (uvcCam != NULL) ? uvcCam->NumStreams() : 1;
+		if (streams < 1)
+			streams = 1;
+		if (n < videoWalker + streams) {
+			int32 streamIdx = n - videoWalker;
+			if (streamIdx == 0) {
+				// Primary stream: hand back the unmodified per-camera flavor
+				// (backward compatible with anything that cached the id).
+				*out_info = cam->FlavorInfo();
+			} else {
+				// Secondary stream: synthesise into the scratch buffer.
+				// flavor_info has a private operator= so we memcpy by hand.
+				memcpy(&fStreamFlavorInfo, cam->FlavorInfo(),
+					sizeof(fStreamFlavorInfo));
+				fStreamFlavorInfo.internal_id =
+					(cam->FlavorInfo()->internal_id & 0x00FFFFFF)
+					| (streamIdx << 24);
+				const char* baseName = cam->FlavorInfo()->name
+					? cam->FlavorInfo()->name : "USB Web Camera";
+				BString label;
+				if (uvcCam != NULL) {
+					uvcCam->GetStreamName(streamIdx, &label);
+					snprintf(fStreamFlavorName,
+						sizeof(fStreamFlavorName),
+						"%s — %s", baseName, label.String());
+				} else {
+					snprintf(fStreamFlavorName,
+						sizeof(fStreamFlavorName),
+						"%s — Stream %d", baseName, (int)streamIdx);
+				}
+				fStreamFlavorInfo.name = fStreamFlavorName;
+				*out_info = &fStreamFlavorInfo;
+			}
+			fRoster->Unlock();
+			PRINT((CH ": returning VIDEO flavor %d (cam=%d stream=%d "
+				"internal_id=0x%x)" CT, n, (int)i, (int)streamIdx,
+				(*out_info)->internal_id));
+			return B_OK;
+		}
+		videoWalker += streams;
 	}
 
-	// Then: audio flavors (indices videoCount onwards)
-	int32 audioIndex = n - videoCount;
+	// Then: audio flavors (one per audio-capable camera).
+	int32 audioIndex = n - videoWalker;
+	if (audioIndex < 0) {
+		fRoster->Unlock();
+		return B_BAD_INDEX;
+	}
 	int32 audioFound = 0;
-
-	for (int32 i = 0; i < videoCount; i++) {
+	for (int32 i = 0; i < cameraCount; i++) {
 		CamDevice* cam = fRoster->CameraAt(i);
-		if (cam) {
-			UVCCamDevice* uvcCam = dynamic_cast<UVCCamDevice*>(cam);
-			if (uvcCam && uvcCam->HasAudio()) {
-				if (audioFound == audioIndex) {
-					// Found the audio flavor we're looking for
-					// Use audio flavor with modified internal_id to distinguish from video
-					// Audio internal_id = video_internal_id | 0x80000000
-					fDefaultAudioFlavorInfo.internal_id =
-						cam->FlavorInfo()->internal_id | 0x80000000;
-
-					// Build name with device name
-					snprintf(fAudioFlavorName, sizeof(fAudioFlavorName),
-						"%s Audio", cam->FlavorInfo()->name);
-					fDefaultAudioFlavorInfo.name = fAudioFlavorName;
-
-					*out_info = &fDefaultAudioFlavorInfo;
-					fRoster->Unlock();
-					return B_OK;
-				}
-				audioFound++;
-			}
+		if (cam == NULL || cam->FlavorInfo() == NULL)
+			continue;
+		UVCCamDevice* uvcCam = dynamic_cast<UVCCamDevice*>(cam);
+		if (uvcCam == NULL || !uvcCam->HasAudio())
+			continue;
+		if (audioFound == audioIndex) {
+			fDefaultAudioFlavorInfo.internal_id =
+				cam->FlavorInfo()->internal_id | 0x80000000;
+			snprintf(fAudioFlavorName, sizeof(fAudioFlavorName),
+				"%s Audio", cam->FlavorInfo()->name);
+			fDefaultAudioFlavorInfo.name = fAudioFlavorName;
+			*out_info = &fDefaultAudioFlavorInfo;
+			fRoster->Unlock();
+			return B_OK;
 		}
+		audioFound++;
 	}
 
 	fRoster->Unlock();
