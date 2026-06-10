@@ -2396,8 +2396,16 @@ UVCCamDevice::_ProbeCommitFormat()
 	//   1. UVC 1.1+ GET_LEN query (the spec-correct way)
 	//   2. Fall back to a UVC-version guess
 	//   3. If SET_CUR fails, sweep a list of known vendor sizes (P19)
+	//
+	// P12: fHeaderDescriptor can be NULL when VS descriptor parsing failed
+	// at construction time but the hardcoded-resolution fallback (AUKEY,
+	// Microdia) populated frame lists from a static table. Treat a missing
+	// header as UVC 1.0 (0x0100) — the safest assumption since UVC 1.0 has
+	// the smallest probe size (26 bytes) and does not require GET_LEN.
+	const uint16 uvcVersion = (fHeaderDescriptor != NULL)
+		? fHeaderDescriptor->version : 0x0100;
 	size_t length = 0;
-	if (fHeaderDescriptor->version >= 0x0110) {
+	if (uvcVersion >= 0x0110) {
 		uint16 queriedLen = 0;
 		size_t got = fDevice->ControlTransfer(
 			USB_REQTYPE_CLASS | USB_REQTYPE_INTERFACE_IN,
@@ -2416,7 +2424,74 @@ UVCCamDevice::_ProbeCommitFormat()
 		}
 	}
 	if (length == 0)
-		length = fHeaderDescriptor->version > 0x100 ? 34 : 26;
+		length = uvcVersion > 0x100 ? 34 : 26;
+
+	// P20: query GET_MIN/GET_MAX/GET_DEF on the probe control before SET_CUR.
+	// Strict camera firmwares (Imaging Source, HiSense, some industrial)
+	// STALL on SET_CUR when our requested frame_interval falls outside the
+	// advertised [min, max] range. Logging the bounds also makes negotiation
+	// failures much easier to diagnose. GET_DEF gives us the camera's
+	// preferred default values, which we keep as a safety net in case
+	// SET_CUR fails across every probe size we know.
+	probe_commit_buffer minBuf, maxBuf, defBuf;
+	memset(&minBuf, 0, sizeof(minBuf));
+	memset(&maxBuf, 0, sizeof(maxBuf));
+	memset(&defBuf, 0, sizeof(defBuf));
+	size_t minLen = fDevice->ControlTransfer(
+		USB_REQTYPE_CLASS | USB_REQTYPE_INTERFACE_IN, USB_VIDEO_RC_GET_MIN,
+		USB_VIDEO_VS_PROBE_CONTROL << 8, fStreamingIndex, length, &minBuf);
+	size_t maxLen = fDevice->ControlTransfer(
+		USB_REQTYPE_CLASS | USB_REQTYPE_INTERFACE_IN, USB_VIDEO_RC_GET_MAX,
+		USB_VIDEO_VS_PROBE_CONTROL << 8, fStreamingIndex, length, &maxBuf);
+	size_t defLen = fDevice->ControlTransfer(
+		USB_REQTYPE_CLASS | USB_REQTYPE_INTERFACE_IN, USB_VIDEO_RC_GET_DEF,
+		USB_VIDEO_VS_PROBE_CONTROL << 8, fStreamingIndex, length, &defBuf);
+	const bool haveMin = (minLen == length);
+	const bool haveMax = (maxLen == length);
+	const bool haveDef = (defLen == length);
+
+	if (haveMin) {
+		syslog(LOG_INFO, "UVC Probe GET_MIN: frame_interval=%u "
+			"max_video_frame_size=%u max_payload=%u\n",
+			minBuf.fields.frame_interval,
+			minBuf.fields.max_video_frame_size,
+			minBuf.fields.max_payload_transfer_size);
+	}
+	if (haveMax) {
+		syslog(LOG_INFO, "UVC Probe GET_MAX: frame_interval=%u "
+			"max_video_frame_size=%u max_payload=%u\n",
+			maxBuf.fields.frame_interval,
+			maxBuf.fields.max_video_frame_size,
+			maxBuf.fields.max_payload_transfer_size);
+	}
+	if (haveDef) {
+		syslog(LOG_INFO, "UVC Probe GET_DEF: format=%u frame=%u "
+			"frame_interval=%u\n",
+			defBuf.fields.format_index, defBuf.fields.frame_index,
+			defBuf.fields.frame_interval);
+	}
+
+	// Clamp our requested frame_interval to the advertised range. UVC stores
+	// frame_interval in 100ns units: GET_MIN returns the SHORTEST interval
+	// (highest FPS), GET_MAX the LONGEST (lowest FPS).
+	if (haveMin && request.frame_interval > 0
+			&& request.frame_interval < minBuf.fields.frame_interval) {
+		syslog(LOG_WARNING, "UVC Probe: frame_interval %u below MIN %u, "
+			"clamping (capped at %.1f fps)\n",
+			request.frame_interval, minBuf.fields.frame_interval,
+			10000000.0f / minBuf.fields.frame_interval);
+		request.frame_interval = minBuf.fields.frame_interval;
+		probeBuf.fields.frame_interval = request.frame_interval;
+	}
+	if (haveMax && request.frame_interval > 0
+			&& request.frame_interval > maxBuf.fields.frame_interval) {
+		syslog(LOG_WARNING, "UVC Probe: frame_interval %u above MAX %u, "
+			"clamping (capped at %.1f fps)\n",
+			request.frame_interval, maxBuf.fields.frame_interval,
+			10000000.0f / maxBuf.fields.frame_interval);
+		request.frame_interval = maxBuf.fields.frame_interval;
+		probeBuf.fields.frame_interval = request.frame_interval;
+	}
 
 	// Log what we're requesting
 	syslog(LOG_INFO, "UVC Probe request: format=%d frame=%d interval=%u (fIsMJPEG=%d)\n",
@@ -2446,7 +2521,7 @@ UVCCamDevice::_ProbeCommitFormat()
 
 	// First try the expected size based on UVC version with retries
 	syslog(LOG_INFO, "UVC Probe: trying size %zu (UVC version 0x%04x)\n",
-		length, fHeaderDescriptor->version);
+		length, uvcVersion);
 
 	for (int retry = 0; retry < kMaxRetries && !probeSuccess; retry++) {
 		if (retry > 0) {
@@ -2493,6 +2568,46 @@ UVCCamDevice::_ProbeCommitFormat()
 						trySize, retry + 1);
 					break;
 				}
+			}
+		}
+	}
+
+	// P20: strict-firmware safety net. If SET_CUR with our chosen values
+	// failed across every probe size we know, the camera is rejecting our
+	// payload (not the size). Retry once using the camera's own GET_DEF
+	// values — these are by construction inside the camera's accepted range
+	// and known to be self-consistent. We lose the requested format/frame
+	// but get a working stream that the user can re-negotiate later via
+	// AcceptVideoFrame.
+	if (!probeSuccess && haveDef) {
+		syslog(LOG_WARNING, "UVC Probe: SET_CUR failed with our values, "
+			"retrying with GET_DEF defaults (format=%u frame=%u interval=%u)\n",
+			defBuf.fields.format_index, defBuf.fields.frame_index,
+			defBuf.fields.frame_interval);
+		probe_commit_buffer defAttempt;
+		memset(&defAttempt, 0, sizeof(defAttempt));
+		defAttempt.fields = defBuf.fields;
+		for (int retry = 0; retry < kMaxRetries && !probeSuccess; retry++) {
+			if (retry > 0)
+				snooze(kRetryDelays[retry - 1]);
+			actualLength = fDevice->ControlTransfer(
+				USB_REQTYPE_CLASS | USB_REQTYPE_INTERFACE_OUT,
+				USB_VIDEO_RC_SET_CUR,
+				USB_VIDEO_VS_PROBE_CONTROL << 8,
+				fStreamingIndex, length, &defAttempt);
+			if (actualLength == length) {
+				probeSuccess = true;
+				probeBuf = defAttempt;
+				request = defAttempt.fields;
+				// Keep our internal indices in sync with what the camera
+				// actually accepted, so subsequent re-probes use the right
+				// frame.
+				if (fIsMJPEG)
+					fMJPEGFrameIndex = defAttempt.fields.frame_index;
+				else
+					fUncompressedFrameIndex = defAttempt.fields.frame_index;
+				syslog(LOG_INFO, "UVC Probe: GET_DEF fallback succeeded "
+					"(attempt %d)\n", retry + 1);
 			}
 		}
 	}
