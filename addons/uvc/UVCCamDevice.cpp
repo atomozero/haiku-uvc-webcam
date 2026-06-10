@@ -334,6 +334,60 @@ identify_uncompressed_format(const usbvc_guid guid)
 }
 
 
+// Score a VS interface by walking its class-specific descriptors and adding
+// points for each decodable format. Higher is better. Used by the constructor
+// to pick the "color" stream on multi-VS cameras (Intel RealSense, Sonix
+// SN9C292, stereo cameras) where the previous "last-VS-wins" policy could
+// land on a depth/IR pipe with no MJPEG/YUY2 frames.
+//
+// Scoring weights:
+//   MJPEG format                                : 100 (preferred — already decoded)
+//   Recognized uncompressed format (YUY2 ... GREY): 50
+//   Unrecognized uncompressed (raw Bayer, depth) :  5 (better than nothing)
+//   Frame-based encoded (H.264/H.265/VP8)        :  1 (we don't decode yet)
+static int
+score_streaming_interface(const BUSBInterface* iface, uint8* scratch,
+	size_t scratchSize)
+{
+	if (iface == NULL)
+		return -1;
+	int score = 0;
+	usb_descriptor* generic = (usb_descriptor*)scratch;
+	for (uint32 k = 0; iface->OtherDescriptorAt(k, generic, scratchSize)
+			== B_OK; k++) {
+		if (generic->generic.descriptor_type
+				!= (USB_REQTYPE_CLASS | USB_DESCRIPTOR_INTERFACE))
+			continue;
+		const usbvc_class_descriptor* d
+			= (const usbvc_class_descriptor*)generic;
+		switch (d->descriptorSubtype) {
+			case USB_VIDEO_VS_FORMAT_MJPEG:
+				score += 100;
+				break;
+			case USB_VIDEO_VS_FORMAT_UNCOMPRESSED:
+			{
+				const usbvc_format_descriptor* fd
+					= (const usbvc_format_descriptor*)generic;
+				if (identify_uncompressed_format(fd->uncompressed.format)
+						!= UVC_FMT_UNKNOWN)
+					score += 50;
+				else
+					score += 5;
+				break;
+			}
+			case USB_VIDEO_VS_FORMAT_FRAME_BASED:
+			case USB_VIDEO_VS_FORMAT_H264:
+			case USB_VIDEO_VS_FORMAT_VP8:
+				score += 1;
+				break;
+			default:
+				break;
+		}
+	}
+	return score;
+}
+
+
 // =============================================================================
 // Global YUV to RGB Lookup Tables
 // =============================================================================
@@ -562,6 +616,42 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 		if (config == NULL)
 			continue;
 		_device->SetConfiguration(config);
+
+		// P3 Phase A: pre-pass to pick the best VideoStreaming interface in
+		// this configuration. Multi-stream cameras (Intel RealSense,
+		// SN9C292, stereo cameras) expose several VS interfaces — one per
+		// pipe (color, depth, IR). Previously the parser kept the last one
+		// it saw, which on RealSense lands on a depth/IR pipe with no
+		// MJPEG/YUY2 frames and breaks all downstream code.
+		int32 bestVSInterfaceIdx = -1;
+		int bestVSScore = -1;
+		uint32 vsInterfaceCount = 0;
+		for (uint32 j = 0; j < config->CountInterfaces(); j++) {
+			const BUSBInterface* candidate = config->InterfaceAt(j);
+			if (candidate == NULL)
+				continue;
+			if (candidate->Class() != USB_VIDEO_DEVICE_CLASS
+					|| candidate->Subclass()
+						!= USB_VIDEO_INTERFACE_VIDEOSTREAMING_SUBCLASS) {
+				continue;
+			}
+			vsInterfaceCount++;
+			int score = score_streaming_interface(candidate, buffer,
+				sizeof(buffer));
+			syslog(LOG_INFO, "UVCCamDevice: VS scan cfg=%u intf=%u "
+				"score=%d alternates=%u\n",
+				i, j, score, (unsigned)candidate->CountAlternates());
+			if (score > bestVSScore) {
+				bestVSScore = score;
+				bestVSInterfaceIdx = (int32)j;
+			}
+		}
+		if (vsInterfaceCount > 1) {
+			syslog(LOG_INFO, "UVCCamDevice: %u VS interfaces in cfg=%u; "
+				"selecting intf=%d (best score %d)\n",
+				vsInterfaceCount, i, (int)bestVSInterfaceIdx, bestVSScore);
+		}
+
 		for (uint32 j = 0; j < config->CountInterfaces(); j++) {
 			interface = config->InterfaceAt(j);
 			if (interface == NULL)
@@ -592,6 +682,15 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 				// FIX BUG 3: fInitStatus spostato dopo parsing completo (vedi fine costruttore)
 			} else if (interface->Class() == USB_VIDEO_DEVICE_CLASS && interface->Subclass()
 				== USB_VIDEO_INTERFACE_VIDEOSTREAMING_SUBCLASS) {
+				// P3 Phase A: only parse the winning VS interface; skip
+				// secondary streams (depth, IR, etc.) for now.
+				if ((int32)j != bestVSInterfaceIdx) {
+					syslog(LOG_INFO,
+						"UVCCamDevice: cfg=%u intf=%u: skipping VS "
+						"interface (not selected by Phase A picker)\n",
+						i, j);
+					continue;
+				}
 				printf("UVCCamDevice: (%" B_PRIu32 ",%" B_PRIu32 "): Found Video Streaming "
 					"interface, #alternates=%u.\n", i, j, (unsigned)interface->CountAlternates());
 
