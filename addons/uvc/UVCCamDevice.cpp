@@ -1568,8 +1568,18 @@ UVCCamDevice::_ParseVideoStreaming(const usbvc_class_descriptor* _descriptor,
 			printf("VS_FORMAT_STREAM_BASED:\t\n");
 			break;
 		default:
+			// P41: surface unknown VS subtypes to syslog. UVC 1.5 and
+			// vendor extensions keep adding new subtypes (Microsoft H.264
+			// extension, UVC 2.0 simulcast); without a log line in syslog
+			// users have no way to spot that the firmware exposes
+			// something we don't understand yet.
 			printf("INVALID STREAM UNIT TYPE=%d!\n",
 				_descriptor->descriptorSubtype);
+			syslog(LOG_INFO,
+				"UVCCamDevice: unknown VS descriptor subtype=0x%02x "
+				"on camera %04x:%04x (please report)\n",
+				_descriptor->descriptorSubtype,
+				fDevice->VendorID(), fDevice->ProductID());
 	}
 }
 
