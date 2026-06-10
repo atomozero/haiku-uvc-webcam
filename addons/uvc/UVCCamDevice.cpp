@@ -2610,14 +2610,23 @@ UVCCamDevice::_SelectBestAlternate()
 			bestBandwidth);
 	}
 
-	// PASS 1.5: For MJPEG, if the probe's maxPayloadTransfer exceeds the best
-	// single-transaction bandwidth, try high-bandwidth endpoints.
-	// DISABLED: High-bandwidth endpoints (mult>1) cause EHCI host system errors
-	// after sustained streaming on Intel EHCI controllers. MJPEG works fine with
-	// lower bandwidth - the camera simply adjusts JPEG compression on the fly.
-	if (false && fIsMJPEG && fMaxPayloadTransferSize > bestBandwidth && bestBandwidth > 0) {
-		syslog(LOG_INFO, "UVCCamDevice: MJPEG needs %u bytes/uframe but single-transaction max is %u, "
-			"trying high-bandwidth\n", fMaxPayloadTransferSize, bestBandwidth);
+	// PASS 1.5: Pass 1 found a single-transaction alternate but the probe says
+	// we need more bandwidth than it provides. Promote to a high-bandwidth
+	// (mult>1) alternate that meets the requirement. Required for high-end
+	// cameras like Logitech BRIO 4K or 1080p MJPEG/YUY2 streams whose
+	// dwMaxPayloadTransferSize exceeds 1024 bytes/microframe.
+	//
+	// Gating: only runs when _ShouldUseHighBandwidth() returns true. By
+	// default that is false on Haiku because EHCI/XHCI have known mult>1
+	// bugs (EHCI drops payload after ~2 min; XHCI fails bandwidth alloc).
+	// Users on a patched kernel opt in via WEBCAM_FORCE_HIGH_BANDWIDTH=1;
+	// if transfers then fail repeatedly, _OnHighBandwidthFailure() flips the
+	// flag and subsequent stream restarts skip this pass.
+	if (_ShouldUseHighBandwidth() && fMaxPayloadTransferSize > bestBandwidth
+			&& bestBandwidth > 0) {
+		syslog(LOG_INFO, "UVCCamDevice: Pass 1.5 - need %u bytes/uframe but "
+			"single-transaction max is %u, trying high-bandwidth\n",
+			fMaxPayloadTransferSize, bestBandwidth);
 
 		for (uint32 i = 0; i < streaming->CountAlternates(); i++) {
 			const BUSBInterface* alternate = streaming->AlternateAt(i);
@@ -2630,16 +2639,24 @@ UVCCamDevice::_SelectBestAlternate()
 				uint32 transactions = ((rawMaxPacketSize >> 11) & 0x3) + 1;
 				uint32 totalBandwidth = basePacketSize * transactions;
 
-				if (transactions > 1 && totalBandwidth >= fMaxPayloadTransferSize
-					&& totalBandwidth > bestBandwidth) {
+				if (transactions > 1
+						&& totalBandwidth >= fMaxPayloadTransferSize
+						&& totalBandwidth > bestBandwidth) {
 					bestBandwidth = totalBandwidth;
 					endpointIndex = j;
 					alternateIndex = i;
-					syslog(LOG_INFO, "UVCCamDevice: MJPEG high-bandwidth: alt %u, "
+					selectedHighBandwidth = true;
+					syslog(LOG_INFO, "UVCCamDevice: Pass 1.5 promoted to alt %u, "
 						"%u bytes/uframe (mult=%u)\n",
 						i, totalBandwidth, transactions);
 				}
 			}
+		}
+
+		if (!selectedHighBandwidth) {
+			syslog(LOG_INFO, "UVCCamDevice: Pass 1.5 - no high-bandwidth "
+				"alternate meets %u bytes/uframe; staying with mult=1 (%u)\n",
+				fMaxPayloadTransferSize, bestBandwidth);
 		}
 	}
 
@@ -7245,10 +7262,29 @@ UVCCamDevice::_OnHighBandwidthFailure()
 		fHighBandwidthTested = true;
 		fHighBandwidthWorks = false;
 
-		// Request stream restart with low-bandwidth alternate
-		// The next StartTransfer() will use _SelectBestAlternate() which will
-		// now avoid high-bandwidth endpoints
-		syslog(LOG_INFO, "UVCCamDevice: Will use low-bandwidth mode on next stream restart\n");
+		// Trigger a stream restart at the next lower resolution. Without this
+		// the producer keeps timing out at the current resolution because
+		// _SelectBestAlternate() now refuses mult>1, but the chosen resolution
+		// still requires more bandwidth than mult=1 can carry. Dropping a
+		// resolution level frees up bandwidth so the stream actually recovers.
+		int32 maxLevel = _GetMaxResolutionLevel();
+		if (fCurrentResolutionLevel < maxLevel && !HasPendingReconfigRequest()) {
+			int32 targetLevel = fCurrentResolutionLevel + 1;
+			uint32 newWidth = 0, newHeight = 0;
+			_GetResolutionAtLevel(targetLevel, &newWidth, &newHeight);
+			if (newWidth > 0 && newHeight > 0) {
+				syslog(LOG_INFO, "UVCCamDevice: High-bandwidth failed - "
+					"falling back to %ux%u via worker thread\n",
+					newWidth, newHeight);
+				RequestResolutionChange(newWidth, newHeight);
+				fCurrentResolutionLevel = targetLevel;
+				fFallbackActive = true;
+				fLastFallbackTime = system_time();
+			}
+		} else {
+			syslog(LOG_INFO, "UVCCamDevice: High-bandwidth failed but already "
+				"at minimum resolution or reconfig pending - waiting\n");
+		}
 	}
 }
 
