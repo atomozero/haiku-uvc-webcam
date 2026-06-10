@@ -14,6 +14,8 @@
 #include <usb/USB_video.h>
 #include <turbojpeg.h>
 
+class BString;
+
 
 // Frame validation constants
 const size_t kMinMJPEGFrameSize = 1024;			// Frame < 1KB is corrupted
@@ -351,6 +353,19 @@ public:
 	virtual status_t			FillFrameBuffer(BBuffer *buffer,
 									bigtime_t *stamp = NULL);
 
+	// P3 Fase B: enumerate and switch between VideoStreaming interfaces.
+	// NumStreams() returns the count of VS interfaces detected during
+	// construction. GetStreamName(idx, out) writes a short human-readable
+	// label for the addon to use as flavor name. SelectStream(idx) switches
+	// the active stream by re-parsing the descriptors of the requested VS;
+	// returns B_BUSY if a stream is currently transferring, B_BAD_INDEX if
+	// the index is out of range, B_ERROR if the re-parse failed.
+			int32				NumStreams() const;
+			void				GetStreamName(int32 idx, BString* out) const;
+			status_t			SelectStream(int32 idx);
+			int32				ActiveStreamIndex() const
+									{ return fActiveStreamIdx; }
+
 
 	// PHASE 4: Override packet loss resolution fallback
 	virtual status_t			ReduceResolution();
@@ -427,6 +442,16 @@ private:
 									int32 width, int32 height) const;
 			const char*			_FrameBasedCodecName(
 									uvc_frame_based_codec codec) const;
+
+			// P3 Fase B helpers used by SelectStream(). _ResetStreamFormatState
+			// clears all per-stream format/frame state so a new VS interface
+			// can be parsed in. _ReparseVSInterface walks the class-specific
+			// descriptors of the given VS interface (by absolute USB interface
+			// index, as reported by BUSBInterface::Index()) and feeds them to
+			// _ParseVideoStreaming. Both rely on the active configuration
+			// being the UVC config (already arranged by the ctor).
+			void				_ResetStreamFormatState();
+			status_t			_ReparseVSInterface(uint32 ifaceIndex);
 
 			void				_AddProcessingParameter(BParameterGroup* group,
 									int32 index,

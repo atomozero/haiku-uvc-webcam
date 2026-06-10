@@ -5978,6 +5978,183 @@ UVCCamDevice::_FrameBasedCodecName(uvc_frame_based_codec codec) const
 }
 
 
+// P3 Fase B
+// ----------------------------------------------------------------------------
+
+int32
+UVCCamDevice::NumStreams() const
+{
+	return fVSStreams.CountItems();
+}
+
+
+void
+UVCCamDevice::GetStreamName(int32 idx, BString* out) const
+{
+	if (out == NULL)
+		return;
+	const uvc_vs_stream* s = (const uvc_vs_stream*)fVSStreams.ItemAt(idx);
+	if (s == NULL) {
+		out->SetTo("(invalid stream)");
+		return;
+	}
+	const char* kind = "Stream";
+	if (s->mjpeg_count > 0 && s->uncompressed_count > 0)
+		kind = "MJPEG+YUV";
+	else if (s->mjpeg_count > 0)
+		kind = "MJPEG";
+	else if (s->uncompressed_count > 0)
+		kind = "Uncompressed";
+	else if (s->frame_based_count > 0)
+		kind = "Encoded";
+	out->SetToFormat("Stream %d (%s, intf=%u)", (int)idx, kind,
+		(unsigned)s->interface_index);
+}
+
+
+void
+UVCCamDevice::_ResetStreamFormatState()
+{
+	for (int32 i = 0; i < fUncompressedFrames.CountItems(); i++)
+		delete (usb_video_frame_descriptor*)fUncompressedFrames.ItemAt(i);
+	fUncompressedFrames.MakeEmpty();
+	for (int32 i = 0; i < fMJPEGFrames.CountItems(); i++)
+		delete (usb_video_frame_descriptor*)fMJPEGFrames.ItemAt(i);
+	fMJPEGFrames.MakeEmpty();
+	for (int32 i = 0; i < fFrameBasedFrames.CountItems(); i++)
+		delete (uvc_frame_based_resolution*)fFrameBasedFrames.ItemAt(i);
+	fFrameBasedFrames.MakeEmpty();
+
+	fUncompressedFormatIndex = 0;
+	fUncompressedFrameIndex = 0;
+	fUncompressedPixelFormat = UVC_FMT_UNKNOWN;
+	fIsNV12 = false;
+	fDefaultUncompressedFrameIndex = 0;
+
+	fMJPEGFormatIndex = 0;
+	fMJPEGFrameIndex = 0;
+	fDefaultMJPEGFrameIndex = 0;
+
+	fFrameBasedCodec = UVC_CODEC_UNKNOWN;
+	fFrameBasedFormatIndex = 0;
+	fFrameBasedBitsPerPixel = 0;
+
+	fStillCaptureMethod = STILL_CAPTURE_NONE;
+	fTriggerSupport = false;
+	fTriggerUsage = false;
+
+	fNumFrameIntervals = 0;
+	fSelectedFrameIntervalIndex = 0;
+	fSortedMJPEGCount = 0;
+	fSortedUncompressedCount = 0;
+}
+
+
+status_t
+UVCCamDevice::_ReparseVSInterface(uint32 ifaceIndex)
+{
+	if (fDevice == NULL)
+		return B_NO_INIT;
+	const BUSBConfiguration* config = fDevice->ActiveConfiguration();
+	if (config == NULL)
+		return B_NO_INIT;
+	const BUSBInterface* target = NULL;
+	for (uint32 j = 0; j < config->CountInterfaces(); j++) {
+		const BUSBInterface* candidate = config->InterfaceAt(j);
+		if (candidate != NULL && candidate->Index() == ifaceIndex) {
+			target = candidate;
+			break;
+		}
+	}
+	if (target == NULL)
+		return B_BAD_INDEX;
+
+	uint8 buffer[1024];
+	usb_descriptor* generic = (usb_descriptor*)buffer;
+
+	for (uint32 k = 0; target->OtherDescriptorAt(k, generic, sizeof(buffer))
+			== B_OK; k++) {
+		if (generic->generic.descriptor_type
+				!= (USB_REQTYPE_CLASS | USB_DESCRIPTOR_INTERFACE))
+			continue;
+		_ParseVideoStreaming((const usbvc_class_descriptor*)generic,
+			generic->generic.length);
+	}
+
+	if (fUncompressedFrames.CountItems() == 0
+			&& fMJPEGFrames.CountItems() == 0) {
+		// Some firmwares only expose the class-specific descriptors on
+		// one of the bandwidth-allocating alternates.
+		for (uint32 alt = 0; alt < target->CountAlternates(); alt++) {
+			const BUSBInterface* alternate = target->AlternateAt(alt);
+			if (alternate == NULL)
+				continue;
+			for (uint32 k = 0; alternate->OtherDescriptorAt(k, generic,
+					sizeof(buffer)) == B_OK; k++) {
+				if (generic->generic.descriptor_type
+						!= (USB_REQTYPE_CLASS | USB_DESCRIPTOR_INTERFACE))
+					continue;
+				_ParseVideoStreaming(
+					(const usbvc_class_descriptor*)generic,
+					generic->generic.length);
+			}
+			if (fUncompressedFrames.CountItems() > 0
+					|| fMJPEGFrames.CountItems() > 0)
+				break;
+		}
+	}
+	return B_OK;
+}
+
+
+status_t
+UVCCamDevice::SelectStream(int32 idx)
+{
+	if (idx < 0 || idx >= fVSStreams.CountItems())
+		return B_BAD_INDEX;
+	if (atomic_get(&fTransferEnabled) != 0)
+		return B_BUSY;
+	if (idx == fActiveStreamIdx)
+		return B_OK;
+	const uvc_vs_stream* target
+		= (const uvc_vs_stream*)fVSStreams.ItemAt(idx);
+	if (target == NULL)
+		return B_BAD_INDEX;
+
+	syslog(LOG_INFO, "UVCCamDevice: SelectStream(%d): switching from "
+		"intf=%u to intf=%u\n",
+		(int)idx, (unsigned)fStreamingIndex,
+		(unsigned)target->interface_index);
+
+	_ResetStreamFormatState();
+	fStreamingIndex = target->interface_index;
+	fIsoIn = NULL;
+	fIsoMaxPacketSize = 0;
+	fCurrentVideoAlternate = 0;
+
+	status_t err = _ReparseVSInterface(target->interface_index);
+	if (err != B_OK) {
+		syslog(LOG_ERR, "UVCCamDevice: SelectStream(%d): reparse failed: %s\n",
+			(int)idx, strerror(err));
+		return err;
+	}
+
+	fActiveStreamIdx = idx;
+
+	// Decide MJPEG vs uncompressed exactly like the ctor would.
+	if (fMJPEGFrames.CountItems() > 0 && fJpegDecompressor != NULL)
+		fIsMJPEG = true;
+	else
+		fIsMJPEG = false;
+	_BuildSortedResolutionList();
+
+	// Reset the resolution selector to whatever the new stream advertises
+	// as default; the consumer can override later via AcceptVideoFrame.
+	fSelectedResolutionIndex = 0;
+	return B_OK;
+}
+
+
 size_t
 UVCCamDevice::_UncompressedFrameSize(uvc_uncompressed_format fmt,
 	int32 width, int32 height) const
