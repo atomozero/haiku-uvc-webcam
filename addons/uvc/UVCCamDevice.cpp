@@ -2548,8 +2548,24 @@ UVCCamDevice::_ProbeCommitFormat()
 	// Microdia) populated frame lists from a static table. Treat a missing
 	// header as UVC 1.0 (0x0100) — the safest assumption since UVC 1.0 has
 	// the smallest probe size (26 bytes) and does not require GET_LEN.
-	const uint16 uvcVersion = (fHeaderDescriptor != NULL)
+	uint16 uvcVersion = (fHeaderDescriptor != NULL)
 		? fHeaderDescriptor->version : 0x0100;
+
+	// P34: known firmwares advertise bcdUVC=0x0110 but actually only accept
+	// the 26-byte UVC 1.0 probe layout. Without this override the version
+	// guess picks 34 bytes, SET_CUR fails, the kProbeSizes sweep eventually
+	// finds 26 — but the user pays ~2 s of retry latency every Init.
+	const uint16 vid = fDevice->VendorID();
+	const uint16 pid = fDevice->ProductID();
+	const bool isLogitechUvc10Impostor =
+		vid == 0x046d && (pid == 0x0825 /* C270 */
+			|| pid == 0x081b /* C310 */);
+	if (isLogitechUvc10Impostor && uvcVersion > 0x0100) {
+		syslog(LOG_INFO, "UVCCamDevice: %04x:%04x advertises UVC 0x%04x "
+			"but uses the UVC 1.0 probe layout — forcing 26-byte probe\n",
+			vid, pid, uvcVersion);
+		uvcVersion = 0x0100;
+	}
 	size_t length = 0;
 	if (uvcVersion >= 0x0110) {
 		uint16 queriedLen = 0;
