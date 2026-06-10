@@ -2274,10 +2274,44 @@ UVCCamDevice::_ProbeCommitFormat()
 		}
 	}
 
-	// Determine initial probe/commit size based on UVC version
-	// UVC 1.0: 26 bytes, UVC 1.1+: 34 bytes, UVC 1.5: 48 bytes
-	// Some cameras don't follow the spec, so we try multiple sizes if needed
-	size_t length = fHeaderDescriptor->version > 0x100 ? 34 : 26;
+	// Probe/commit buffer: union the struct over a 64-byte raw region so the
+	// ControlTransfer length can exceed sizeof(usb_video_probe_and_commit_controls).
+	// UVC 1.5 probe is 48 bytes; some vendor firmwares advertise even larger
+	// payloads via GET_LEN. We zero-pad the trailing bytes — most encoder-side
+	// fields (bUsage, bBitDepthLuma, etc.) accept 0 as "use device default".
+	union probe_commit_buffer {
+		usb_video_probe_and_commit_controls fields;
+		uint8 raw[64];
+	};
+	probe_commit_buffer probeBuf;
+	memset(&probeBuf, 0, sizeof(probeBuf));
+	probeBuf.fields = request;
+
+	// Determine probe/commit length:
+	//   1. UVC 1.1+ GET_LEN query (the spec-correct way)
+	//   2. Fall back to a UVC-version guess
+	//   3. If SET_CUR fails, sweep a list of known vendor sizes (P19)
+	size_t length = 0;
+	if (fHeaderDescriptor->version >= 0x0110) {
+		uint16 queriedLen = 0;
+		size_t got = fDevice->ControlTransfer(
+			USB_REQTYPE_CLASS | USB_REQTYPE_INTERFACE_IN,
+			USB_VIDEO_RC_GET_LEN,
+			USB_VIDEO_VS_PROBE_CONTROL << 8,
+			fStreamingIndex, sizeof(queriedLen), &queriedLen);
+		if (got == sizeof(queriedLen)
+				&& queriedLen >= 22
+				&& queriedLen <= sizeof(probeBuf.raw)) {
+			length = queriedLen;
+			syslog(LOG_INFO, "UVC Probe: GET_LEN reports %zu bytes\n", length);
+		} else if (got > 0) {
+			syslog(LOG_INFO, "UVC Probe: GET_LEN returned %zu bytes "
+				"(value=%u out of range, falling back to version guess)\n",
+				got, queriedLen);
+		}
+	}
+	if (length == 0)
+		length = fHeaderDescriptor->version > 0x100 ? 34 : 26;
 
 	// Log what we're requesting
 	syslog(LOG_INFO, "UVC Probe request: format=%d frame=%d interval=%u (fIsMJPEG=%d)\n",
@@ -2289,7 +2323,15 @@ UVCCamDevice::_ProbeCommitFormat()
 	// Some cameras need multiple attempts before responding to control transfers.
 	// EHCI controller errors (0x00080248) often indicate timing issues that
 	// can be resolved with retries and increased delays.
-	static const size_t kProbeSizes[] = { 34, 26, 48, 22 };
+	//
+	// P19: extended kProbeSizes covers UVC 1.0 (22, 26), UVC 1.1 (34),
+	// UVC 1.5 (48) and the in-between values observed in vendor firmwares
+	// (28, 30, 32, 36, 38, 40, 44). Spec-conformant sizes are tried first.
+	static const size_t kProbeSizes[] = {
+		34, 26, 48,			// UVC 1.1, 1.0, 1.5
+		28, 30, 32, 36, 38, 40, 44,	// Vendor-extended (Microsoft H.264, Realtek)
+		22				// Pre-UVC-1.0 / very old firmwares
+	};
 	static const int kNumProbeSizes = sizeof(kProbeSizes) / sizeof(kProbeSizes[0]);
 	static const int kMaxRetries = 5;  // Increased retries per size for EHCI stability
 	static const bigtime_t kRetryDelays[] = { 100000, 200000, 300000, 400000, 500000 };  // 100-500ms delays
@@ -2310,7 +2352,7 @@ UVCCamDevice::_ProbeCommitFormat()
 
 		actualLength = fDevice->ControlTransfer(
 			USB_REQTYPE_CLASS | USB_REQTYPE_INTERFACE_OUT, USB_VIDEO_RC_SET_CUR,
-			USB_VIDEO_VS_PROBE_CONTROL << 8, fStreamingIndex, length, &request);
+			USB_VIDEO_VS_PROBE_CONTROL << 8, fStreamingIndex, length, &probeBuf);
 
 		if (actualLength == length) {
 			probeSuccess = true;
@@ -2337,7 +2379,7 @@ UVCCamDevice::_ProbeCommitFormat()
 
 				actualLength = fDevice->ControlTransfer(
 					USB_REQTYPE_CLASS | USB_REQTYPE_INTERFACE_OUT, USB_VIDEO_RC_SET_CUR,
-					USB_VIDEO_VS_PROBE_CONTROL << 8, fStreamingIndex, trySize, &request);
+					USB_VIDEO_VS_PROBE_CONTROL << 8, fStreamingIndex, trySize, &probeBuf);
 
 				if (actualLength == trySize) {
 					length = trySize;  // Use this size for subsequent operations
@@ -2351,7 +2393,7 @@ UVCCamDevice::_ProbeCommitFormat()
 	}
 
 	if (!probeSuccess) {
-		syslog(LOG_ERR, "UVC Probe SET_CUR failed with all sizes (26, 34, 48, 22)\n");
+		syslog(LOG_ERR, "UVC Probe SET_CUR failed with all known sizes\n");
 		syslog(LOG_ERR, "  Last attempt returned: %zd (expected: %zu)\n",
 			(ssize_t)actualLength, length);
 		return B_ERROR;
@@ -2361,11 +2403,12 @@ UVCCamDevice::_ProbeCommitFormat()
 	fProbeCommitSize = length;
 
 	// GET_CUR Probe (get negotiated values)
-	usb_video_probe_and_commit_controls response;
-	memset(&response, 0, sizeof(response));
+	probe_commit_buffer responseBuf;
+	memset(&responseBuf, 0, sizeof(responseBuf));
 	actualLength = fDevice->ControlTransfer(
 		USB_REQTYPE_CLASS | USB_REQTYPE_INTERFACE_IN, USB_VIDEO_RC_GET_CUR,
-		USB_VIDEO_VS_PROBE_CONTROL << 8, fStreamingIndex, length, &response);
+		USB_VIDEO_VS_PROBE_CONTROL << 8, fStreamingIndex, length, &responseBuf);
+	usb_video_probe_and_commit_controls& response = responseBuf.fields;
 
 	// Log negotiated values for debugging
 	syslog(LOG_INFO, "UVC Probe negotiated: format=%d frame=%d interval=%u\n",
@@ -2395,7 +2438,7 @@ UVCCamDevice::_ProbeCommitFormat()
 	// SET_CUR Commit with negotiated parameters
 	actualLength = fDevice->ControlTransfer(
 		USB_REQTYPE_CLASS | USB_REQTYPE_INTERFACE_OUT, USB_VIDEO_RC_SET_CUR,
-		USB_VIDEO_VS_COMMIT_CONTROL << 8, fStreamingIndex, length, &response);
+		USB_VIDEO_VS_COMMIT_CONTROL << 8, fStreamingIndex, length, &responseBuf);
 	if (actualLength != length) {
 		syslog(LOG_ERR, "UVC Commit failed: expected %zu, got %zu\n", length, actualLength);
 		return B_ERROR;
