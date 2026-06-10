@@ -643,7 +643,12 @@ private:
 			// Frame rate selection (P2 Feature)
 			int32				fSelectedFrameIntervalIndex;  // Index into frame's discrete_frame_intervals
 			int32				fFrameRateParameterID;        // Parameter ID for fps selector
-			uint32				fCurrentFrameIntervals[8];    // Copy of available intervals (max 8)
+			// P14: UVC spec admits up to 255 discrete intervals per frame.
+			// 32 covers Logitech BRIO (9 fps), industrial cameras (12+) and
+			// stays well within the spec's 255 ceiling. Bump kMaxFrameIntervals
+			// if a camera in the wild advertises more.
+			static const uint32 kMaxFrameIntervals = 32;
+			uint32				fCurrentFrameIntervals[kMaxFrameIntervals];
 			uint8				fNumFrameIntervals;           // Number of intervals available
 			uint32				fSelectedFrameInterval;       // Actual interval value in 100ns units
 

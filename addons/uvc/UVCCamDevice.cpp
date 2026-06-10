@@ -4116,8 +4116,8 @@ UVCCamDevice::AddParameters(BParameterGroup* group, int32& index)
 		if (curFrame != NULL && curFrame->frame_interval_type > 0) {
 			fFrameRateParameterID = index + 16;
 			fNumFrameIntervals = curFrame->frame_interval_type;
-			if (fNumFrameIntervals > 8)
-				fNumFrameIntervals = 8;
+			if (fNumFrameIntervals > kMaxFrameIntervals)
+				fNumFrameIntervals = kMaxFrameIntervals;
 
 			for (uint8 k = 0; k < fNumFrameIntervals; k++)
 				fCurrentFrameIntervals[k] =
@@ -4611,8 +4611,8 @@ UVCCamDevice::SetParameterValue(int32 id, bigtime_t when, const void* value,
 					/* P2 Feature: Update available frame intervals for new resolution */
 					if (frameDesc->frame_interval_type > 0) {
 						fNumFrameIntervals = frameDesc->frame_interval_type;
-						if (fNumFrameIntervals > 8)
-							fNumFrameIntervals = 8;
+						if (fNumFrameIntervals > kMaxFrameIntervals)
+							fNumFrameIntervals = kMaxFrameIntervals;
 
 						for (uint8 k = 0; k < fNumFrameIntervals; k++) {
 							fCurrentFrameIntervals[k] = frameDesc->discrete_frame_intervals[k];
