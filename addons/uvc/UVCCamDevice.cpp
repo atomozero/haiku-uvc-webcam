@@ -1359,12 +1359,38 @@ UVCCamDevice::_ParseVideoStreaming(const usbvc_class_descriptor* _descriptor,
 		{
 			const usb_video_frame_descriptor* descriptor
 				= (const usb_video_frame_descriptor*)_descriptor;
-			if (_descriptor->descriptorSubtype == USB_VIDEO_VS_FRAME_UNCOMPRESSED) {
-				printf("VS_FRAME_UNCOMPRESSED:");
+
+			// P10: reject descriptors whose values are clearly garbage so
+			// later code (probe/commit, FillFrameBuffer) doesn't allocate
+			// huge buffers or trigger asserts. Skipping the AddItem is
+			// safe: a camera that advertises corrupt data here can still
+			// expose other usable resolutions on the same VS interface.
+			const uint32 kMaxReasonableFrameSize = 50 * 1024 * 1024; // 50MB
+			const uint16 kMaxReasonableDim = 8192;
+			const bool descSane = (descriptor->width > 0
+				&& descriptor->height > 0
+				&& descriptor->width <= kMaxReasonableDim
+				&& descriptor->height <= kMaxReasonableDim
+				&& descriptor->max_video_frame_buffer_size
+					<= kMaxReasonableFrameSize);
+
+			const char* tag = (_descriptor->descriptorSubtype
+					== USB_VIDEO_VS_FRAME_UNCOMPRESSED)
+				? "VS_FRAME_UNCOMPRESSED" : "VS_FRAME_MJPEG";
+			printf("%s:", tag);
+
+			if (!descSane) {
+				syslog(LOG_WARNING,
+					"UVCCamDevice: rejecting %s descriptor: %ux%u maxbuf=%"
+					B_PRIu32 " (camera %04x:%04x — corrupted descriptor?)\n",
+					tag, descriptor->width, descriptor->height,
+					descriptor->max_video_frame_buffer_size,
+					fDevice->VendorID(), fDevice->ProductID());
+			} else if (_descriptor->descriptorSubtype
+					== USB_VIDEO_VS_FRAME_UNCOMPRESSED) {
 				fUncompressedFrames.AddItem(
 					new usb_video_frame_descriptor(*descriptor));
 			} else {
-				printf("VS_FRAME_MJPEG:");
 				fMJPEGFrames.AddItem(new usb_video_frame_descriptor(*descriptor));
 			}
 			printf("\tbFrameIdx=%d,stillsupported=%s,"
@@ -1376,13 +1402,8 @@ UVCCamDevice::_ParseVideoStreaming(const usbvc_class_descriptor* _descriptor,
 				descriptor->min_bit_rate, descriptor->max_bit_rate,
 				descriptor->max_video_frame_buffer_size);
 
-			// Validate frame buffer size to prevent excessive memory allocation
-			const uint32 MAX_REASONABLE_FRAME_SIZE = 50 * 1024 * 1024; // 50MB
-			if (descriptor->max_video_frame_buffer_size > MAX_REASONABLE_FRAME_SIZE) {
-				fprintf(stderr, "WARNING: Frame buffer size (%" B_PRIu32 " bytes) exceeds reasonable limit (%u bytes)\n",
-					descriptor->max_video_frame_buffer_size, MAX_REASONABLE_FRAME_SIZE);
-				fprintf(stderr, "         This may indicate corrupted USB descriptors.\n");
-			}
+			if (!descSane)
+				break;
 
 			printf("\tdefault frame interval: %" B_PRIu32 ", #intervals(0=cont): %d\n",
 				descriptor->default_frame_interval, descriptor->frame_interval_type);
