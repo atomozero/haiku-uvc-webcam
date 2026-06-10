@@ -977,8 +977,16 @@ CamDevice::DataPumpThread()
 		//
 		// Strategy: Start with buffer size from _SelectBestAlternate (conservative)
 		// If transfers succeed, we could grow. If they fail, we shrink further.
+		//
+		// P25 mitigation: Haiku's BUSBInterface::IsochronousTransfer is
+		// blocking and supports only one transfer in flight at a time
+		// (unlike Linux uvcvideo's URB queues). Each kernel round-trip
+		// loses the microframes in between, so we batch as many packets as
+		// possible per call to minimise the gap. 64 microframes = ~8 ms at
+		// USB 2.0 HS rate, well below a 30 fps frame interval (~33 ms).
+		// A proper fix requires queueing multiple transfers in the kernel.
 
-		const int kMaxPacketDescriptors = 32;  // Array size (max possible)
+		const int kMaxPacketDescriptors = 64;  // Array size (max possible)
 		const int kMinPacketDescriptors = 2;   // Minimum viable
 		usb_iso_packet_descriptor packetDescriptors[kMaxPacketDescriptors];
 

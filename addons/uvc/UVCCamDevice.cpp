@@ -3117,10 +3117,16 @@ UVCCamDevice::_SelectBestAlternate()
 	fIsoIn = streaming->EndpointAt(endpointIndex);
 	fIsoMaxPacketSize = bestBandwidth;
 
-	// Buffer size must be exactly packetSize * numPackets for EHCI alignment
-	// OPTIMIZATION: Use 32 packets (max) to reduce transfer overhead and improve
-	// timing - fewer transfers = less chance of missing USB bus frames
-	const uint32 kInitialPackets = 32;
+	// Buffer size must be exactly packetSize * numPackets for EHCI alignment.
+	//
+	// P25 mitigation: IsochronousTransfer is synchronous on Haiku — every
+	// completion is followed by a user-space round-trip before the next
+	// transfer can start, and microframes that arrive in that gap are lost.
+	// Larger batches mean fewer gaps. 64 packets/batch matches the new
+	// kMaxPacketDescriptors limit in CamDevice::DataPumpThread, giving the
+	// pump ~8 ms of headroom per batch at USB 2.0 high speed (well under
+	// the 33 ms frame interval at 30 fps).
+	const uint32 kInitialPackets = 64;
 	uint32 requiredBufferSize = fIsoMaxPacketSize * kInitialPackets;
 
 	if (requiredBufferSize != fBufferLen || fBuffer == NULL) {
