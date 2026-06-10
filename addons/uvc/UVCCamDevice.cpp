@@ -781,13 +781,14 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 				printf("UVCCamDevice: Total frames found: uncompressed=%d, mjpeg=%d\n",
 					(int)fUncompressedFrames.CountItems(), (int)fMJPEGFrames.CountItems());
 
-				for (uint32 k = 0; k < interface->CountEndpoints(); k++) {
-					const BUSBEndpoint* e = interface->EndpointAt(k);  // FIX BUG 1: era 'i', corretto in 'k'
-					if (e && e->IsIsochronous() && e->IsInput()) {
-						fIsoIn = e;
-						break;
-					}
-				}
+				// P4: the VS base interface (alternate 0) is the
+				// zero-bandwidth alternate, which by UVC spec has zero
+				// endpoints. The previous scan here always left fIsoIn
+				// either NULL or pointing into a stale alternate, but the
+				// real endpoint is later picked by _SelectBestAlternate()
+				// on the alt we actually switch to. The dead loop has
+				// been removed; fIsoIn is initialised to NULL via the
+				// ctor and assigned in _SelectBestAlternate().
 			} else if (interface->Class() == USB_AUDIO_DEVICE_CLASS
 				&& interface->Subclass() == USB_AUDIO_INTERFACE_AUDIOCONTROL) {
 				// Found Audio Control interface
