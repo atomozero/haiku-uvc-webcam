@@ -22,6 +22,20 @@ const uint32 kMaxConsecutiveBadFrames = 10;		// Report after N bad frames
 const uint32 kFrameValidationReportInterval = 30;	// Seconds between stats reports
 
 
+// UVC Uncompressed payload formats (USB Video Payload Uncompressed, Table 2-1)
+// GUIDs share the suffix 0000-0010-8000-00AA00389B71; the FourCC prefix differs.
+enum uvc_uncompressed_format {
+	UVC_FMT_UNKNOWN = 0,
+	UVC_FMT_YUY2,			// YUYV - YUV 4:2:2 packed (Y0 U Y1 V)
+	UVC_FMT_UYVY,			// YUV 4:2:2 packed (U Y0 V Y1)
+	UVC_FMT_NV12,			// YUV 4:2:0 planar, interleaved UV
+	UVC_FMT_NV21,			// YUV 4:2:0 planar, interleaved VU
+	UVC_FMT_YV12,			// YUV 4:2:0 planar Y-V-U
+	UVC_FMT_I420,			// YUV 4:2:0 planar Y-U-V (also IYUV)
+	UVC_FMT_GREY,			// 8-bit monochrome (Y800/GREY/Y8)
+};
+
+
 // =============================================================================
 // USB Host Controller and Speed Detection (XHCI Optimization Support)
 // =============================================================================
@@ -342,12 +356,37 @@ private:
 			void 				_ConvertYUY2toRGB32(unsigned char *dst,
 									unsigned char *src, size_t srcSize,
 									int32 width, int32 height);
+			void				_ConvertUYVYtoRGB32(unsigned char* dst,
+									const unsigned char* src, size_t srcSize,
+									int32 width, int32 height);
 			void				_ConvertNV12toRGB32(unsigned char* dst,
 									const unsigned char* src, size_t srcSize,
+									int32 width, int32 height);
+			void				_ConvertNV21toRGB32(unsigned char* dst,
+									const unsigned char* src, size_t srcSize,
+									int32 width, int32 height);
+			void				_ConvertI420toRGB32(unsigned char* dst,
+									const unsigned char* src, size_t srcSize,
+									int32 width, int32 height);
+			void				_ConvertYV12toRGB32(unsigned char* dst,
+									const unsigned char* src, size_t srcSize,
+									int32 width, int32 height);
+			void				_ConvertGREYtoRGB32(unsigned char* dst,
+									const unsigned char* src, size_t srcSize,
+									int32 width, int32 height);
+			void				_ConvertPlanar420toRGB32(unsigned char* dst,
+									const unsigned char* yPlane,
+									const unsigned char* uPlane,
+									const unsigned char* vPlane,
 									int32 width, int32 height);
 			void				_DecompressMJPEGtoRGB32(unsigned char* dst,
 									const unsigned char* src, size_t srcSize,
 									int32 width, int32 height);
+			const char*			_UncompressedFormatName(
+									uvc_uncompressed_format fmt) const;
+			size_t				_UncompressedFrameSize(
+									uvc_uncompressed_format fmt,
+									int32 width, int32 height) const;
 
 			void				_AddProcessingParameter(BParameterGroup* group,
 									int32 index,
@@ -506,7 +545,8 @@ private:
 			// MJPEG decompression support
 			tjhandle			fJpegDecompressor;
 			bool				fIsMJPEG;
-			bool				fIsNV12;		// NV12 (YUV 4:2:0) format
+			bool				fIsNV12;		// Back-compat: true when fUncompressedPixelFormat == UVC_FMT_NV12
+			uvc_uncompressed_format fUncompressedPixelFormat;
 			bool				fMicrodiaQuirk;	// Microdia 0c45:6409 stride quirk
 
 			// FIX BUG 6: Contatori diagnostici per istanza (non statici)

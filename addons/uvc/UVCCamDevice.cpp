@@ -214,6 +214,49 @@ usbvc_guid kYUY2Guid = {0x59, 0x55, 0x59, 0x32, 0x00, 0x00, 0x10, 0x00, 0x80,
 	0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71};
 usbvc_guid kNV12Guid = {0x4e, 0x56, 0x31, 0x32, 0x00, 0x00, 0x10, 0x00, 0x80,
 	0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71};
+// UYVY: same as YUY2 but byte order is U Y0 V Y1
+usbvc_guid kUYVYGuid = {0x55, 0x59, 0x56, 0x59, 0x00, 0x00, 0x10, 0x00, 0x80,
+	0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71};
+// NV21: same as NV12 but VU interleaved instead of UV
+usbvc_guid kNV21Guid = {0x4e, 0x56, 0x32, 0x31, 0x00, 0x00, 0x10, 0x00, 0x80,
+	0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71};
+// YV12: planar Y-V-U (4:2:0)
+usbvc_guid kYV12Guid = {0x59, 0x56, 0x31, 0x32, 0x00, 0x00, 0x10, 0x00, 0x80,
+	0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71};
+// I420 / IYUV: planar Y-U-V (4:2:0)
+usbvc_guid kI420Guid = {0x49, 0x34, 0x32, 0x30, 0x00, 0x00, 0x10, 0x00, 0x80,
+	0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71};
+usbvc_guid kIYUVGuid = {0x49, 0x59, 0x55, 0x56, 0x00, 0x00, 0x10, 0x00, 0x80,
+	0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71};
+// GREY / Y800: 8-bit monochrome
+usbvc_guid kGREYGuid = {0x47, 0x52, 0x45, 0x59, 0x00, 0x00, 0x10, 0x00, 0x80,
+	0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71};
+usbvc_guid kY800Guid = {0x59, 0x38, 0x30, 0x30, 0x00, 0x00, 0x10, 0x00, 0x80,
+	0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71};
+
+
+// Identify uncompressed format from the GUID field of a UVC format descriptor.
+static uvc_uncompressed_format
+identify_uncompressed_format(const usbvc_guid guid)
+{
+	if (!memcmp(guid, kYUY2Guid, sizeof(usbvc_guid)))
+		return UVC_FMT_YUY2;
+	if (!memcmp(guid, kUYVYGuid, sizeof(usbvc_guid)))
+		return UVC_FMT_UYVY;
+	if (!memcmp(guid, kNV12Guid, sizeof(usbvc_guid)))
+		return UVC_FMT_NV12;
+	if (!memcmp(guid, kNV21Guid, sizeof(usbvc_guid)))
+		return UVC_FMT_NV21;
+	if (!memcmp(guid, kYV12Guid, sizeof(usbvc_guid)))
+		return UVC_FMT_YV12;
+	if (!memcmp(guid, kI420Guid, sizeof(usbvc_guid))
+			|| !memcmp(guid, kIYUVGuid, sizeof(usbvc_guid)))
+		return UVC_FMT_I420;
+	if (!memcmp(guid, kGREYGuid, sizeof(usbvc_guid))
+			|| !memcmp(guid, kY800Guid, sizeof(usbvc_guid)))
+		return UVC_FMT_GREY;
+	return UVC_FMT_UNKNOWN;
+}
 
 
 // =============================================================================
@@ -261,16 +304,20 @@ yuv_rgb_lookup_tables::Initialize()
 static void
 print_guid(const usbvc_guid guid)
 {
-	if (!memcmp(guid, kYUY2Guid, sizeof(usbvc_guid)))
-		printf("YUY2");
-	else if (!memcmp(guid, kNV12Guid, sizeof(usbvc_guid)))
-		printf("NV12");
-	else {
-		printf("%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:"
-			"%02x:%02x:%02x:%02x", guid[0], guid[1], guid[2], guid[3], guid[4],
-			guid[5], guid[6], guid[7], guid[8], guid[9], guid[10], guid[11],
-			guid[12], guid[13], guid[14], guid[15]);
+	switch (identify_uncompressed_format(guid)) {
+		case UVC_FMT_YUY2: printf("YUY2"); return;
+		case UVC_FMT_UYVY: printf("UYVY"); return;
+		case UVC_FMT_NV12: printf("NV12"); return;
+		case UVC_FMT_NV21: printf("NV21"); return;
+		case UVC_FMT_YV12: printf("YV12"); return;
+		case UVC_FMT_I420: printf("I420"); return;
+		case UVC_FMT_GREY: printf("GREY"); return;
+		default: break;
 	}
+	printf("%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:"
+		"%02x:%02x:%02x:%02x", guid[0], guid[1], guid[2], guid[3], guid[4],
+		guid[5], guid[6], guid[7], guid[8], guid[9], guid[10], guid[11],
+		guid[12], guid[13], guid[14], guid[15]);
 }
 
 
@@ -289,6 +336,7 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 	fJpegDecompressor(NULL),
 	fIsMJPEG(false),
 	fIsNV12(false),
+	fUncompressedPixelFormat(UVC_FMT_UNKNOWN),
 	fMicrodiaQuirk(false),
 	// FIX BUG 6: Inizializza contatori diagnostici per istanza
 	fFillFrameCount(0),
@@ -811,12 +859,14 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 			syslog(LOG_INFO, "UVCCamDevice: Microdia 0c45:6409 quirk enabled (352-pixel stride)\n");
 		}
 
+		const char* uncompressedName
+			= _UncompressedFormatName(fUncompressedPixelFormat);
 		syslog(LOG_INFO, "UVCCamDevice: Init OK - ctrl=%u stream=%u frames=%d+%d format=%s\n",
 			fControlIndex, fStreamingIndex,
 			(int)fUncompressedFrames.CountItems(), (int)fMJPEGFrames.CountItems(),
-			fIsMJPEG ? "MJPEG" : "YUY2");
-		syslog(LOG_INFO, "UVCCamDevice: Format indices: MJPEG=%d, Uncompressed=%d\n",
-			fMJPEGFormatIndex, fUncompressedFormatIndex);
+			fIsMJPEG ? "MJPEG" : uncompressedName);
+		syslog(LOG_INFO, "UVCCamDevice: Format indices: MJPEG=%d, Uncompressed=%d (%s)\n",
+			fMJPEGFormatIndex, fUncompressedFormatIndex, uncompressedName);
 
 		// Build sorted resolution list for proper fallback ordering
 		// (level 0 = highest, level N = lowest)
@@ -825,7 +875,7 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 		// Log frame indices for current format (raw USB order, for debugging)
 		BList* frameList = fIsMJPEG ? &fMJPEGFrames : &fUncompressedFrames;
 		syslog(LOG_DEBUG, "UVCCamDevice: Raw %s frame list (%d entries):\n",
-			fIsMJPEG ? "MJPEG" : "YUY2", (int)frameList->CountItems());
+			fIsMJPEG ? "MJPEG" : uncompressedName, (int)frameList->CountItems());
 		for (int32 i = 0; i < frameList->CountItems(); i++) {
 			const usb_video_frame_descriptor* desc =
 				(const usb_video_frame_descriptor*)frameList->ItemAt(i);
@@ -951,7 +1001,35 @@ UVCCamDevice::_ParseVideoStreaming(const usbvc_class_descriptor* _descriptor,
 		{
 			const usbvc_format_descriptor* descriptor
 				= (const usbvc_format_descriptor*)_descriptor;
-			fUncompressedFormatIndex = descriptor->formatIndex;
+			uvc_uncompressed_format detected
+				= identify_uncompressed_format(descriptor->uncompressed.format);
+
+			// Format selection across multiple uncompressed descriptors:
+			//   - First format wins if no recognized format has been seen yet
+			//   - Once a recognized format is selected, only switch to a
+			//     "more preferred" recognized format (preference order:
+			//     YUY2 > UYVY > NV12 > NV21 > I420 > YV12 > GREY).
+			// This avoids being trapped on an UNKNOWN format when the camera
+			// also advertises a supported one.
+			auto preferenceRank = [](uvc_uncompressed_format f) -> int {
+				switch (f) {
+					case UVC_FMT_YUY2: return 7;
+					case UVC_FMT_UYVY: return 6;
+					case UVC_FMT_NV12: return 5;
+					case UVC_FMT_NV21: return 4;
+					case UVC_FMT_I420: return 3;
+					case UVC_FMT_YV12: return 2;
+					case UVC_FMT_GREY: return 1;
+					default: return 0;
+				}
+			};
+			if (fUncompressedPixelFormat == UVC_FMT_UNKNOWN
+					|| preferenceRank(detected)
+						> preferenceRank(fUncompressedPixelFormat)) {
+				fUncompressedPixelFormat = detected;
+				fUncompressedFormatIndex = descriptor->formatIndex;
+				fIsNV12 = (detected == UVC_FMT_NV12);
+			}
 			printf("VS_FORMAT_UNCOMPRESSED:\tbFormatIdx=%d,#frmdesc=%d,guid=",
 				descriptor->formatIndex, descriptor->numFrameDescriptors);
 			print_guid(descriptor->uncompressed.format);
@@ -977,10 +1055,10 @@ UVCCamDevice::_ParseVideoStreaming(const usbvc_class_descriptor* _descriptor,
 			if (descriptor->uncompressed.copyProtect)
 				printf("\tRestrict duplication\n");
 
-			// Detect NV12 format (YUV 4:2:0 planar)
-			if (!memcmp(descriptor->uncompressed.format, kNV12Guid, sizeof(usbvc_guid))) {
-				fIsNV12 = true;
-				printf("\tDetected NV12 (YUV 4:2:0) format\n");
+			if (fUncompressedPixelFormat != UVC_FMT_UNKNOWN
+					&& descriptor->formatIndex == fUncompressedFormatIndex) {
+				printf("\tSelected uncompressed format: %s\n",
+					_UncompressedFormatName(fUncompressedPixelFormat));
 			}
 			break;
 		}
@@ -1677,9 +1755,14 @@ UVCCamDevice::AcceptVideoFrame(uint32& width, uint32& height)
 					((UVCDeframer*)fDeframer)->SetExpectedFrameSize(0);
 			} else {
 				fUncompressedFrameIndex = descriptor->frame_index;
-				// Set expected frame size for YUY2
-				if (fDeframer)
-					((UVCDeframer*)fDeframer)->SetExpectedFrameSize(width * height * 2);
+				// Set expected frame size based on the uncompressed pixel format.
+				// 4:2:2 packed (YUY2/UYVY) = 2 bytes/pixel; 4:2:0 planar
+				// (NV12/NV21/I420/YV12) = 1.5 bytes/pixel; GREY = 1 byte/pixel.
+				if (fDeframer) {
+					size_t frameBytes = _UncompressedFrameSize(
+						fUncompressedPixelFormat, width, height);
+					((UVCDeframer*)fDeframer)->SetExpectedFrameSize(frameBytes);
+				}
 			}
 
 			// Update current resolution level for correct fallback direction
@@ -3627,23 +3710,25 @@ UVCCamDevice::AddParameters(BParameterGroup* group, int32& index)
 				ledParam->AddItem(1, "On");
 			}
 
-			// Probe each XU selector to discover available controls
-			// UVC GET_INFO returns a bitmap: bit 0 = GET supported,
-			// bit 1 = SET supported. We only expose readable controls.
+			// Probe XU selectors to discover available controls.
+			// Skip the entire unit if the first selector fails,
+			// to avoid hanging on unresponsive Extension Units.
+			bool xuResponds = false;
 			for (uint8 sel = 1; sel <= xu->num_controls; sel++) {
 				uint8 info = 0;
-				if (_XUGetInfo(xu->unit_id, sel, &info) != B_OK)
+				if (_XUGetInfo(xu->unit_id, sel, &info) != B_OK) {
+					if (!xuResponds)
+						break;	// first probe failed, skip this XU
 					continue;
+				}
+				xuResponds = true;
 				if ((info & 0x01) == 0)
-					continue;	// not readable
+					continue;
 
-				// Try GET_CUR to see if this selector responds
-				uint8 probe[64];
-				memset(probe, 0, sizeof(probe));
+				uint8 probe[64] = {};
 				if (_XUGetCur(xu->unit_id, sel, probe, 1) != B_OK)
 					continue;
 
-				// Log discovered control
 				syslog(LOG_INFO, "UVCCamDevice: XU[%d] sel=%d info=0x%02x "
 					"cur=0x%02x %s\n",
 					xu->unit_id, sel, info, probe[0],
@@ -3995,8 +4080,11 @@ UVCCamDevice::SetParameterValue(int32 id, bigtime_t when, const void* value,
 					} else {
 						fUncompressedFrameIndex = frameDesc->frame_index;
 						if (fDeframer) {
+							size_t frameBytes = _UncompressedFrameSize(
+								fUncompressedPixelFormat,
+								frameDesc->width, frameDesc->height);
 							((UVCDeframer*)fDeframer)->SetExpectedFrameSize(
-								frameDesc->width * frameDesc->height * 2);
+								frameBytes);
 						}
 					}
 
@@ -4557,94 +4645,55 @@ UVCCamDevice::FillFrameBuffer(BBuffer* buffer, bigtime_t* stamp)
 			if (validation == FRAME_VALID) {
 				_CacheValidFrame((const uint8*)f->Buffer(), f->BufferLength(), w, h);
 			}
-		} else if (fIsNV12) {
-			// NV12 (YUV 4:2:0 planar) conversion
-			size_t expectedNV12 = (size_t)w * h * 3 / 2;  // Y plane + UV plane (half size)
-			size_t actualNV12 = f->BufferLength();
-
-			if (actualNV12 < expectedNV12) {
-				static int32 sIncompleteNV12 = 0;
-				if (++sIncompleteNV12 <= 20 || (sIncompleteNV12 % 100) == 0)
-					syslog(LOG_WARNING, "FillFrameBuffer: Incomplete NV12 #%d: %zu/%zu bytes (%.1f%%)\n",
-						(int)sIncompleteNV12, actualNV12, expectedNV12,
-						100.0f * actualNV12 / expectedNV12);
-			}
-
-			// DEBUG: Log first bytes of NV12 frame
-			static int32 sNV12Debug = 0;
-			if (++sNV12Debug <= 5) {
-				const uint8* nv12Data = (const uint8*)f->Buffer();
-				syslog(LOG_INFO, "NV12 frame #%d: size=%zu expected=%zu w=%d h=%d\n",
-					(int)sNV12Debug, actualNV12, expectedNV12, (int)w, (int)h);
-				syslog(LOG_INFO, "NV12 Y plane first 16 bytes: %02x %02x %02x %02x %02x %02x %02x %02x "
-					"%02x %02x %02x %02x %02x %02x %02x %02x\n",
-					nv12Data[0], nv12Data[1], nv12Data[2], nv12Data[3],
-					nv12Data[4], nv12Data[5], nv12Data[6], nv12Data[7],
-					nv12Data[8], nv12Data[9], nv12Data[10], nv12Data[11],
-					nv12Data[12], nv12Data[13], nv12Data[14], nv12Data[15]);
-				// Check UV plane start
-				size_t uvOffset = (size_t)w * h;
-				if (actualNV12 > uvOffset + 8) {
-					syslog(LOG_INFO, "NV12 UV plane (offset %zu): %02x %02x %02x %02x %02x %02x %02x %02x\n",
-						uvOffset, nv12Data[uvOffset], nv12Data[uvOffset+1],
-						nv12Data[uvOffset+2], nv12Data[uvOffset+3],
-						nv12Data[uvOffset+4], nv12Data[uvOffset+5],
-						nv12Data[uvOffset+6], nv12Data[uvOffset+7]);
-				}
-			}
-
-			_ConvertNV12toRGB32(dst,
-				(unsigned char*)f->Buffer(), actualNV12, w, h);
-
-			// Cache valid frames
-			if (validation == FRAME_VALID) {
-				_CacheValidFrame((const uint8*)f->Buffer(), f->BufferLength(), w, h);
-			}
 		} else {
-			// YUY2 (YUV 4:2:2 packed) - default uncompressed format
-			// Check for incomplete YUY2 data
-			size_t expectedYUY2 = (size_t)w * h * 2;
-			size_t actualYUY2 = f->BufferLength();
+			// Uncompressed payload: dispatch on the detected pixel format.
+			// UVC_FMT_UNKNOWN falls through to YUY2 for backwards compatibility
+			// with devices whose GUID is not (yet) recognized.
+			const unsigned char* srcData = (const unsigned char*)f->Buffer();
+			size_t actualSize = f->BufferLength();
+			size_t expectedSize = _UncompressedFrameSize(
+				fUncompressedPixelFormat, w, h);
 
-			if (actualYUY2 < expectedYUY2) {
-				// Log incomplete frame
-				static int32 sIncompleteYUY2 = 0;
-				if (++sIncompleteYUY2 <= 20 || (sIncompleteYUY2 % 100) == 0)
-					syslog(LOG_WARNING, "FillFrameBuffer: Incomplete YUY2 #%d: %zu/%zu bytes (%.1f%%)\n",
-						(int)sIncompleteYUY2, actualYUY2, expectedYUY2,
-						100.0f * actualYUY2 / expectedYUY2);
+			if (actualSize < expectedSize) {
+				static int32 sIncomplete = 0;
+				if (++sIncomplete <= 20 || (sIncomplete % 100) == 0)
+					syslog(LOG_WARNING,
+						"FillFrameBuffer: Incomplete %s #%d: %zu/%zu bytes (%.1f%%)\n",
+						_UncompressedFormatName(fUncompressedPixelFormat),
+						(int)sIncomplete, actualSize, expectedSize,
+						100.0f * actualSize / expectedSize);
 			}
 
-			// DEBUG: Log first bytes of YUY2 frame to check format
-			static int32 sYUY2Debug = 0;
-			if (++sYUY2Debug <= 5) {
-				const uint8* yuy2Data = (const uint8*)f->Buffer();
-				syslog(LOG_INFO, "YUY2 frame #%d: size=%zu expected=%zu w=%d h=%d\n",
-					(int)sYUY2Debug, actualYUY2, expectedYUY2, (int)w, (int)h);
-				syslog(LOG_INFO, "YUY2 first 16 bytes: %02x %02x %02x %02x %02x %02x %02x %02x "
-					"%02x %02x %02x %02x %02x %02x %02x %02x\n",
-					yuy2Data[0], yuy2Data[1], yuy2Data[2], yuy2Data[3],
-					yuy2Data[4], yuy2Data[5], yuy2Data[6], yuy2Data[7],
-					yuy2Data[8], yuy2Data[9], yuy2Data[10], yuy2Data[11],
-					yuy2Data[12], yuy2Data[13], yuy2Data[14], yuy2Data[15]);
-				// Check row 2 start (offset = w*2 = 640 for 320 width)
-				size_t row2Offset = (size_t)w * 2;
-				if (actualYUY2 > row2Offset + 16) {
-					syslog(LOG_INFO, "YUY2 row2 (offset %zu): %02x %02x %02x %02x %02x %02x %02x %02x\n",
-						row2Offset, yuy2Data[row2Offset], yuy2Data[row2Offset+1],
-						yuy2Data[row2Offset+2], yuy2Data[row2Offset+3],
-						yuy2Data[row2Offset+4], yuy2Data[row2Offset+5],
-						yuy2Data[row2Offset+6], yuy2Data[row2Offset+7]);
-				}
+			switch (fUncompressedPixelFormat) {
+				case UVC_FMT_UYVY:
+					_ConvertUYVYtoRGB32(dst, srcData, actualSize, w, h);
+					break;
+				case UVC_FMT_NV12:
+					_ConvertNV12toRGB32(dst, (unsigned char*)srcData,
+						actualSize, w, h);
+					break;
+				case UVC_FMT_NV21:
+					_ConvertNV21toRGB32(dst, srcData, actualSize, w, h);
+					break;
+				case UVC_FMT_I420:
+					_ConvertI420toRGB32(dst, srcData, actualSize, w, h);
+					break;
+				case UVC_FMT_YV12:
+					_ConvertYV12toRGB32(dst, srcData, actualSize, w, h);
+					break;
+				case UVC_FMT_GREY:
+					_ConvertGREYtoRGB32(dst, srcData, actualSize, w, h);
+					break;
+				case UVC_FMT_YUY2:
+				case UVC_FMT_UNKNOWN:
+				default:
+					_ConvertYUY2toRGB32(dst, (unsigned char*)srcData,
+						actualSize, w, h);
+					break;
 			}
 
-			_ConvertYUY2toRGB32(dst,
-				(unsigned char*)f->Buffer(), actualYUY2, w, h);
-
-			// Cache valid frames
-			if (validation == FRAME_VALID) {
-				_CacheValidFrame((const uint8*)f->Buffer(), f->BufferLength(), w, h);
-			}
+			if (validation == FRAME_VALID)
+				_CacheValidFrame((const uint8*)srcData, actualSize, w, h);
 		}
 	}
 
@@ -4922,6 +4971,279 @@ UVCCamDevice::_ConvertNV12toRGB32(unsigned char* dst, const unsigned char* src,
 				}
 			}
 		}
+	}
+}
+
+
+void
+UVCCamDevice::_ConvertUYVYtoRGB32(unsigned char* dst, const unsigned char* src,
+	size_t srcSize, int32 width, int32 height)
+{
+	// UYVY (YUV 4:2:2 packed) is the byte-swapped variant of YUY2.
+	// Byte order: U Y0 V Y1 (vs YUY2's Y0 U Y1 V).
+	if (!dst || !src || width <= 0 || height <= 0)
+		return;
+	if (!gYuvRgbTables.initialized)
+		gYuvRgbTables.Initialize();
+
+	const int32* yTable = gYuvRgbTables.y_table;
+	const int32* uBTable = gYuvRgbTables.u_b_table;
+	const int32* uGTable = gYuvRgbTables.u_g_table;
+	const int32* vRTable = gYuvRgbTables.v_r_table;
+	const int32* vGTable = gYuvRgbTables.v_g_table;
+
+	const size_t expectedSize = (size_t)width * height * 2;
+	size_t srcStride = (size_t)width * 2;
+	const size_t dstStride = (size_t)width * 4;
+
+	if (srcSize > expectedSize && height > 1) {
+		size_t actualStride = srcSize / height;
+		if (actualStride > srcStride && actualStride <= srcStride + 256)
+			srcStride = actualStride;
+	}
+
+	for (int32 row = 0; row < height; row++) {
+		const unsigned char* srcRow = src + row * srcStride;
+		unsigned char* dstRow = dst + row * dstStride;
+		if ((size_t)(srcRow - src) + srcStride > srcSize)
+			break;
+		for (int32 x = 0; x < width; x += 2) {
+			uint8 u  = srcRow[0];
+			uint8 y0 = srcRow[1];
+			uint8 v  = srcRow[2];
+			uint8 y1 = srcRow[3];
+			srcRow += 4;
+
+			int32 yVal0 = yTable[y0];
+			int32 yVal1 = yTable[y1];
+			int32 uB = uBTable[u];
+			int32 uG = uGTable[u];
+			int32 vR = vRTable[v];
+			int32 vG = vGTable[v];
+
+			dstRow[0] = clamp255((yVal0 + uB + 128) >> 8);
+			dstRow[1] = clamp255((yVal0 + uG + vG + 128) >> 8);
+			dstRow[2] = clamp255((yVal0 + vR + 128) >> 8);
+			dstRow[3] = 255;
+			dstRow[4] = clamp255((yVal1 + uB + 128) >> 8);
+			dstRow[5] = clamp255((yVal1 + uG + vG + 128) >> 8);
+			dstRow[6] = clamp255((yVal1 + vR + 128) >> 8);
+			dstRow[7] = 255;
+			dstRow += 8;
+		}
+	}
+}
+
+
+void
+UVCCamDevice::_ConvertNV21toRGB32(unsigned char* dst, const unsigned char* src,
+	size_t srcSize, int32 width, int32 height)
+{
+	// NV21: identical layout to NV12, but the interleaved chroma plane
+	// stores V before U (V0 U0 V1 U1 ...).
+	if (!dst || !src || width <= 0 || height <= 0)
+		return;
+	if (!gYuvRgbTables.initialized)
+		gYuvRgbTables.Initialize();
+
+	const size_t expectedSize = (size_t)width * height * 3 / 2;
+	if (srcSize < expectedSize) {
+		memset(dst, 0, (size_t)width * height * 4);
+		return;
+	}
+
+	const int32* yTable = gYuvRgbTables.y_table;
+	const int32* uBTable = gYuvRgbTables.u_b_table;
+	const int32* uGTable = gYuvRgbTables.u_g_table;
+	const int32* vRTable = gYuvRgbTables.v_r_table;
+	const int32* vGTable = gYuvRgbTables.v_g_table;
+
+	const unsigned char* yPlane = src;
+	const unsigned char* vuPlane = src + (size_t)width * height;
+	const size_t dstStride = (size_t)width * 4;
+
+	for (int32 row = 0; row < height; row += 2) {
+		unsigned char* dstRow0 = dst + row * dstStride;
+		unsigned char* dstRow1 = (row + 1 < height)
+			? dst + (row + 1) * dstStride : dstRow0;
+		const unsigned char* yRow0 = yPlane + row * width;
+		const unsigned char* yRow1 = (row + 1 < height)
+			? yPlane + (row + 1) * width : yRow0;
+		const unsigned char* vuRow = vuPlane + (row / 2) * width;
+
+		for (int32 col = 0; col < width; col += 2) {
+			uint8 v = vuRow[col];
+			uint8 u = vuRow[col + 1];
+			int32 uB = uBTable[u];
+			int32 uG = uGTable[u];
+			int32 vR = vRTable[v];
+			int32 vG = vGTable[v];
+
+			for (int dy = 0; dy < 2 && (row + dy) < height; dy++) {
+				unsigned char* dstPixel = (dy == 0)
+					? dstRow0 + col * 4 : dstRow1 + col * 4;
+				const unsigned char* yPixel = (dy == 0)
+					? yRow0 + col : yRow1 + col;
+				for (int dx = 0; dx < 2 && (col + dx) < width; dx++) {
+					int32 yVal = yTable[yPixel[dx]];
+					dstPixel[dx * 4 + 0] = clamp255((yVal + uB + 128) >> 8);
+					dstPixel[dx * 4 + 1] = clamp255((yVal + uG + vG + 128) >> 8);
+					dstPixel[dx * 4 + 2] = clamp255((yVal + vR + 128) >> 8);
+					dstPixel[dx * 4 + 3] = 255;
+				}
+			}
+		}
+	}
+}
+
+
+void
+UVCCamDevice::_ConvertPlanar420toRGB32(unsigned char* dst,
+	const unsigned char* yPlane, const unsigned char* uPlane,
+	const unsigned char* vPlane, int32 width, int32 height)
+{
+	// Shared planar 4:2:0 conversion. Caller computes plane pointers per
+	// format (I420 vs YV12 swap U and V); chroma planes are width/2 wide.
+	if (!gYuvRgbTables.initialized)
+		gYuvRgbTables.Initialize();
+
+	const int32* yTable = gYuvRgbTables.y_table;
+	const int32* uBTable = gYuvRgbTables.u_b_table;
+	const int32* uGTable = gYuvRgbTables.u_g_table;
+	const int32* vRTable = gYuvRgbTables.v_r_table;
+	const int32* vGTable = gYuvRgbTables.v_g_table;
+
+	const int32 chromaWidth = width / 2;
+	const size_t dstStride = (size_t)width * 4;
+
+	for (int32 row = 0; row < height; row += 2) {
+		unsigned char* dstRow0 = dst + row * dstStride;
+		unsigned char* dstRow1 = (row + 1 < height)
+			? dst + (row + 1) * dstStride : dstRow0;
+		const unsigned char* yRow0 = yPlane + row * width;
+		const unsigned char* yRow1 = (row + 1 < height)
+			? yPlane + (row + 1) * width : yRow0;
+		const unsigned char* uRow = uPlane + (row / 2) * chromaWidth;
+		const unsigned char* vRow = vPlane + (row / 2) * chromaWidth;
+
+		for (int32 col = 0; col < width; col += 2) {
+			uint8 u = uRow[col / 2];
+			uint8 v = vRow[col / 2];
+			int32 uB = uBTable[u];
+			int32 uG = uGTable[u];
+			int32 vR = vRTable[v];
+			int32 vG = vGTable[v];
+
+			for (int dy = 0; dy < 2 && (row + dy) < height; dy++) {
+				unsigned char* dstPixel = (dy == 0)
+					? dstRow0 + col * 4 : dstRow1 + col * 4;
+				const unsigned char* yPixel = (dy == 0)
+					? yRow0 + col : yRow1 + col;
+				for (int dx = 0; dx < 2 && (col + dx) < width; dx++) {
+					int32 yVal = yTable[yPixel[dx]];
+					dstPixel[dx * 4 + 0] = clamp255((yVal + uB + 128) >> 8);
+					dstPixel[dx * 4 + 1] = clamp255((yVal + uG + vG + 128) >> 8);
+					dstPixel[dx * 4 + 2] = clamp255((yVal + vR + 128) >> 8);
+					dstPixel[dx * 4 + 3] = 255;
+				}
+			}
+		}
+	}
+}
+
+
+void
+UVCCamDevice::_ConvertI420toRGB32(unsigned char* dst, const unsigned char* src,
+	size_t srcSize, int32 width, int32 height)
+{
+	// I420 / IYUV: planar Y, then U plane, then V plane.
+	if (!dst || !src || width <= 0 || height <= 0)
+		return;
+	const size_t ySize = (size_t)width * height;
+	const size_t chromaSize = ySize / 4;
+	if (srcSize < ySize + 2 * chromaSize) {
+		memset(dst, 0, (size_t)width * height * 4);
+		return;
+	}
+	_ConvertPlanar420toRGB32(dst, src, src + ySize, src + ySize + chromaSize,
+		width, height);
+}
+
+
+void
+UVCCamDevice::_ConvertYV12toRGB32(unsigned char* dst, const unsigned char* src,
+	size_t srcSize, int32 width, int32 height)
+{
+	// YV12: planar Y, then V plane, then U plane (U/V swapped vs I420).
+	if (!dst || !src || width <= 0 || height <= 0)
+		return;
+	const size_t ySize = (size_t)width * height;
+	const size_t chromaSize = ySize / 4;
+	if (srcSize < ySize + 2 * chromaSize) {
+		memset(dst, 0, (size_t)width * height * 4);
+		return;
+	}
+	_ConvertPlanar420toRGB32(dst, src, src + ySize + chromaSize, src + ySize,
+		width, height);
+}
+
+
+void
+UVCCamDevice::_ConvertGREYtoRGB32(unsigned char* dst, const unsigned char* src,
+	size_t srcSize, int32 width, int32 height)
+{
+	// 8-bit monochrome: each source byte is the Y luma; replicate to BGR.
+	if (!dst || !src || width <= 0 || height <= 0)
+		return;
+	const size_t expected = (size_t)width * height;
+	if (srcSize < expected) {
+		memset(dst, 0, (size_t)width * height * 4);
+		return;
+	}
+	const size_t pixels = expected;
+	for (size_t i = 0; i < pixels; i++) {
+		uint8 y = src[i];
+		dst[i * 4 + 0] = y;
+		dst[i * 4 + 1] = y;
+		dst[i * 4 + 2] = y;
+		dst[i * 4 + 3] = 255;
+	}
+}
+
+
+const char*
+UVCCamDevice::_UncompressedFormatName(uvc_uncompressed_format fmt) const
+{
+	switch (fmt) {
+		case UVC_FMT_YUY2: return "YUY2";
+		case UVC_FMT_UYVY: return "UYVY";
+		case UVC_FMT_NV12: return "NV12";
+		case UVC_FMT_NV21: return "NV21";
+		case UVC_FMT_YV12: return "YV12";
+		case UVC_FMT_I420: return "I420";
+		case UVC_FMT_GREY: return "GREY";
+		default: return "UNKNOWN";
+	}
+}
+
+
+size_t
+UVCCamDevice::_UncompressedFrameSize(uvc_uncompressed_format fmt,
+	int32 width, int32 height) const
+{
+	switch (fmt) {
+		case UVC_FMT_YUY2:
+		case UVC_FMT_UYVY:
+			return (size_t)width * height * 2;		// 4:2:2 packed
+		case UVC_FMT_NV12:
+		case UVC_FMT_NV21:
+		case UVC_FMT_I420:
+		case UVC_FMT_YV12:
+			return (size_t)width * height * 3 / 2;	// 4:2:0 planar
+		case UVC_FMT_GREY:
+			return (size_t)width * height;
+		default:
+			return (size_t)width * height * 2;		// safe default
 	}
 }
 
