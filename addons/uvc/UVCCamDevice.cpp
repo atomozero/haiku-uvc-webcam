@@ -1823,14 +1823,26 @@ UVCCamDevice::SupportsIsochronous()
 status_t
 UVCCamDevice::StartTransfer()
 {
+	// Entry marker: makes it unambiguous in syslog whether a consumer actually
+	// reached the streaming path (vs. getting stuck during parameter setup).
+	syslog(LOG_INFO, "UVCCamDevice: StartTransfer requested (ctrlIf=%d streamIf=%d)\n",
+		fControlIndex, fStreamingIndex);
+
 	status_t err = _ProbeCommitFormat();
-	if (err != B_OK)
+	if (err != B_OK) {
+		syslog(LOG_ERR, "UVCCamDevice: StartTransfer aborted - Probe/Commit failed (%s)\n",
+			strerror(err));
 		return err;
+	}
 
 	err = _SelectBestAlternate();
-	if (err != B_OK)
+	if (err != B_OK) {
+		syslog(LOG_ERR, "UVCCamDevice: StartTransfer aborted - alternate selection failed (%s)\n",
+			strerror(err));
 		return err;
+	}
 
+	syslog(LOG_INFO, "UVCCamDevice: StartTransfer - starting data pump\n");
 	return CamDevice::StartTransfer();
 }
 
@@ -4206,13 +4218,34 @@ UVCCamDevice::AddParameters(BParameterGroup* group, int32& index)
 				if ((info & 0x01) == 0)
 					continue;
 
-				uint8 probe[64] = {};
-				if (_XUGetCur(xu->unit_id, sel, probe, 1) != B_OK)
+				// Determine the control's real length first. Probing GET_CUR
+				// with a guessed (too-small) length makes UVC 1.1+ devices
+				// return the full control payload anyway, which overruns the
+				// transfer and halts the control endpoint with an xHCI
+				// "Babble detected" error (observed on Logitech C920).
+				uint16 ctrlLen = 0;
+				if (_XUGetLen(xu->unit_id, sel, &ctrlLen) != B_OK
+					|| ctrlLen == 0) {
+					// No reliable length: skip the GET_CUR probe rather than
+					// risk a babble. GET_INFO already told us it's readable.
+					syslog(LOG_INFO, "UVCCamDevice: XU[%d] sel=%d info=0x%02x "
+						"%s (length unknown, GET_CUR skipped)\n",
+						xu->unit_id, sel, info,
+						(info & 0x02) ? "(rw)" : "(ro)");
+					continue;
+				}
+
+				// Read GET_CUR with the exact negotiated length.
+				uint8 probe[64];
+				memset(probe, 0, sizeof(probe));
+				if (ctrlLen > sizeof(probe))
+					ctrlLen = sizeof(probe);
+				if (_XUGetCur(xu->unit_id, sel, probe, ctrlLen) != B_OK)
 					continue;
 
 				syslog(LOG_INFO, "UVCCamDevice: XU[%d] sel=%d info=0x%02x "
-					"cur=0x%02x %s\n",
-					xu->unit_id, sel, info, probe[0],
+					"len=%u cur=0x%02x %s\n",
+					xu->unit_id, sel, info, ctrlLen, probe[0],
 					(info & 0x02) ? "(rw)" : "(ro)");
 			}
 		}
@@ -6689,6 +6722,34 @@ UVCCamDevice::_XUGetInfo(uint8 unitId, uint8 selector, uint8* info)
 		info);
 
 	return (ret >= 0) ? B_OK : B_ERROR;
+}
+
+
+// GET_LEN returns the byte length (little-endian uint16) of the control's
+// payload. UVC 1.1+ devices (e.g. Logitech C920) require GET_CUR/GET_MIN/...
+// to use exactly this length: requesting fewer bytes makes the device return
+// the full control anyway, overrunning the host transfer and triggering an
+// xHCI "Babble detected" / halted control endpoint.
+status_t
+UVCCamDevice::_XUGetLen(uint8 unitId, uint8 selector, uint16* length)
+{
+	if (fDevice == NULL || length == NULL)
+		return B_BAD_VALUE;
+
+	uint8 lenData[2] = { 0, 0 };
+	ssize_t ret = fDevice->ControlTransfer(
+		USB_REQTYPE_CLASS | USB_REQTYPE_INTERFACE_IN,
+		USB_VIDEO_RC_GET_LEN,
+		(uint16)selector << 8,
+		(uint16)unitId << 8 | fControlIndex,
+		sizeof(lenData),
+		lenData);
+
+	if (ret < 0)
+		return B_ERROR;
+
+	*length = (uint16)lenData[0] | ((uint16)lenData[1] << 8);
+	return B_OK;
 }
 
 
