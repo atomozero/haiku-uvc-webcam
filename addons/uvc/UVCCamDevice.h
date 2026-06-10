@@ -36,6 +36,30 @@ enum uvc_uncompressed_format {
 };
 
 
+// UVC Frame-Based payload codecs (VS_FORMAT_FRAME_BASED / VS_FRAME_FRAME_BASED).
+// These are encoded streams (H.264, H.265, VP8, M-JPEG2000). Detection only:
+// the driver does not currently decode them, so they are surfaced via the log
+// for diagnostics but not selected as the active streaming format.
+enum uvc_frame_based_codec {
+	UVC_CODEC_UNKNOWN = 0,
+	UVC_CODEC_H264,
+	UVC_CODEC_H265,			// HEVC
+	UVC_CODEC_VP8,
+	UVC_CODEC_MJPEG2000,
+};
+
+
+// Parsed frame-based resolution info (subset of VS_FRAME_FRAME_BASED that is
+// useful for logging and future format negotiation).
+struct uvc_frame_based_resolution {
+	uint8	frame_index;
+	uint16	width;
+	uint16	height;
+	uint32	default_frame_interval;	// 100ns units
+	uint32	bytes_per_line;
+};
+
+
 // =============================================================================
 // USB Host Controller and Speed Detection (XHCI Optimization Support)
 // =============================================================================
@@ -387,6 +411,8 @@ private:
 			size_t				_UncompressedFrameSize(
 									uvc_uncompressed_format fmt,
 									int32 width, int32 height) const;
+			const char*			_FrameBasedCodecName(
+									uvc_frame_based_codec codec) const;
 
 			void				_AddProcessingParameter(BParameterGroup* group,
 									int32 index,
@@ -548,6 +574,14 @@ private:
 			bool				fIsNV12;		// Back-compat: true when fUncompressedPixelFormat == UVC_FMT_NV12
 			uvc_uncompressed_format fUncompressedPixelFormat;
 			bool				fMicrodiaQuirk;	// Microdia 0c45:6409 stride quirk
+
+			// Frame-based encoded formats (H.264 / H.265 / VP8 / M-JPEG2000).
+			// Detected and logged for diagnostics; not currently decoded, so
+			// MJPEG or uncompressed is preferred for the active stream.
+			uvc_frame_based_codec fFrameBasedCodec;
+			uint32				fFrameBasedFormatIndex;
+			uint8				fFrameBasedBitsPerPixel;
+			BList				fFrameBasedFrames;	// of uvc_frame_based_resolution*
 
 			// FIX BUG 6: Contatori diagnostici per istanza (non statici)
 			int32				fFillFrameCount;

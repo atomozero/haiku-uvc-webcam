@@ -11,6 +11,7 @@
 #include "CamDebug.h"
 #include "CamConfig.h"
 
+#include <new>
 #include <stdio.h>
 #include <stdlib.h>
 #include <syslog.h>
@@ -235,6 +236,74 @@ usbvc_guid kY800Guid = {0x59, 0x38, 0x30, 0x30, 0x00, 0x00, 0x10, 0x00, 0x80,
 	0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71};
 
 
+// Frame-based codec GUIDs (UVC 1.5 Payload Frame Based, vendor-extended).
+// All share the suffix 0000-0010-8000-00AA00389B71; only the FourCC differs.
+usbvc_guid kH264Guid = {0x48, 0x32, 0x36, 0x34, 0x00, 0x00, 0x10, 0x00, 0x80,
+	0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71};
+usbvc_guid kH265Guid = {0x48, 0x45, 0x56, 0x43, 0x00, 0x00, 0x10, 0x00, 0x80,
+	0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71};
+usbvc_guid kVP8Guid = {0x56, 0x50, 0x38, 0x30, 0x00, 0x00, 0x10, 0x00, 0x80,
+	0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71};
+usbvc_guid kMJPG2KGuid = {0x4d, 0x4a, 0x32, 0x43, 0x00, 0x00, 0x10, 0x00, 0x80,
+	0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71};
+
+
+// UVC 1.5 spec section 3.1.2.3 - VS_FORMAT_FRAME_BASED descriptor.
+// 28 bytes total.
+struct uvc_format_frame_based_descriptor {
+	uint8	length;
+	uint8	descriptor_type;
+	uint8	descriptor_subtype;
+	uint8	format_index;
+	uint8	num_frame_descriptors;
+	uint8	guid_format[16];
+	uint8	bits_per_pixel;
+	uint8	default_frame_index;
+	uint8	aspect_ratio_x;
+	uint8	aspect_ratio_y;
+	uint8	interlace_flags;
+	uint8	copy_protect;
+	uint8	variable_size;
+} _PACKED;
+
+
+// UVC 1.5 spec section 3.1.2.4 - VS_FRAME_FRAME_BASED descriptor.
+// Note: dwBytesPerLine sits between bFrameIntervalType and the interval list,
+// which is a layout difference vs FRAME_MJPEG / FRAME_UNCOMPRESSED.
+struct uvc_frame_frame_based_descriptor {
+	uint8	length;
+	uint8	descriptor_type;
+	uint8	descriptor_subtype;
+	uint8	frame_index;
+	uint8	capabilities;
+	uint16	width;
+	uint16	height;
+	uint32	min_bit_rate;
+	uint32	max_bit_rate;
+	uint32	default_frame_interval;
+	uint8	frame_interval_type;
+	uint32	bytes_per_line;
+	// Followed by either continuous {min, max, step} (12 bytes) or
+	// frame_interval_type discrete intervals (4 bytes each).
+} _PACKED;
+
+
+// Identify frame-based codec from its descriptor GUID.
+static uvc_frame_based_codec
+identify_frame_based_codec(const uint8* guid)
+{
+	if (!memcmp(guid, kH264Guid, sizeof(usbvc_guid)))
+		return UVC_CODEC_H264;
+	if (!memcmp(guid, kH265Guid, sizeof(usbvc_guid)))
+		return UVC_CODEC_H265;
+	if (!memcmp(guid, kVP8Guid, sizeof(usbvc_guid)))
+		return UVC_CODEC_VP8;
+	if (!memcmp(guid, kMJPG2KGuid, sizeof(usbvc_guid)))
+		return UVC_CODEC_MJPEG2000;
+	return UVC_CODEC_UNKNOWN;
+}
+
+
 // Identify uncompressed format from the GUID field of a UVC format descriptor.
 static uvc_uncompressed_format
 identify_uncompressed_format(const usbvc_guid guid)
@@ -338,6 +407,9 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 	fIsNV12(false),
 	fUncompressedPixelFormat(UVC_FMT_UNKNOWN),
 	fMicrodiaQuirk(false),
+	fFrameBasedCodec(UVC_CODEC_UNKNOWN),
+	fFrameBasedFormatIndex(0),
+	fFrameBasedBitsPerPixel(0),
 	// FIX BUG 6: Inizializza contatori diagnostici per istanza
 	fFillFrameCount(0),
 	fFillFrameSuccess(0),
@@ -839,6 +911,31 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 	_DetectControllerType();
 	_LogControllerCapabilities();
 
+	// Log frame-based (encoded) capability for diagnostics.
+	// The driver does not currently decode H.264/H.265/VP8/M-JPEG2000 streams,
+	// so MJPEG or uncompressed remains the active streaming format.
+	if (fFrameBasedFrames.CountItems() > 0
+			|| fFrameBasedCodec != UVC_CODEC_UNKNOWN) {
+		syslog(LOG_INFO,
+			"UVCCamDevice: Frame-based stream detected: codec=%s formatIdx=%u "
+			"bpp=%u resolutions=%d (not currently decoded by this driver)\n",
+			_FrameBasedCodecName(fFrameBasedCodec),
+			(unsigned)fFrameBasedFormatIndex,
+			(unsigned)fFrameBasedBitsPerPixel,
+			(int)fFrameBasedFrames.CountItems());
+		for (int32 i = 0; i < fFrameBasedFrames.CountItems(); i++) {
+			const uvc_frame_based_resolution* r =
+				(const uvc_frame_based_resolution*)
+					fFrameBasedFrames.ItemAt(i);
+			if (r != NULL) {
+				syslog(LOG_INFO,
+					"UVCCamDevice:   frame-based[%d] %ux%u interval=%u\n",
+					(int)i, r->width, r->height,
+					(unsigned)r->default_frame_interval);
+			}
+		}
+	}
+
 	// FIX BUG 3: Impostare fInitStatus solo dopo parsing completo
 	// Requisito minimo: avere almeno un formato video disponibile
 	// (interfacce possono avere indice 0, quindi non controlliamo > 0)
@@ -883,6 +980,14 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 				syslog(LOG_DEBUG, "UVCCamDevice:   raw[%d] %ux%u frame_index=%u\n",
 					(int)i, desc->width, desc->height, desc->frame_index);
 		}
+	} else if (fFrameBasedFrames.CountItems() > 0) {
+		syslog(LOG_ERR,
+			"UVCCamDevice: Init FAILED - camera only exposes encoded "
+			"frame-based stream (%s, %d resolutions). This driver does not "
+			"yet decode encoded streams; expose an MJPEG or uncompressed "
+			"format in the camera firmware to stream on Haiku.\n",
+			_FrameBasedCodecName(fFrameBasedCodec),
+			(int)fFrameBasedFrames.CountItems());
 	} else {
 		syslog(LOG_ERR, "UVCCamDevice: Init FAILED - no video frames available\n");
 	}
@@ -930,6 +1035,11 @@ UVCCamDevice::~UVCCamDevice()
 		delete (usb_video_frame_descriptor*)fMJPEGFrames.ItemAt(i);
 	}
 	fMJPEGFrames.MakeEmpty();
+
+	for (int32 i = 0; i < fFrameBasedFrames.CountItems(); i++) {
+		delete (uvc_frame_based_resolution*)fFrameBasedFrames.ItemAt(i);
+	}
+	fFrameBasedFrames.MakeEmpty();
 
 	// Cleanup frame validation cache (Feature 1)
 	if (fLastValidFrame) {
@@ -1210,11 +1320,68 @@ UVCCamDevice::_ParseVideoStreaming(const usbvc_class_descriptor* _descriptor,
 			printf("VS_FORMAT_DV:\t\n");
 			break;
 		case USB_VIDEO_VS_FORMAT_FRAME_BASED:
-			printf("VS_FORMAT_FRAME_BASED:\t\n");
+		{
+			if (len < sizeof(uvc_format_frame_based_descriptor)) {
+				printf("VS_FORMAT_FRAME_BASED: truncated (len=%zu)\n", len);
+				break;
+			}
+			const uvc_format_frame_based_descriptor* descriptor
+				= (const uvc_format_frame_based_descriptor*)_descriptor;
+			uvc_frame_based_codec codec
+				= identify_frame_based_codec(descriptor->guid_format);
+
+			printf("VS_FORMAT_FRAME_BASED:\tbFormatIdx=%d,#frmdesc=%d,guid=",
+				descriptor->format_index, descriptor->num_frame_descriptors);
+			print_guid(descriptor->guid_format);
+			printf("\n\tcodec=%s,bpp=%d,optfrmidx=%d,aspRX=%d,aspRY=%d\n",
+				_FrameBasedCodecName(codec),
+				descriptor->bits_per_pixel,
+				descriptor->default_frame_index,
+				descriptor->aspect_ratio_x,
+				descriptor->aspect_ratio_y);
+			printf("\tvariableSize=%d\n", descriptor->variable_size);
+
+			// Detection only - keep the first recognized codec we see.
+			// Future work (P8 phase 2): expose this stream via B_MEDIA_ENCODED_VIDEO.
+			if (fFrameBasedCodec == UVC_CODEC_UNKNOWN
+					&& codec != UVC_CODEC_UNKNOWN) {
+				fFrameBasedCodec = codec;
+				fFrameBasedFormatIndex = descriptor->format_index;
+				fFrameBasedBitsPerPixel = descriptor->bits_per_pixel;
+			}
 			break;
+		}
 		case USB_VIDEO_VS_FRAME_FRAME_BASED:
-			printf("VS_FRAME_FRAME_BASED:\t\n");
+		{
+			if (len < sizeof(uvc_frame_frame_based_descriptor)) {
+				printf("VS_FRAME_FRAME_BASED: truncated (len=%zu)\n", len);
+				break;
+			}
+			const uvc_frame_frame_based_descriptor* descriptor
+				= (const uvc_frame_frame_based_descriptor*)_descriptor;
+			printf("VS_FRAME_FRAME_BASED:\tbFrameIdx=%d,%ux%u,bytesPerLine=%"
+				B_PRIu32 "\n",
+				descriptor->frame_index, descriptor->width, descriptor->height,
+				descriptor->bytes_per_line);
+			printf("\tmin/max bitrate=%" B_PRIu32 "/%" B_PRIu32
+				",defaultInterval=%" B_PRIu32 ",#intervals(0=cont)=%d\n",
+				descriptor->min_bit_rate, descriptor->max_bit_rate,
+				descriptor->default_frame_interval,
+				descriptor->frame_interval_type);
+
+			uvc_frame_based_resolution* entry = new(std::nothrow)
+				uvc_frame_based_resolution;
+			if (entry != NULL) {
+				entry->frame_index = descriptor->frame_index;
+				entry->width = descriptor->width;
+				entry->height = descriptor->height;
+				entry->default_frame_interval
+					= descriptor->default_frame_interval;
+				entry->bytes_per_line = descriptor->bytes_per_line;
+				fFrameBasedFrames.AddItem(entry);
+			}
 			break;
+		}
 		case USB_VIDEO_VS_FORMAT_STREAM_BASED:
 			printf("VS_FORMAT_STREAM_BASED:\t\n");
 			break;
@@ -5223,6 +5390,19 @@ UVCCamDevice::_UncompressedFormatName(uvc_uncompressed_format fmt) const
 		case UVC_FMT_I420: return "I420";
 		case UVC_FMT_GREY: return "GREY";
 		default: return "UNKNOWN";
+	}
+}
+
+
+const char*
+UVCCamDevice::_FrameBasedCodecName(uvc_frame_based_codec codec) const
+{
+	switch (codec) {
+		case UVC_CODEC_H264:		return "H.264";
+		case UVC_CODEC_H265:		return "H.265";
+		case UVC_CODEC_VP8:			return "VP8";
+		case UVC_CODEC_MJPEG2000:	return "M-JPEG2000";
+		default:					return "UNKNOWN";
 	}
 }
 
