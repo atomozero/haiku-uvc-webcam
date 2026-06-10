@@ -204,8 +204,14 @@ usb_webcam_support_descriptor kSupportedDevices[] = {
 	{{ 0, 0, 0, 0x8086, 0x0b5c, }, "Intel",         "RealSense D455",                  "??" },
 	{{ 0, 0, 0, 0x8086, 0x1155, }, "Intel",         "RealSense D421",                  "??" },
 
-	// Generic class-based matching (fallback for unknown devices)
-	{{ USB_VIDEO_DEVICE_CLASS, USB_VIDEO_INTERFACE_VIDEOCONTROL_SUBCLASS, 0, 0, 0 }, "Generic UVC", "Video Class", "??" },
+	// Generic class-based matching (fallback for unknown devices).
+	// Subclass is left as wildcard (0) so the matcher catches IAD composite
+	// devices (Logitech C920/C922, OBSBOT, Razer Kiyo, etc.) where the
+	// VideoControl interface is buried under Class=0xEF at the device
+	// descriptor. Any interface that exposes Class=0x0E (USB Video) is
+	// treated as a candidate UVC device; per-format validation happens in
+	// UVCCamDevice::Init.
+	{{ USB_VIDEO_DEVICE_CLASS, 0, 0, 0, 0 }, "Generic UVC", "Video Class", "??" },
 	{{ 0xEF, 0x02, 0, 0, 0 }, "Miscellaneous device", "Interface association", "??" },
 	{{ 0, 0, 0, 0, 0}, NULL, NULL, NULL }
 };

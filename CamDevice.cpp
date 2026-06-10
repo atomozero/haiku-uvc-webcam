@@ -1283,65 +1283,81 @@ status_t
 CamDeviceAddon::Sniff(BUSBDevice *device)
 {
 	PRINT((CH ": Sniffing for %s" CT, BrandName()));
-// 	syslog(LOG_ERR, "CamDeviceAddon::Sniff: Checking device VID:0x%04x PID:0x%04x Class:0x%02x Subclass:0x%02x\n",
-// 		device ? device->VendorID() : 0, device ? device->ProductID() : 0,
-// 		device ? device->Class() : 0, device ? device->Subclass() : 0);
 
-	if (!fSupportedDevices) {
-// 		syslog(LOG_ERR, "CamDeviceAddon::Sniff: No supported devices table!\n");
+	if (!fSupportedDevices)
 		return ENODEV;
-	}
-	if (!device) {
-// 		syslog(LOG_ERR, "CamDeviceAddon::Sniff: NULL device!\n");
+	if (!device)
 		return EINVAL;
-	}
 
-	bool supported = false;
-	for (uint32 i = 0; !supported && fSupportedDevices[i].vendor; i++) {
-// 		syslog(LOG_ERR, "  Checking entry %d: VID:0x%04x PID:0x%04x Class:0x%02x Subclass:0x%02x Brand:%s\n",
-// 			i, fSupportedDevices[i].desc.vendor, fSupportedDevices[i].desc.product,
-// 			fSupportedDevices[i].desc.dev_class, fSupportedDevices[i].desc.dev_subclass,
-// 			fSupportedDevices[i].vendor);
+	// Detailed per-interface logging is gated behind WEBCAM_DEBUG so users
+	// can diagnose why a particular camera is rejected without spamming
+	// syslog on every probe.
+	const bool verbose = (getenv("WEBCAM_DEBUG") != NULL);
 
-		if ((fSupportedDevices[i].desc.vendor != 0
-			&& device->VendorID() != fSupportedDevices[i].desc.vendor)
-			|| (fSupportedDevices[i].desc.product != 0
-			&& device->ProductID() != fSupportedDevices[i].desc.product)) {
-// 			syslog(LOG_ERR, "    Skipped: VID/PID mismatch\n");
+	syslog(LOG_INFO, "CamDeviceAddon::Sniff[%s]: device VID=0x%04x PID=0x%04x "
+		"Class=0x%02x Subclass=0x%02x Protocol=0x%02x configs=%u\n",
+		BrandName() ? BrandName() : "?",
+		device->VendorID(), device->ProductID(),
+		device->Class(), device->Subclass(), device->Protocol(),
+		(unsigned)device->CountConfigurations());
+
+	for (uint32 i = 0; fSupportedDevices[i].vendor != NULL; i++) {
+		const usb_webcam_support_descriptor& entry = fSupportedDevices[i];
+
+		if ((entry.desc.vendor != 0 && device->VendorID() != entry.desc.vendor)
+			|| (entry.desc.product != 0
+				&& device->ProductID() != entry.desc.product)) {
 			continue;
 		}
 
-		if ((fSupportedDevices[i].desc.dev_class == 0
-			|| device->Class() == fSupportedDevices[i].desc.dev_class)
-			&& (fSupportedDevices[i].desc.dev_subclass == 0
-			|| device->Subclass() == fSupportedDevices[i].desc.dev_subclass)
-			&& (fSupportedDevices[i].desc.dev_protocol == 0
-			|| device->Protocol() == fSupportedDevices[i].desc.dev_protocol)) {
-// 			syslog(LOG_ERR, "    MATCHED device-level class/subclass!\n");
+		bool supported = false;
+		const char* matchSite = NULL;
+
+		// Device-level match: works for non-composite UVC cameras and for
+		// IAD devices whose device descriptor reports Class=0xEF/Subclass=0x02.
+		if ((entry.desc.dev_class == 0
+				|| device->Class() == entry.desc.dev_class)
+			&& (entry.desc.dev_subclass == 0
+				|| device->Subclass() == entry.desc.dev_subclass)
+			&& (entry.desc.dev_protocol == 0
+				|| device->Protocol() == entry.desc.dev_protocol)) {
 			supported = true;
+			matchSite = "device";
 		}
 
 #ifdef __HAIKU__
-		// we have to check all interfaces for matching class/subclass/protocol
-// 		syslog(LOG_ERR, "    Checking %d configurations...\n", device->CountConfigurations());
+		// Interface-level scan for composite/IAD devices where Class=0xEF at
+		// device level but VideoControl/VideoStreaming lives on individual
+		// interfaces. NULL-guard each lookup — exotic composite devices have
+		// been observed to return NULL for some interface positions, and a
+		// dereference here would take the whole matcher down.
 		for (uint32 j = 0; !supported && j < device->CountConfigurations(); j++) {
 			const BUSBConfiguration* cfg = device->ConfigurationAt(j);
-// 			syslog(LOG_ERR, "      Config %d: %d interfaces\n", j, cfg ? cfg->CountInterfaces() : 0);
+			if (cfg == NULL)
+				continue;
 			for (uint32 k = 0; !supported && k < cfg->CountInterfaces(); k++) {
 				const BUSBInterface* intf = cfg->InterfaceAt(k);
-// 				syslog(LOG_ERR, "        Interface %d: %d alternates\n", k, intf ? intf->CountAlternates() : 0);
-				for (uint32 l = 0; !supported && l < intf->CountAlternates(); l++) {
+				if (intf == NULL)
+					continue;
+				for (uint32 l = 0; !supported
+						&& l < intf->CountAlternates(); l++) {
 					const BUSBInterface* alt = intf->AlternateAt(l);
-// 					syslog(LOG_ERR, "          Alternate %d: Class:0x%02x Subclass:0x%02x Protocol:0x%02x\n",
-// 						l, alt ? alt->Class() : 0, alt ? alt->Subclass() : 0, alt ? alt->Protocol() : 0);
-					if ((fSupportedDevices[i].desc.dev_class == 0
-						|| alt->Class() == fSupportedDevices[i].desc.dev_class)
-						&& (fSupportedDevices[i].desc.dev_subclass == 0
-						|| alt->Subclass() == fSupportedDevices[i].desc.dev_subclass)
-						&& (fSupportedDevices[i].desc.dev_protocol == 0
-						|| alt->Protocol() == fSupportedDevices[i].desc.dev_protocol)) {
-// 						syslog(LOG_ERR, "          MATCHED interface-level class/subclass!\n");
+					if (alt == NULL)
+						continue;
+					if (verbose) {
+						syslog(LOG_INFO, "  cfg=%u intf=%u alt=%u: "
+							"Class=0x%02x Subclass=0x%02x Protocol=0x%02x\n",
+							j, k, l,
+							alt->Class(), alt->Subclass(), alt->Protocol());
+					}
+					if ((entry.desc.dev_class == 0
+							|| alt->Class() == entry.desc.dev_class)
+						&& (entry.desc.dev_subclass == 0
+							|| alt->Subclass() == entry.desc.dev_subclass)
+						&& (entry.desc.dev_protocol == 0
+							|| alt->Protocol() == entry.desc.dev_protocol)) {
 						supported = true;
+						matchSite = "interface";
 					}
 				}
 			}
@@ -1349,12 +1365,20 @@ CamDeviceAddon::Sniff(BUSBDevice *device)
 #endif
 
 		if (supported) {
-// 			syslog(LOG_ERR, "  Device SUPPORTED as entry %d\n", i);
+			syslog(LOG_INFO, "CamDeviceAddon::Sniff[%s]: matched entry %u at "
+				"%s level (%s %s)\n",
+				BrandName() ? BrandName() : "?", (unsigned)i,
+				matchSite ? matchSite : "?",
+				entry.vendor ? entry.vendor : "?",
+				entry.product ? entry.product : "?");
 			return i;
 		}
 	}
 
-// 	syslog(LOG_ERR, "CamDeviceAddon::Sniff: Device NOT SUPPORTED\n");
+	syslog(LOG_INFO, "CamDeviceAddon::Sniff[%s]: NOT supported "
+		"(VID=0x%04x PID=0x%04x)\n",
+		BrandName() ? BrandName() : "?",
+		device->VendorID(), device->ProductID());
 	return ENODEV;
 }
 
