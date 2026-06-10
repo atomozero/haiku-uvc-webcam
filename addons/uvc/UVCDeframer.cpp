@@ -247,12 +247,27 @@ UVCDeframer::Write(const void* buffer, size_t size)
 	// Allocate frame if needed
 	if (fCurrentFrame == NULL) {
 		BAutolock l(fLocker);
-		if (fFrames.CountItems() < MAXFRAMEBUF)
-			fCurrentFrame = AllocFrame();
-		else {
+		if (fFrames.CountItems() >= MAXFRAMEBUF) {
+			// P30: queue full → drop the OLDEST queued frame so the consumer
+			// always sees the freshest data when it resumes. Dropping the
+			// newest (the previous behaviour) made paused-then-resumed
+			// players show a stale ~half-second frame burst before catching
+			// up. The evicted frame is recycled back into the pool so we
+			// don't churn the heap.
+			CamFrame* stale = (CamFrame*)fFrames.RemoveItem((int32)0);
+			if (stale != NULL)
+				RecycleFrame(stale);
 			fQueueOverflows++;
-			return size;  // Drop - queue full
+			if (fQueueOverflows <= 10 || (fQueueOverflows % 100) == 0) {
+				syslog(LOG_WARNING,
+					"UVCDeframer: Queue full (%d), dropped oldest "
+					"(total drops=%d)\n",
+					MAXFRAMEBUF, (int)fQueueOverflows);
+			}
 		}
+		fCurrentFrame = AllocFrame();
+		if (fCurrentFrame == NULL)
+			return size;
 	}
 
 	// Track total payload bytes received (before truncation)

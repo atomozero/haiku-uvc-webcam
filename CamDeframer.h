@@ -13,9 +13,14 @@
 class CamDevice;
 
 #define CAMDEFRAMER_MAX_TAG_LEN 16
-// Increased from 5 to 8 to reduce queue overflow during USB/Producer latency spikes
-// This gives more buffer room for frames while the producer catches up
-#define CAMDEFRAMER_MAX_QUEUED_FRAMES 8
+// P30: queue depth between the deframer thread (producer) and the
+// VideoProducer consumer. 8 was too tight: a paused/slow consumer
+// (MediaPlayer in pause) filled the queue in ~250 ms at 30 fps and the
+// driver started dropping frames newest-first, which surfaced as long
+// stalls when playback resumed. 16 gives roughly half a second of
+// headroom; paired with drop-oldest behaviour in UVCDeframer::Write the
+// freshest frame is always kept even when the queue is briefly full.
+#define CAMDEFRAMER_MAX_QUEUED_FRAMES 16
 // Frame pool size for recycling (reduces allocations)
 #define CAMDEFRAMER_FRAME_POOL_SIZE 12
 
