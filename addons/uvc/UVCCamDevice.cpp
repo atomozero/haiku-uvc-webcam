@@ -1122,11 +1122,18 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 		else
 			fIsMJPEG = false;
 
-		// QUIRK: Microdia 0c45:6409 uses 352-pixel internal buffer width
-		// This causes row stride issues for resolutions < 352 pixels wide
-		if (fDevice->VendorID() == 0x0c45 && fDevice->ProductID() == 0x6409) {
+		// P33: the 352-pixel internal buffer width is a Sonix-bridge quirk,
+		// not unique to Microdia 0c45:6409. Enable the same stride
+		// compensation for any device under the Sonix VID (0x0c45). The
+		// runtime gate in _ConvertYUY2toRGB32 (srcSize > expectedSize)
+		// still prevents the quirk from firing on Sonix sensors that
+		// happen to emit correctly-sized frames, so the broader trigger
+		// is safe.
+		if (fDevice->VendorID() == 0x0c45) {
 			fMicrodiaQuirk = true;
-			syslog(LOG_INFO, "UVCCamDevice: Microdia 0c45:6409 quirk enabled (352-pixel stride)\n");
+			syslog(LOG_INFO, "UVCCamDevice: Sonix stride quirk armed for "
+				"%04x:%04x (applied at runtime only when srcSize > expected)\n",
+				fDevice->VendorID(), fDevice->ProductID());
 		}
 
 		const char* uncompressedName
