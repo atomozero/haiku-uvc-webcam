@@ -368,8 +368,15 @@ notify_init_failure(uint16 vid, uint16 pid, const char* shortReason)
 //   Frame-based encoded (H.264/H.265/VP8)        :  1 (we don't decode yet)
 static int
 score_streaming_interface(const BUSBInterface* iface, uint8* scratch,
-	size_t scratchSize)
+	size_t scratchSize, uint8* outMjpegCount = NULL,
+	uint8* outUncompressedCount = NULL, uint8* outFrameBasedCount = NULL)
 {
+	if (outMjpegCount != NULL)
+		*outMjpegCount = 0;
+	if (outUncompressedCount != NULL)
+		*outUncompressedCount = 0;
+	if (outFrameBasedCount != NULL)
+		*outFrameBasedCount = 0;
 	if (iface == NULL)
 		return -1;
 	int score = 0;
@@ -384,6 +391,8 @@ score_streaming_interface(const BUSBInterface* iface, uint8* scratch,
 		switch (d->descriptorSubtype) {
 			case USB_VIDEO_VS_FORMAT_MJPEG:
 				score += 100;
+				if (outMjpegCount != NULL && *outMjpegCount < 255)
+					(*outMjpegCount)++;
 				break;
 			case USB_VIDEO_VS_FORMAT_UNCOMPRESSED:
 			{
@@ -394,12 +403,16 @@ score_streaming_interface(const BUSBInterface* iface, uint8* scratch,
 					score += 50;
 				else
 					score += 5;
+				if (outUncompressedCount != NULL && *outUncompressedCount < 255)
+					(*outUncompressedCount)++;
 				break;
 			}
 			case USB_VIDEO_VS_FORMAT_FRAME_BASED:
 			case USB_VIDEO_VS_FORMAT_H264:
 			case USB_VIDEO_VS_FORMAT_VP8:
 				score += 1;
+				if (outFrameBasedCount != NULL && *outFrameBasedCount < 255)
+					(*outFrameBasedCount)++;
 				break;
 			default:
 				break;
@@ -476,6 +489,7 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 	fHeaderDescriptor(NULL),
 	fInterruptIn(NULL),
 	fCurrentVideoAlternate(0),
+	fActiveStreamIdx(-1),
 	fUncompressedFormatIndex(1),
 	fUncompressedFrameIndex(1),
 	fMJPEGFormatIndex(1),
@@ -682,6 +696,11 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 		// pipe (color, depth, IR). Previously the parser kept the last one
 		// it saw, which on RealSense lands on a depth/IR pipe with no
 		// MJPEG/YUY2 frames and breaks all downstream code.
+		//
+		// P3 Phase B: also stash a uvc_vs_stream entry for every VS we
+		// see, so the media addon can later emit one flavor per stream.
+		// The pre-pass walks descriptors once per VS, so collecting the
+		// metadata here costs nothing extra.
 		int32 bestVSInterfaceIdx = -1;
 		int bestVSScore = -1;
 		uint32 vsInterfaceCount = 0;
@@ -695,8 +714,21 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 				continue;
 			}
 			vsInterfaceCount++;
+			uint8 mjpegCount = 0, uncompCount = 0, frameBasedCount = 0;
 			int score = score_streaming_interface(candidate, buffer,
-				sizeof(buffer));
+				sizeof(buffer), &mjpegCount, &uncompCount, &frameBasedCount);
+
+			uvc_vs_stream* meta = new(std::nothrow) uvc_vs_stream;
+			if (meta != NULL) {
+				meta->interface_index = candidate->Index();
+				meta->score = score;
+				meta->alternates_count = candidate->CountAlternates();
+				meta->mjpeg_count = mjpegCount;
+				meta->uncompressed_count = uncompCount;
+				meta->frame_based_count = frameBasedCount;
+				fVSStreams.AddItem(meta);
+			}
+
 			syslog(LOG_INFO, "UVCCamDevice: VS scan cfg=%u intf=%u "
 				"score=%d alternates=%u\n",
 				i, j, score, (unsigned)candidate->CountAlternates());
@@ -709,6 +741,17 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 			syslog(LOG_INFO, "UVCCamDevice: %u VS interfaces in cfg=%u; "
 				"selecting intf=%d (best score %d)\n",
 				vsInterfaceCount, i, (int)bestVSInterfaceIdx, bestVSScore);
+		}
+
+		// P3 Phase B: locate the chosen VS inside fVSStreams so the addon
+		// can later resolve "active stream" → list index.
+		for (int32 si = 0; si < fVSStreams.CountItems(); si++) {
+			const uvc_vs_stream* s
+				= (const uvc_vs_stream*)fVSStreams.ItemAt(si);
+			if (s != NULL && (int32)s->interface_index == bestVSInterfaceIdx) {
+				fActiveStreamIdx = si;
+				break;
+			}
 		}
 
 		for (uint32 j = 0; j < config->CountInterfaces(); j++) {
@@ -1263,6 +1306,11 @@ UVCCamDevice::~UVCCamDevice()
 		delete (uvc_frame_based_resolution*)fFrameBasedFrames.ItemAt(i);
 	}
 	fFrameBasedFrames.MakeEmpty();
+
+	for (int32 i = 0; i < fVSStreams.CountItems(); i++) {
+		delete (uvc_vs_stream*)fVSStreams.ItemAt(i);
+	}
+	fVSStreams.MakeEmpty();
 
 	// Cleanup frame validation cache (Feature 1)
 	if (fLastValidFrame) {

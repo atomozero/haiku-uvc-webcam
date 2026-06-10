@@ -60,6 +60,20 @@ struct uvc_frame_based_resolution {
 };
 
 
+// P3 fase B: lightweight descriptor for one VideoStreaming interface that
+// the addon can surface as a separate media flavor. Only metadata is held
+// here; the actual format/frame descriptors are re-parsed on demand when
+// the user activates a different stream via SelectStream().
+struct uvc_vs_stream {
+	uint32	interface_index;	// for SetAlternate / control transfers
+	int		score;				// from score_streaming_interface()
+	uint32	alternates_count;
+	uint8	mjpeg_count;		// number of VS_FORMAT_MJPEG seen
+	uint8	uncompressed_count;	// number of VS_FORMAT_UNCOMPRESSED seen
+	uint8	frame_based_count;	// number of VS_FORMAT_FRAME_BASED seen
+};
+
+
 // =============================================================================
 // USB Host Controller and Speed Detection (XHCI Optimization Support)
 // =============================================================================
@@ -541,6 +555,13 @@ private:
 			uint32				fControlIndex;
 			uint16				fControlRequestIndex;
 			uint32				fStreamingIndex;
+			// P3 fase B: list of all VideoStreaming interfaces detected on
+			// the active configuration. Index 0 is the one currently
+			// streaming (matches fStreamingIndex). The whole list is
+			// exposed via NumStreams()/GetStreamName() so the addon can
+			// emit a media flavor per stream.
+			BList				fVSStreams;	// of uvc_vs_stream*
+			int32				fActiveStreamIdx;	// index into fVSStreams
 			uint32				fCurrentVideoAlternate;  // Track current alternate to avoid re-setting
 			uint32				fUncompressedFormatIndex;
 			uint32				fUncompressedFrameIndex;
