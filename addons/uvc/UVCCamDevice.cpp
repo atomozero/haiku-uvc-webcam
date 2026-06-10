@@ -15,7 +15,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <syslog.h>
+#include <Notification.h>
 #include <ParameterWeb.h>
+#include <String.h>
 #include <media/Buffer.h>
 
 #undef TRACE
@@ -331,6 +333,25 @@ identify_uncompressed_format(const usbvc_guid guid)
 			|| !memcmp(guid, kY800Guid, sizeof(usbvc_guid)))
 		return UVC_FMT_GREY;
 	return UVC_FMT_UNKNOWN;
+}
+
+
+// P40: post a desktop notification when a UVC camera is recognised at the
+// USB level (Sniff matched) but the driver cannot stream from it. Without
+// this the user only sees the device disappear from the media settings list
+// with no hint why, and has to chase the cause in /var/log/syslog.
+static void
+notify_init_failure(uint16 vid, uint16 pid, const char* shortReason)
+{
+	BNotification note(B_ERROR_NOTIFICATION);
+	note.SetGroup("USB Webcam");
+	note.SetTitle("Webcam not usable");
+	BString content;
+	content.SetToFormat("%04x:%04x — %s. Run with WEBCAM_DEBUG=verbose and "
+		"check syslog for details.", vid, pid,
+		shortReason != NULL ? shortReason : "init failed");
+	note.SetContent(content);
+	note.Send();
 }
 
 
@@ -1088,6 +1109,8 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 			"only MJPEG but libturbojpeg is unavailable; install/repair "
 			"libturbojpeg.so or use a camera that also exposes YUY2.\n",
 			fDevice->VendorID(), fDevice->ProductID());
+		notify_init_failure(fDevice->VendorID(), fDevice->ProductID(),
+			"MJPEG-only camera, libturbojpeg missing");
 	} else if (hasUncompressed || hasMJPEG) {
 		fInitStatus = B_OK;
 
@@ -1137,8 +1160,15 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 			"format in the camera firmware to stream on Haiku.\n",
 			_FrameBasedCodecName(fFrameBasedCodec),
 			(int)fFrameBasedFrames.CountItems());
+		BString reason;
+		reason.SetToFormat("%s-only stream, no software decoder",
+			_FrameBasedCodecName(fFrameBasedCodec));
+		notify_init_failure(fDevice->VendorID(), fDevice->ProductID(),
+			reason.String());
 	} else {
 		syslog(LOG_ERR, "UVCCamDevice: Init FAILED - no video frames available\n");
+		notify_init_failure(fDevice->VendorID(), fDevice->ProductID(),
+			"USB descriptors did not expose any video format");
 	}
 }
 
