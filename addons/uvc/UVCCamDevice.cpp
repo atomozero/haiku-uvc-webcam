@@ -1075,12 +1075,25 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 	// FIX BUG 3: Impostare fInitStatus solo dopo parsing completo
 	// Requisito minimo: avere almeno un formato video disponibile
 	// (interfacce possono avere indice 0, quindi non controlliamo > 0)
-	if (fUncompressedFrames.CountItems() > 0 || fMJPEGFrames.CountItems() > 0) {
+	const bool hasMJPEG = (fMJPEGFrames.CountItems() > 0);
+	const bool hasUncompressed = (fUncompressedFrames.CountItems() > 0);
+	const bool canDecodeMJPEG = (fJpegDecompressor != NULL);
+
+	// P22: MJPEG-only camera with no JPEG decoder. The driver would otherwise
+	// report Init OK, then every FillFrameBuffer would silently produce a
+	// blue placeholder. Fail loud and early so the user knows libturbojpeg is
+	// missing (or failed to load) and which camera is affected.
+	if (hasMJPEG && !hasUncompressed && !canDecodeMJPEG) {
+		syslog(LOG_ERR, "UVCCamDevice: Init FAILED - camera %04x:%04x exposes "
+			"only MJPEG but libturbojpeg is unavailable; install/repair "
+			"libturbojpeg.so or use a camera that also exposes YUY2.\n",
+			fDevice->VendorID(), fDevice->ProductID());
+	} else if (hasUncompressed || hasMJPEG) {
 		fInitStatus = B_OK;
 
 		// FIX: Initialize fIsMJPEG based on available formats
 		// Prefer MJPEG for better bandwidth usage (compressed vs raw YUY2)
-		if (fMJPEGFrames.CountItems() > 0 && fJpegDecompressor != NULL)
+		if (hasMJPEG && canDecodeMJPEG)
 			fIsMJPEG = true;
 		else
 			fIsMJPEG = false;
@@ -1907,8 +1920,11 @@ UVCCamDevice::SuggestVideoFrame(uint32& width, uint32& height)
 
 	BList* frameList = fIsMJPEG ? &fMJPEGFrames : &fUncompressedFrames;
 
-	// First check if fIsMJPEG needs to be initialized
-	if (fMJPEGFrames.CountItems() > 0)
+	// First check if fIsMJPEG needs to be initialized.
+	// P22: only prefer MJPEG when libturbojpeg is actually available;
+	// otherwise fall back to the uncompressed list so the user gets video
+	// instead of a silent blue placeholder.
+	if (fMJPEGFrames.CountItems() > 0 && fJpegDecompressor != NULL)
 		fIsMJPEG = true;
 	else if (fUncompressedFrames.CountItems() > 0)
 		fIsMJPEG = false;
@@ -1968,8 +1984,10 @@ UVCCamDevice::AcceptVideoFrame(uint32& width, uint32& height)
 	int32 mjpegCount = fMJPEGFrames.CountItems();
 
 	// Prefer MJPEG over YUY2 for USB webcams
-	// Prefer MJPEG (better bandwidth usage) over uncompressed
-	if (mjpegCount > 0)
+	// Prefer MJPEG (better bandwidth usage) over uncompressed.
+	// P22: only choose MJPEG when libturbojpeg is loaded — otherwise the
+	// camera would stream encoded JPEGs we can't decode.
+	if (mjpegCount > 0 && fJpegDecompressor != NULL)
 		fIsMJPEG = true;
 	else if (uncompressedCount > 0)
 		fIsMJPEG = false;
@@ -1983,8 +2001,11 @@ UVCCamDevice::AcceptVideoFrame(uint32& width, uint32& height)
 			width = 320;
 			height = 240;
 		}
-		// Try MJPEG first (less bandwidth), then fall back to uncompressed
-		fIsMJPEG = true;
+		// Try MJPEG first (less bandwidth), then fall back to uncompressed.
+		// P22: only when libturbojpeg is available — otherwise force YUY2
+		// even in this no-descriptors-parsed fallback path so the producer
+		// gets data it can render.
+		fIsMJPEG = (fJpegDecompressor != NULL);
 		fMJPEGFormatIndex = 1;
 		fMJPEGFrameIndex = 1;
 		fUncompressedFormatIndex = 1;
