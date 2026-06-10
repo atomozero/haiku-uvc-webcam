@@ -257,9 +257,13 @@ WebCamMediaAddOn::InstantiateNodeFor(
 		return NULL;
 	}
 
-	// Check if this is an audio flavor request (high bit set)
-	bool isAudioFlavor = (info->internal_id & 0x80000000) != 0;
-	int32 videoInternalId = info->internal_id & 0x7FFFFFFF;
+	// P3 fase B internal_id layout (mirror of GetFlavorAt):
+	//   bit 31     audio (1) / video (0)
+	//   bits 24-30 stream index (0..127) for video; ignored for audio
+	//   bits 0-23  camera internal id
+	const bool isAudioFlavor = (info->internal_id & 0x80000000) != 0;
+	const int32 streamIdx = (info->internal_id >> 24) & 0x7F;
+	const int32 cameraId = info->internal_id & 0x00FFFFFF;
 
 	fRoster->Lock();
 	uint32 camCount = fRoster->CountCameras();
@@ -268,11 +272,30 @@ WebCamMediaAddOn::InstantiateNodeFor(
 		CamDevice *c = fRoster->CameraAt(i);
 		PRINT((CH ": cam[%d]: %d, %s" CT, i, c->FlavorInfo()->internal_id, c->BrandName()));
 
-		if (c && (c->FlavorInfo()->internal_id == videoInternalId)) {
+		if (c && ((c->FlavorInfo()->internal_id & 0x00FFFFFF) == cameraId)) {
 			cam = c;
 			break;
 		}
 	}
+
+	// P3 fase B: switch the camera to the requested VS interface BEFORE the
+	// VideoProducer is created. SelectStream refuses while streaming, but at
+	// this point the producer hasn't started a transfer yet so the switch
+	// is safe. The audio path is per-camera, not per-stream, so we leave it
+	// alone.
+	if (cam != NULL && !isAudioFlavor) {
+		UVCCamDevice* uvc = dynamic_cast<UVCCamDevice*>(cam);
+		if (uvc != NULL && streamIdx != uvc->ActiveStreamIndex()) {
+			status_t ss = uvc->SelectStream(streamIdx);
+			if (ss != B_OK) {
+				syslog(LOG_WARNING, "WebCamMediaAddOn: SelectStream(%d) "
+					"returned %s — falling back to active stream %d\n",
+					(int)streamIdx, strerror(ss),
+					(int)uvc->ActiveStreamIndex());
+			}
+		}
+	}
+
 	fRoster->Unlock();
 
 	if (cam == NULL)
