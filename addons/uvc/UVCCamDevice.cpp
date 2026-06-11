@@ -5165,22 +5165,32 @@ UVCCamDevice::FillFrameBuffer(BBuffer* buffer, bigtime_t* stamp)
 	status_t err = fDeframer->WaitFrame(2000000);
 	if (err < B_OK) {
 		fFillFrameTimeout++;
-		// Report every 10 timeouts
-		if (fFillFrameTimeout <= 5 || (fFillFrameTimeout % 10) == 0) {
-			// Use syslog - safe in any thread
+
+		// Log only first 5 and every 50th to reduce spam during EHCI errors
+		if (fFillFrameTimeout <= 5 || (fFillFrameTimeout % 50) == 0) {
 			syslog(LOG_WARNING, "UVCCamDevice::FillFrameBuffer: WaitFrame TIMEOUT #%d (err=%s)\n",
 				(int)fFillFrameTimeout, strerror(err));
 		}
 
-		// Track timeouts for high-bandwidth auto-fallback
-		// If using high-bandwidth and getting repeated timeouts, it likely means
-		// the USB host controller doesn't support high-bandwidth isochronous
-		if (fUsingHighBandwidth) {
-			_OnHighBandwidthFailure();
+		// After 20 consecutive timeouts, assume USB host controller is dead
+		// (typical of EHCI "host system error" on Intel controllers after ~2min
+		// of sustained isochronous streaming). Stop the data pump to avoid
+		// further error spam - user must unplug/replug the camera to recover.
+		if (fFillFrameTimeout == 20) {
+			syslog(LOG_ERR, "UVCCamDevice: USB host controller appears stuck. "
+				"Stopping transfer. Please unplug and reconnect the camera.\n");
+			StopTransfer();
 		}
+
+		if (fUsingHighBandwidth)
+			_OnHighBandwidthFailure();
 
 		return err;
 	}
+
+	// Reset timeout counter on successful frame
+	if (fFillFrameTimeout > 0)
+		fFillFrameTimeout = 0;
 
 	CamFrame* f;
 	err = fDeframer->GetFrame(&f, stamp);
