@@ -901,15 +901,15 @@ AudioProducer::AudioGenerator()
 			bytesRead = uvcDev->ReadAudioData(audioData, bytesToFill);
 		}
 
-		// Debug: log periodically
-		static int debugCount = 0;
-		if (++debugCount % 100 == 1) {
-			syslog(LOG_INFO, "AudioProducer: read %zu/%zu bytes, first samples: %d %d %d %d\n",
+		// Only log when status changes: first read, transitions to/from underrun
+		static int sLastBytesRead = -1;
+		bool wasUnderrun = (sLastBytesRead == 0);
+		bool isUnderrun = (bytesRead == 0);
+		if (sLastBytesRead < 0 || wasUnderrun != isUnderrun) {
+			syslog(LOG_INFO, "AudioProducer: read %zu/%zu bytes%s\n",
 				bytesRead, bytesToFill,
-				bytesRead >= 2 ? audioData[0] : 0,
-				bytesRead >= 4 ? audioData[1] : 0,
-				bytesRead >= 6 ? audioData[2] : 0,
-				bytesRead >= 8 ? audioData[3] : 0);
+				isUnderrun ? " (UNDERRUN)" : "");
+			sLastBytesRead = (int)bytesRead;
 		}
 
 		// Fill remaining with silence if not enough data

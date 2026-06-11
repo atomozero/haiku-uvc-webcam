@@ -2715,21 +2715,21 @@ UVCCamDevice::_ProbeCommitFormat()
 	const bool haveDef = (defLen == length);
 
 	if (haveMin) {
-		syslog(LOG_INFO, "UVC Probe GET_MIN: frame_interval=%u "
+		syslog(LOG_DEBUG, "UVC Probe GET_MIN: frame_interval=%u "
 			"max_video_frame_size=%u max_payload=%u\n",
 			minBuf.fields.frame_interval,
 			minBuf.fields.max_video_frame_size,
 			minBuf.fields.max_payload_transfer_size);
 	}
 	if (haveMax) {
-		syslog(LOG_INFO, "UVC Probe GET_MAX: frame_interval=%u "
+		syslog(LOG_DEBUG, "UVC Probe GET_MAX: frame_interval=%u "
 			"max_video_frame_size=%u max_payload=%u\n",
 			maxBuf.fields.frame_interval,
 			maxBuf.fields.max_video_frame_size,
 			maxBuf.fields.max_payload_transfer_size);
 	}
 	if (haveDef) {
-		syslog(LOG_INFO, "UVC Probe GET_DEF: format=%u frame=%u "
+		syslog(LOG_DEBUG, "UVC Probe GET_DEF: format=%u frame=%u "
 			"frame_interval=%u\n",
 			defBuf.fields.format_index, defBuf.fields.frame_index,
 			defBuf.fields.frame_interval);
@@ -2757,11 +2757,8 @@ UVCCamDevice::_ProbeCommitFormat()
 		probeBuf.fields.frame_interval = request.frame_interval;
 	}
 
-	// Log what we're requesting
-	syslog(LOG_INFO, "UVC Probe request: format=%d frame=%d interval=%u (fIsMJPEG=%d)\n",
+	syslog(LOG_DEBUG, "UVC Probe request: format=%d frame=%d interval=%u (MJPEG=%d)\n",
 		request.format_index, request.frame_index, request.frame_interval, fIsMJPEG);
-	syslog(LOG_INFO, "UVC Format indices: MJPEG=%d, Uncompressed=%d\n",
-		fMJPEGFormatIndex, fUncompressedFormatIndex);
 
 	// Try SET_CUR Probe with retry logic and fallback to different sizes
 	// Some cameras need multiple attempts before responding to control transfers.
@@ -3112,12 +3109,12 @@ UVCCamDevice::_SelectBestAlternate()
 			uint32 transactions = ((rawMaxPacketSize >> 11) & 0x3) + 1;
 			uint32 totalBandwidth = basePacketSize * transactions;
 
-			syslog(LOG_INFO, "UVCCamDevice: Alt %u EP %u: raw=0x%04x base=%u trans=%u total=%u bytes\n",
+			syslog(LOG_DEBUG, "UVCCamDevice: Alt %u EP %u: raw=0x%04x base=%u trans=%u total=%u bytes\n",
 				i, j, rawMaxPacketSize, basePacketSize, transactions, totalBandwidth);
 
 			// Pass 1: Skip high-bandwidth endpoints (mult > 1)
 			if (transactions > 1) {
-				syslog(LOG_INFO, "UVCCamDevice: Pass 1: Skipping high-bandwidth endpoint (mult=%u)\n",
+				syslog(LOG_DEBUG, "UVCCamDevice: Pass 1: Skipping high-bandwidth endpoint (mult=%u)\n",
 					transactions);
 				continue;
 			}
