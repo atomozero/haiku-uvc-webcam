@@ -69,6 +69,8 @@ AudioProducer::AudioProducer(
 
 	fMuted = false;
 	fVolume = 1.0f;
+	fAutoGain = false;
+	fAutoGainCurrent = 1.0f;
 	fLastParamChange = 0;
 
 	// Mono microphone detection
@@ -168,6 +170,11 @@ AudioProducer::NodeRegistered()
 	g = main->MakeGroup("Volume");
 	g->MakeContinuousParameter(P_VOLUME, B_MEDIA_RAW_AUDIO, "Volume",
 		B_GAIN, "", 0.0f, 4.0f, 0.01f);
+
+	// Automatic gain control toggle
+	g = main->MakeGroup("Auto Gain");
+	g->MakeDiscreteParameter(P_AUTO_GAIN, B_MEDIA_RAW_AUDIO, "Auto Gain",
+		B_ENABLE);
 
 	SetParameterWeb(web);
 
@@ -686,6 +693,11 @@ AudioProducer::GetParameterValue(
 			*size = sizeof(float);
 			*((float *)value) = fVolume;
 			return B_OK;
+		case P_AUTO_GAIN:
+			*last_change = fLastParamChange;
+			*size = sizeof(int32);
+			*((int32 *)value) = fAutoGain ? 1 : 0;
+			return B_OK;
 	}
 	return B_BAD_VALUE;
 }
@@ -709,6 +721,14 @@ AudioProducer::SetParameterValue(
 			fVolume = *((float *)value);
 			if (fVolume < 0.0f) fVolume = 0.0f;
 			if (fVolume > 4.0f) fVolume = 4.0f;
+			fLastParamChange = when;
+			BroadcastNewParameterValue(when, id, (void *)value, size);
+			break;
+		case P_AUTO_GAIN:
+			if (!value || size != sizeof(int32))
+				return;
+			fAutoGain = (*((int32 *)value) != 0);
+			fAutoGainCurrent = 1.0f;	// reset when toggled
 			fLastParamChange = when;
 			BroadcastNewParameterValue(when, id, (void *)value, size);
 			break;
@@ -979,12 +999,43 @@ AudioProducer::AudioGenerator()
 		size_t samplesToProcess = bytesToFill / sizeof(int16);
 		if (fMuted) {
 			memset(audioData, 0, fConnectedFormat.buffer_size);
-		} else if (fVolume != 1.0f) {
-			for (size_t i = 0; i < samplesToProcess; i++) {
-				int32 sample = (int32)(audioData[i] * fVolume);
-				if (sample > 32767) sample = 32767;
-				else if (sample < -32768) sample = -32768;
-				audioData[i] = (int16)sample;
+		} else {
+			float gain = fVolume;
+
+			// Auto gain: measure peak, smoothly adjust gain toward a target
+			// level. Skip below noise floor to avoid amplifying silence.
+			if (fAutoGain && samplesToProcess > 0) {
+				int32 peak = 0;
+				for (size_t i = 0; i < samplesToProcess; i++) {
+					int32 v = audioData[i];
+					if (v < 0) v = -v;
+					if (v > peak) peak = v;
+				}
+
+				const int32 kNoiseFloor = 200;	// ~-44 dBFS
+				const int32 kTarget = 16384;	// ~-6 dBFS (50% of int16)
+				const float kMaxGain = 8.0f;	// +18 dB ceiling
+				const float kAttack = 0.05f;	// fast when over-target
+				const float kRelease = 0.005f;	// slow when under-target
+
+				if (peak > kNoiseFloor) {
+					float desired = (float)kTarget / (float)peak;
+					if (desired > kMaxGain) desired = kMaxGain;
+					float blend = (desired < fAutoGainCurrent) ? kAttack : kRelease;
+					fAutoGainCurrent += (desired - fAutoGainCurrent) * blend;
+					if (fAutoGainCurrent < 0.1f) fAutoGainCurrent = 0.1f;
+					if (fAutoGainCurrent > kMaxGain) fAutoGainCurrent = kMaxGain;
+				}
+				gain *= fAutoGainCurrent;
+			}
+
+			if (gain != 1.0f) {
+				for (size_t i = 0; i < samplesToProcess; i++) {
+					int32 sample = (int32)(audioData[i] * gain);
+					if (sample > 32767) sample = 32767;
+					else if (sample < -32768) sample = -32768;
+					audioData[i] = (int16)sample;
+				}
 			}
 		}
 

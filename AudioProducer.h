@@ -228,10 +228,13 @@ static	int32				_audio_generator_(void *data);
 		enum {
 			P_MUTE,
 			P_VOLUME,
+			P_AUTO_GAIN,
 			P_LAST
 		};
 		bool				fMuted;
 		float				fVolume;
+		bool				fAutoGain;
+		float				fAutoGainCurrent;	// runtime gain factor
 		bigtime_t			fLastParamChange;
 
 		// Mono microphone detection state
