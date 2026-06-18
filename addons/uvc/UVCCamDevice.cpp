@@ -13,6 +13,7 @@
 
 #include <new>
 #include <stdio.h>
+#include <Autolock.h>
 #include <stdlib.h>
 #include <syslog.h>
 #include <Notification.h>
@@ -581,6 +582,8 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 	fPanTiltID(-1),
 	// Extension Unit support (XU)
 	fHasExtensionUnits(false),
+	// EHCI host system error recovery
+	fEHCIRecoveryInProgress(false),
 	// Still image capture support
 	fStillCaptureMethod(STILL_CAPTURE_NONE),
 	fHasStillCapture(false),
@@ -7948,6 +7951,36 @@ UVCCamDevice::OnConsecutiveTransferFailures(uint32 count)
 
 	// Track failures for high-bandwidth auto-detection
 	_OnHighBandwidthFailure();
+
+	// At 300 consecutive failures, suspect EHCI host system error
+	// (controller may have entered error state). Try to recover by
+	// cycling the streaming alternate: drop to alt 0 (idle) then back
+	// to the streaming alternate. This re-initializes the isochronous
+	// endpoint without requiring a full controller reset.
+	if (count == 300 && !fEHCIRecoveryInProgress) {
+		fEHCIRecoveryInProgress = true;
+		syslog(LOG_ERR, "UVCCamDevice: 300+ consecutive failures - "
+			"attempting EHCI recovery via alternate cycle\n");
+
+		uint8 streamAlt = fCurrentVideoAlternate;
+		if (streamAlt > 0) {
+			BAutolock lock(Locker());
+			const BUSBConfiguration* cfg = fDevice
+				? fDevice->ActiveConfiguration() : NULL;
+			if (cfg != NULL) {
+				BUSBInterface* iface = const_cast<BUSBInterface*>(
+					cfg->InterfaceAt(fStreamingIndex));
+				if (iface != NULL) {
+					iface->SetAlternate(0);
+					snooze(100000);
+					iface->SetAlternate(streamAlt);
+					syslog(LOG_INFO, "UVCCamDevice: EHCI recovery alt cycle "
+						"complete (alt %u -> 0 -> %u)\n", streamAlt, streamAlt);
+				}
+			}
+		}
+		fEHCIRecoveryInProgress = false;
+	}
 }
 
 

@@ -752,6 +752,9 @@ private:
 			BList				fExtensionUnits;		// List of extension_unit_info*
 			bool				fHasExtensionUnits;
 
+			// EHCI host system error recovery state
+			bool				fEHCIRecoveryInProgress;
+
 			// Still image capture support
 			still_capture_method	fStillCaptureMethod;
 			still_image_info	fStillImageInfo;
