@@ -163,10 +163,11 @@ AudioProducer::NodeRegistered()
 	BParameterGroup* g = main->MakeGroup("Mute");
 	g->MakeDiscreteParameter(P_MUTE, B_MEDIA_RAW_AUDIO, "Mute", B_MUTE);
 
-	// Volume control
+	// Volume / gain control (0.0 - 4.0x)
+	// Range extended above 1.0x to boost quiet webcam microphones up to +12dB
 	g = main->MakeGroup("Volume");
 	g->MakeContinuousParameter(P_VOLUME, B_MEDIA_RAW_AUDIO, "Volume",
-		B_GAIN, "", 0.0f, 1.0f, 0.01f);
+		B_GAIN, "", 0.0f, 4.0f, 0.01f);
 
 	SetParameterWeb(web);
 
@@ -707,7 +708,7 @@ AudioProducer::SetParameterValue(
 				return;
 			fVolume = *((float *)value);
 			if (fVolume < 0.0f) fVolume = 0.0f;
-			if (fVolume > 1.0f) fVolume = 1.0f;
+			if (fVolume > 4.0f) fVolume = 4.0f;
 			fLastParamChange = when;
 			BroadcastNewParameterValue(when, id, (void *)value, size);
 			break;
@@ -972,13 +973,18 @@ AudioProducer::AudioGenerator()
 		if (sampleCount > 0)
 			fAudioStats.RecordSamples(audioData, sampleCount);
 
-		// Apply volume and mute
+		// Apply volume / gain and mute
+		// Volume range is 0.0 - 4.0. Below 1.0 attenuates, above 1.0 amplifies
+		// quiet microphones. Saturate to int16 range to prevent wrap-around clipping.
 		size_t samplesToProcess = bytesToFill / sizeof(int16);
 		if (fMuted) {
 			memset(audioData, 0, fConnectedFormat.buffer_size);
-		} else if (fVolume < 1.0f) {
+		} else if (fVolume != 1.0f) {
 			for (size_t i = 0; i < samplesToProcess; i++) {
-				audioData[i] = (int16)(audioData[i] * fVolume);
+				int32 sample = (int32)(audioData[i] * fVolume);
+				if (sample > 32767) sample = 32767;
+				else if (sample < -32768) sample = -32768;
+				audioData[i] = (int16)sample;
 			}
 		}
 
