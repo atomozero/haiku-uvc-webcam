@@ -5174,13 +5174,39 @@ UVCCamDevice::FillFrameBuffer(BBuffer* buffer, bigtime_t* stamp)
 				(int)fFillFrameTimeout, strerror(err));
 		}
 
-		// After 20 consecutive timeouts, assume USB host controller is dead
-		// (typical of EHCI "host system error" on Intel controllers after ~2min
-		// of sustained isochronous streaming). Stop the data pump to avoid
-		// further error spam - user must unplug/replug the camera to recover.
-		if (fFillFrameTimeout == 20) {
-			syslog(LOG_ERR, "UVCCamDevice: USB host controller appears stuck. "
-				"Stopping transfer. Please unplug and reconnect the camera.\n");
+		// After 10 consecutive timeouts, attempt automatic recovery.
+		// This is typical of EHCI "host system error" on Intel controllers
+		// after sustained isochronous streaming. Cycle the streaming alternate
+		// (down to 0, back to streaming) to re-initialize the endpoint.
+		if (fFillFrameTimeout == 10 && !fEHCIRecoveryInProgress) {
+			fEHCIRecoveryInProgress = true;
+			syslog(LOG_WARNING, "UVCCamDevice: 10 consecutive frame timeouts - "
+				"attempting recovery via alternate cycle\n");
+
+			uint8 streamAlt = fCurrentVideoAlternate;
+			if (streamAlt > 0) {
+				BAutolock lock(Locker());
+				const BUSBConfiguration* cfg = fDevice
+					? fDevice->ActiveConfiguration() : NULL;
+				if (cfg != NULL) {
+					BUSBInterface* iface = const_cast<BUSBInterface*>(
+						cfg->InterfaceAt(fStreamingIndex));
+					if (iface != NULL) {
+						iface->SetAlternate(0);
+						snooze(100000);
+						iface->SetAlternate(streamAlt);
+						syslog(LOG_INFO, "UVCCamDevice: recovery alt cycle complete "
+							"(%u -> 0 -> %u)\n", streamAlt, streamAlt);
+					}
+				}
+			}
+			fEHCIRecoveryInProgress = false;
+		}
+
+		// If recovery didn't help by 30 timeouts, give up and stop the pump.
+		if (fFillFrameTimeout == 30) {
+			syslog(LOG_ERR, "UVCCamDevice: recovery failed - stopping transfer. "
+				"Please unplug and reconnect the camera.\n");
 			StopTransfer();
 		}
 
