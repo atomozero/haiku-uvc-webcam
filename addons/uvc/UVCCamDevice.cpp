@@ -5476,6 +5476,10 @@ UVCCamDevice::_ConvertYUY2toRGB32(unsigned char* dst, unsigned char* src,
 	if (!dst || !src || width <= 0 || height <= 0)
 		return;
 
+	// Need at least 8 bytes for diagnostics and 4 bytes for one YUY2 macro-pixel
+	if (srcSize < 8)
+		return;
+
 	// Ensure lookup tables are initialized
 	if (!gYuvRgbTables.initialized) {
 		gYuvRgbTables.Initialize();
@@ -5604,13 +5608,16 @@ UVCCamDevice::_ConvertYUY2toRGB32(unsigned char* dst, unsigned char* src,
 #endif
 
 	// Row-by-row conversion for proper stride handling
+	size_t rowDataBytes = (size_t)width * 2;  // bytes of YUY2 data we read per row
 	for (int32 row = 0; row < height; row++) {
-		const unsigned char* srcRow = src + row * srcStride;
-		unsigned char* dstRow = dst + row * dstStride;
-
-		// Check source bounds for this row
-		if ((size_t)(srcRow - src) + srcStride > srcSize)
+		size_t rowOffset = (size_t)row * srcStride;
+		// Need rowDataBytes from source for this row (srcStride may be > rowDataBytes
+		// when padding is present; we still only read rowDataBytes worth)
+		if (rowOffset + rowDataBytes > srcSize)
 			break;
+
+		const unsigned char* srcRow = src + rowOffset;
+		unsigned char* dstRow = dst + row * dstStride;
 
 		// Process this row (width pixels = width/2 YUY2 macro-pixels)
 		for (int32 x = 0; x < width; x += 2) {
