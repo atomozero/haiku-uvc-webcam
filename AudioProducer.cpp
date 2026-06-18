@@ -1039,18 +1039,30 @@ AudioProducer::AudioGenerator()
 			}
 		}
 
+		// Pace the producer to wall clock. The buffer represents
+		// framesPerBuffer of audio (= bufferDuration of wall time). If we
+		// produced it faster than wall time (e.g. during a burst of queued
+		// USB data), snooze so it arrives at the right moment. Otherwise the
+		// recorder sees timestamps run ahead of the time source and discards
+		// the "future" buffers.
+		bigtime_t framesElapsed = (bigtime_t)((double)fFramesSent
+			* 1000000.0 / (double)frameRate);
+		bigtime_t targetTime = fStartTime + framesElapsed;
+		bigtime_t now = system_time();
+		if (targetTime > now + 1000)
+			snooze(targetTime - now);
+
 		// Set buffer header
 		media_header *h = buffer->Header();
 		h->type = B_MEDIA_RAW_AUDIO;
 		h->size_used = bytesToFill;
 		h->time_source = TimeSource()->ID();
 
-		// Use current performance time for live audio
 		BTimeSource* ts = TimeSource();
 		if (ts != NULL)
-			h->start_time = ts->PerformanceTimeFor(system_time());
+			h->start_time = ts->PerformanceTimeFor(targetTime);
 		else
-			h->start_time = system_time();
+			h->start_time = targetTime;
 
 		if (SendBuffer(buffer, fOutput.source, fOutput.destination) != B_OK) {
 			syslog(LOG_WARNING, "AudioProducer: SendBuffer failed\n");
@@ -1063,10 +1075,10 @@ AudioProducer::AudioGenerator()
 		fFramesSent += framesPerBuffer;
 
 		// Group 8: Periodic statistics report (every 30 seconds)
-		bigtime_t now = system_time();
-		if (now - fLastStatsReport > 30000000) {
+		bigtime_t nowStats = system_time();
+		if (nowStats - fLastStatsReport > 30000000) {
 			LogAudioStats();
-			fLastStatsReport = now;
+			fLastStatsReport = nowStats;
 		}
 	}
 
