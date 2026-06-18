@@ -69,7 +69,10 @@ AudioProducer::AudioProducer(
 
 	fMuted = false;
 	fVolume = 1.0f;
-	fAutoGain = false;
+	// Enable AGC by default: many webcam mics have a hardware gain that's
+	// too aggressive, causing constant saturation. The AGC attenuates loud
+	// input toward -6 dBFS and amplifies quiet input up to +18 dB.
+	fAutoGain = true;
 	fAutoGainCurrent = 1.0f;
 	fLastParamChange = 0;
 
