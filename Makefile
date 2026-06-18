@@ -48,6 +48,15 @@ clean:
 
 install: $(TARGET)
 	mkdir -p /boot/home/config/non-packaged/add-ons/media
+	# Stop media servers BEFORE replacing the addon to avoid crashes
+	# (the addon is mapped in memory by media_addon_server)
+	-kill $$(pidof CodyCam) 2>/dev/null || true
+	-kill $$(pidof BubiCam) 2>/dev/null || true
+	-kill -9 $$(pidof media_addon_server) 2>/dev/null || true
+	-kill -9 $$(pidof media_server) 2>/dev/null || true
+	sleep 1
 	cp $(TARGET) /boot/home/config/non-packaged/add-ons/media/
+	@echo ""
+	@echo "Driver installed. Media servers will auto-restart when needed."
 
 .PHONY: all clean install
