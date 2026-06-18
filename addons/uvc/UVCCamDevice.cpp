@@ -1086,14 +1086,16 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 	// negotiation to start from the default frame and reject everything
 	// else until a successful probe has established baseline. We try the
 	// camera's default first, then fall back to "nearest target pixel
-	// count" (MJPEG: 1280x720, uncompressed: 320x240) if the default is
-	// invalid or missing.
+	// count" if the default is invalid or missing.
+	//
+	// Target must match SuggestVideoFrame() (MJPEG: 640x480, YUY2: 320x240)
+	// to avoid configuring the camera twice during stream startup.
 	{
 		const bool prefersMJPEG = (fMJPEGFrames.CountItems() > 0);
 		BList* defaultList = prefersMJPEG ? &fMJPEGFrames : &fUncompressedFrames;
 		uint8 cameraDefault = prefersMJPEG
 			? fDefaultMJPEGFrameIndex : fDefaultUncompressedFrameIndex;
-		uint32 targetPixels = prefersMJPEG ? (1280 * 720) : (320 * 240);
+		uint32 targetPixels = prefersMJPEG ? (640 * 480) : (320 * 240);
 		int32 bestIndex = -1;
 
 		// 1) Honour the camera's bDefaultFrameIndex if present and valid.
