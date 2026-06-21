@@ -65,6 +65,7 @@ usb_webcam_support_descriptor kSupportedDevices[] = {
 
 	// Chicony
 	{{ 0, 0, 0, 0x04f2, 0xb071, }, "Chicony",       "CNF7129 (Asus EEE 100HE)",        "??" },
+	{{ 0, 0, 0, 0x04f2, 0xb119, }, "Chicony",       "CNF8111",                         "??" },
 	{{ 0, 0, 0, 0x04f2, 0xb40a, }, "Chicony",       "HD UVC WebCam",                   "??" },
 
 	// Alcor Micro
