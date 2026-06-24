@@ -57,7 +57,7 @@ due to bandwidth constraints.
 Requires Haiku R1/beta5 or nightly, GCC, and `libturbojpeg`:
 
 ```
-pkgman install devel:libturbojpeg
+pkgman install libturbojpeg_devel
 ```
 
 Then:
