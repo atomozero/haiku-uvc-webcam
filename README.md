@@ -21,6 +21,7 @@ If this driver saves you a Windows reboot, consider supporting development:
   white balance, gain, backlight compensation, anti-flicker
 * Multi-camera support with unique device naming and hot-plug
 * Automatic resolution fallback when bandwidth is insufficient
+* Optional face detection (bounding boxes only, opt-in, off by default)
 * Extension Unit detection (Sonix, Microsoft H264, Logitech, Realtek)
 * No external dependencies beyond Haiku system libraries and libturbojpeg
 
@@ -97,8 +98,21 @@ Update to a recent nightly, or apply the patches in `patches/`.
 | `WEBCAM_DISABLE_HIGH_BANDWIDTH=1` | Force `mult=1` only (default) |
 | `WEBCAM_MJPEG_QUALITY=N` | Pin MJPEG `wCompQuality` (0..10000) |
 | `WEBCAM_PROBE_DELAY=N` | Extra ms before probe/commit (default 100) |
+| `WEBCAM_FACE_DETECT=1` | Enable face detection overlay (`quiet` = detect + log only, no boxes) |
+| `WEBCAM_FACE_DETECT_INTERVAL=N` | Analyse every Nth frame (default 3, range 1..60) |
 
 Set them in the shell that launches `media_server`.
+
+## Face detection
+
+Setting `WEBCAM_FACE_DETECT=1` turns on an optional, self-contained face
+*detector* — it draws green boxes around faces in the video stream. It is a
+lightweight heuristic (skin-region + geometry), not a neural network, so it
+adds no external dependencies and only runs every few frames to stay off the
+real-time path. It reports *where* faces are; it does **not** identify *who*
+a person is. The feature is off unless the variable is set, so cameras used by
+everyone else are unaffected. For identity recognition, run a separate consumer
+application against the media node — that work does not belong in the driver.
 
 ## Diagnostic tools
 

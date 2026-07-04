@@ -11,10 +11,12 @@
 #include <media/MediaDefs.h>
 #include <media/MediaEventLooper.h>
 #include <media/MediaNode.h>
+#include <interface/Rect.h>
 #include <support/Locker.h>
 #include <support/String.h>
 
 class CamDevice;
+class CamFaceDetector;
 class BParameter;
 class BTextParameter;
 
@@ -151,6 +153,15 @@ static	int32				_frame_generator_(void *data);
 		uint32				fColor;
 		BString				fInfoString;
 		bigtime_t			fLastColorChange;	// TODO: rename
+
+		// Optional face detection (bounding boxes only, no identification).
+		// Off unless WEBCAM_FACE_DETECT is set; see CamFaceDetector.
+		CamFaceDetector		*fFaceDetector;
+		bool				fFaceDetectEnabled;
+		bool				fFaceDrawBoxes;
+		int32				fFaceDetectInterval;	// run every Nth frame
+		int32				fLastFaceCount;
+		BRect				fLastFaces[8];			// CamFaceDetector::kMaxFaces
 
 		struct {
 			uint32 frames;
