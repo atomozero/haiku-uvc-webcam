@@ -1022,6 +1022,19 @@ VideoProducer::SetParameterValue(
 			if (dev == NULL)
 				return;
 
+			// Refuse live resolution changes. Changing the buffer geometry on
+			// an active consumer connection without a full format renegotiation
+			// hands the consumer buffers of a size it never agreed to, which
+			// corrupts its video (and the device would also restart streaming
+			// at the new geometry underneath it). Resolution can still be
+			// changed while disconnected — the consumer picks it up on connect.
+			int32 resId = dev->ResolutionParameterID();
+			if (fConnected && resId != 0 && id == resId) {
+				syslog(LOG_WARNING, "Producer: ignoring resolution change while "
+					"connected — stop the stream to change resolution\n");
+				return;
+			}
+
 			uint32 newWidth = 0;
 			uint32 newHeight = 0;
 			bool haveNewDims = false;

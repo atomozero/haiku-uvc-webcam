@@ -442,6 +442,12 @@ class CamDevice {
 	BMediaNode*			AudioNode() const { return fAudioNode; }
 	void				QuitAudioNode();
 
+	// Media parameter id of the discrete "Resolution" control, or 0 if the
+	// device exposes none. The producer uses it to refuse live resolution
+	// changes on an active consumer connection (which would otherwise send
+	// buffers of a geometry the consumer never negotiated).
+	virtual int32		ResolutionParameterID() const { return 0; }
+
 	// locking
 	bool				Lock();
 	void				Unlock();
