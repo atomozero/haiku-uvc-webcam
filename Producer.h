@@ -178,6 +178,11 @@ static	int32				_frame_generator_(void *data);
 		bool				fFaceLocked;		// controls currently frozen
 		int32				fFaceMissStreak;	// detection passes with no face
 
+		// Optional UVC region-of-interest feedback (WEBCAM_FACE_ROI): steer
+		// the camera's auto-exposure/focus/WB onto the face rectangle.
+		bool				fFaceROI;			// feature enabled
+		BRect				fLastROISent;		// last box pushed to hardware
+
 		struct {
 			uint32 frames;
 			uint32 actual;

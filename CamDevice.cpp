@@ -708,6 +708,15 @@ CamDevice::LockControlsForFace(bool lock)
 }
 
 
+status_t
+CamDevice::SetRegionOfInterest(uint16 left, uint16 top, uint16 right,
+	uint16 bottom, uint16 autoControls)
+{
+	// No generic control surface; concrete UVC devices override this.
+	return B_NOT_SUPPORTED;
+}
+
+
 bool
 CamDevice::Lock()
 {

@@ -354,6 +354,9 @@ public:
 									bigtime_t *stamp = NULL);
 
 	virtual status_t			LockControlsForFace(bool lock);
+	virtual status_t			SetRegionOfInterest(uint16 left, uint16 top,
+									uint16 right, uint16 bottom,
+									uint16 autoControls);
 
 	// P3 Fase B: enumerate and switch between VideoStreaming interfaces.
 	// NumStreams() returns the count of VS interfaces detected during

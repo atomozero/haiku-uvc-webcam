@@ -393,6 +393,13 @@ class CamDevice {
 	// when called with lock=false.
 	virtual status_t	LockControlsForFace(bool lock);
 
+	// SetRegionOfInterest: ask the camera to meter/focus/white-balance on a
+	// rectangle (in current-frame pixel coordinates) instead of the whole
+	// scene. This fixes the classic backlit-subject case (bright window
+	// behind a face). Requires UVC CT_REGION_OF_INTEREST support.
+	virtual status_t	SetRegionOfInterest(uint16 left, uint16 top,
+							uint16 right, uint16 bottom, uint16 autoControls);
+
 
 	// for use by deframer
 	virtual size_t		MinRawFrameSize();
