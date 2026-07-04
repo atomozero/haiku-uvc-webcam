@@ -25,6 +25,10 @@
 //XXX: change interface
 #include <interface/Bitmap.h>
 
+#include <storage/FindDirectory.h>
+#include <storage/Path.h>
+#include <support/String.h>
+
 #include "CamDevice.h"
 #include "CamFaceDetector.h"
 #include "CamSensor.h"
@@ -145,35 +149,83 @@ VideoProducer::VideoProducer(
 	fFaceROI = false;
 	fLastROISent = BRect(-1, -1, -1, -1);
 
+	// Opt-in resolution: enable when the WEBCAM_FACE_DETECT env var is set OR a
+	// settings file exists. The file is what makes the feature usable on Haiku,
+	// where the media_addon_server is started by launch_daemon and does not
+	// inherit a shell's environment (so exporting the var rarely reaches it).
+	// File: <settings>/webcam_face_detect, one "key value" per line; keys:
+	// interval, overlay, ae_lock, roi, mode (mode=quiet disables the overlay).
+	// An empty file just enables with defaults. Env vars, when present, win.
+	BString cfgInterval, cfgOverlay, cfgAeLock, cfgRoi, cfgMode;
+	bool haveCfgFile = false;
+	{
+		BPath cfgPath;
+		if (find_directory(B_USER_SETTINGS_DIRECTORY, &cfgPath) == B_OK) {
+			cfgPath.Append("webcam_face_detect");
+			FILE* f = fopen(cfgPath.Path(), "r");
+			if (f != NULL) {
+				haveCfgFile = true;
+				char line[256];
+				while (fgets(line, sizeof(line), f) != NULL) {
+					char key[64] = {0}, val[128] = {0};
+					if (sscanf(line, " %63s %127s", key, val) < 1)
+						continue;
+					if (key[0] == '#')
+						continue;
+					if (strcmp(key, "interval") == 0) cfgInterval = val;
+					else if (strcmp(key, "overlay") == 0) cfgOverlay = val;
+					else if (strcmp(key, "ae_lock") == 0) cfgAeLock = val;
+					else if (strcmp(key, "roi") == 0) cfgRoi = val;
+					else if (strcmp(key, "mode") == 0) cfgMode = val;
+				}
+				fclose(f);
+			}
+		}
+	}
+
 	const char* faceEnv = getenv("WEBCAM_FACE_DETECT");
-	if (faceEnv != NULL && faceEnv[0] != '0' && faceEnv[0] != '\0') {
+	const bool enableByEnv =
+		(faceEnv != NULL && faceEnv[0] != '0' && faceEnv[0] != '\0');
+	if (enableByEnv || haveCfgFile) {
 		fFaceDetectEnabled = true;
-		// "boxes" or "1" draws overlays; "quiet" only logs detections.
-		if (strcmp(faceEnv, "quiet") == 0)
+
+		// Overlay off if env "quiet", or file mode=quiet / overlay=0.
+		if ((enableByEnv && strcmp(faceEnv, "quiet") == 0)
+			|| cfgMode == "quiet" || cfgOverlay == "0")
 			fFaceDrawBoxes = false;
 
+		// interval: env first, then file.
 		const char* intervalEnv = getenv("WEBCAM_FACE_DETECT_INTERVAL");
-		if (intervalEnv != NULL) {
-			int32 n = atoi(intervalEnv);
-			if (n >= 1 && n <= 60)
-				fFaceDetectInterval = n;
-		}
+		int32 n = 0;
+		if (intervalEnv != NULL)
+			n = atoi(intervalEnv);
+		else if (cfgInterval.Length() > 0)
+			n = atoi(cfgInterval.String());
+		if (n >= 1 && n <= 60)
+			fFaceDetectInterval = n;
 
+		// ae_lock: env first, then file.
 		const char* aeLockEnv = getenv("WEBCAM_FACE_AE_LOCK");
-		if (aeLockEnv != NULL && aeLockEnv[0] != '0' && aeLockEnv[0] != '\0')
-			fFaceAELock = true;
+		if (aeLockEnv != NULL)
+			fFaceAELock = (aeLockEnv[0] != '0' && aeLockEnv[0] != '\0');
+		else if (cfgAeLock.Length() > 0)
+			fFaceAELock = (cfgAeLock != "0");
 
+		// roi: env first, then file.
 		const char* roiEnv = getenv("WEBCAM_FACE_ROI");
-		if (roiEnv != NULL && roiEnv[0] != '0' && roiEnv[0] != '\0')
-			fFaceROI = true;
+		if (roiEnv != NULL)
+			fFaceROI = (roiEnv[0] != '0' && roiEnv[0] != '\0');
+		else if (cfgRoi.Length() > 0)
+			fFaceROI = (cfgRoi != "0");
 
 		fFaceDetector = new(std::nothrow) CamFaceDetector();
 		if (fFaceDetector == NULL)
 			fFaceDetectEnabled = false;
 		else
 			syslog(LOG_INFO, "Producer: face detection enabled "
-				"(interval=%" B_PRId32 ", overlay=%d, ae_lock=%d, roi=%d)\n",
-				fFaceDetectInterval, fFaceDrawBoxes, fFaceAELock, fFaceROI);
+				"(interval=%" B_PRId32 ", overlay=%d, ae_lock=%d, roi=%d, src=%s)\n",
+				fFaceDetectInterval, fFaceDrawBoxes, fFaceAELock, fFaceROI,
+				enableByEnv ? "env" : "file");
 	}
 
 	AddNodeKind(B_PHYSICAL_INPUT);
