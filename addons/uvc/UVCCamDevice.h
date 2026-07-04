@@ -353,6 +353,8 @@ public:
 	virtual status_t			FillFrameBuffer(BBuffer *buffer,
 									bigtime_t *stamp = NULL);
 
+	virtual status_t			LockControlsForFace(bool lock);
+
 	// P3 Fase B: enumerate and switch between VideoStreaming interfaces.
 	// NumStreams() returns the count of VS interfaces detected during
 	// construction. GetStreamName(idx, out) writes a short human-readable
@@ -747,6 +749,13 @@ private:
 			int32				fFocusAbsoluteID;
 			int32				fZoomAbsoluteID;
 			int32				fPanTiltID;
+
+			// Face-tracking control lock state (see LockControlsForFace).
+			// Remembers the automatic modes we overrode so they can be
+			// restored when the face leaves the frame.
+			bool				fFaceLockActive;
+			uint8				fSavedAEMode;			// AE mode before lock
+			int					fSavedWBTempAuto;		// WB auto before lock
 
 			// Extension Unit support (XU) - Vendor-specific features
 			BList				fExtensionUnits;		// List of extension_unit_info*

@@ -700,6 +700,14 @@ CamDevice::FillFrameBuffer(BBuffer *buffer, bigtime_t *stamp)
 }
 
 
+status_t
+CamDevice::LockControlsForFace(bool lock)
+{
+	// No generic control surface; concrete UVC devices override this.
+	return B_NOT_SUPPORTED;
+}
+
+
 bool
 CamDevice::Lock()
 {

@@ -581,6 +581,10 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 	fFocusAbsoluteID(-1),
 	fZoomAbsoluteID(-1),
 	fPanTiltID(-1),
+	// Face-tracking control lock
+	fFaceLockActive(false),
+	fSavedAEMode(2),
+	fSavedWBTempAuto(1),
 	// Extension Unit support (XU)
 	fHasExtensionUnits(false),
 	// EHCI host system error recovery
@@ -6690,6 +6694,77 @@ UVCCamDevice::_SetCTControlValue(uint16 selector, const void* value, size_t size
 		size, (void*)value);
 
 	return (result >= 0) ? B_OK : (status_t)result;
+}
+
+
+status_t
+UVCCamDevice::LockControlsForFace(bool lock)
+{
+	BAutolock a(fLocker);
+
+	if (lock) {
+		if (fFaceLockActive)
+			return B_OK;	// already frozen
+
+		status_t result = B_NOT_SUPPORTED;
+
+		// Freeze auto white balance: setting the AUTO control to 0 holds
+		// the current colour temperature, so skin tone stops drifting
+		// frame-to-frame.
+		if (fProcessingUnitID != 0) {
+			fSavedWBTempAuto = fWBTempAuto;
+			if (fWBTempAuto != 0
+				&& _SetParameterValue(
+					USB_VIDEO_PU_WHITE_BALANCE_TEMPERATURE_AUTO_CONTROL,
+					(int8)0) == B_OK) {
+				fWBTempAuto = 0;
+				result = B_OK;
+			}
+		}
+
+		// Freeze auto exposure: switch from an automatic AE mode to manual
+		// (1). The camera keeps its last auto exposure, so brightness holds
+		// steady instead of hunting when the subject moves.
+		if (fHasCameraTerminal && fAutoExposureModeID >= 0) {
+			fSavedAEMode = fAutoExposureMode;
+			if ((fAutoExposureMode == 2 || fAutoExposureMode == 8)) {
+				uint8 mode = 1;	// Manual
+				if (_SetCTControlValue(USB_VIDEO_CT_AE_MODE_CONTROL,
+						&mode, 1) == B_OK) {
+					fAutoExposureMode = mode;
+					result = B_OK;
+				}
+			}
+		}
+
+		fFaceLockActive = true;
+		syslog(LOG_INFO, "UVCCamDevice: face control lock ON "
+			"(AE=%d, WBauto=%d)\n", fAutoExposureMode, fWBTempAuto);
+		return result;
+	}
+
+	// Unlock: restore whatever automatic modes we overrode.
+	if (!fFaceLockActive)
+		return B_OK;
+
+	if (fProcessingUnitID != 0 && fWBTempAuto != fSavedWBTempAuto) {
+		if (_SetParameterValue(
+				USB_VIDEO_PU_WHITE_BALANCE_TEMPERATURE_AUTO_CONTROL,
+				(int8)fSavedWBTempAuto) == B_OK) {
+			fWBTempAuto = fSavedWBTempAuto;
+		}
+	}
+
+	if (fHasCameraTerminal && fAutoExposureModeID >= 0
+		&& fAutoExposureMode != fSavedAEMode) {
+		uint8 mode = fSavedAEMode;
+		if (_SetCTControlValue(USB_VIDEO_CT_AE_MODE_CONTROL, &mode, 1) == B_OK)
+			fAutoExposureMode = mode;
+	}
+
+	fFaceLockActive = false;
+	syslog(LOG_INFO, "UVCCamDevice: face control lock OFF (restored)\n");
+	return B_OK;
 }
 
 
