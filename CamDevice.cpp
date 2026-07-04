@@ -10,6 +10,7 @@
 #include "CamDebug.h"
 #include "AddOn.h"
 #include "Producer.h"
+#include "AudioProducer.h"
 
 #include <OS.h>
 #include <Autolock.h>
@@ -181,6 +182,7 @@ CamDevice::CamDevice(CamDeviceAddon &_addon, BUSBDevice* _device)
 	fFlavorInfo.name = fFlavorInfoNameStr.String();
 	fFlavorInfo.info = fFlavorInfoInfoStr.String();
 	fVideoNode = NULL;
+	fAudioNode = NULL;
 	fDumpFD = -1;
 #ifdef DEBUG_WRITE_DUMP
 	fDumpFD = open("/boot/home/webcam.out", O_CREAT|O_RDWR, 0644);
@@ -272,6 +274,38 @@ CamDevice::QuitVideoNode()
 		snooze(50000);
 	}
 	fVideoNode = NULL;
+}
+
+
+void
+CamDevice::QuitAudioNode()
+{
+	if (fAudioNode == NULL)
+		return;
+
+	BMediaRoster* roster = BMediaRoster::Roster();
+	if (roster != NULL) {
+		media_node node = fAudioNode->Node();
+		syslog(LOG_INFO, "CamDevice: Stopping and releasing audio node %d\n",
+			(int)node.node);
+
+		// Stop synchronously first. This drives the AudioProducer's HandleStop
+		// on the Media Kit event loop, which joins the real-time audio
+		// generator thread and stops the USB audio transfer while our device
+		// back-pointer is still valid.
+		roster->StopNode(node, 0, true);	// synchronous stop
+
+		// Now that the generator thread has been joined, drop the back-pointer
+		// so any message the event loop still delivers to the (stopped) node
+		// can't dereference the soon-to-be-deleted CamDevice.
+		AudioProducer* ap = dynamic_cast<AudioProducer*>(fAudioNode);
+		if (ap != NULL)
+			ap->SetCamDevice(NULL);
+
+		// Give the event loop time to process pending messages
+		snooze(50000);
+	}
+	fAudioNode = NULL;
 }
 
 

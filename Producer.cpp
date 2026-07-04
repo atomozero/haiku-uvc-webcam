@@ -1017,14 +1017,32 @@ VideoProducer::SetParameterValue(
 			// forbidden
 			return;
 		default:
-			if (fCamDevice == NULL)
+		{
+			CamDevice* dev = fCamDevice;
+			if (dev == NULL)
 				return;
 
-			BAutolock lock(fCamDevice->Locker());
-			err = fCamDevice->SetParameterValue(id, when, value, size);
-			if ((err < B_OK) && (fCamDevice->Sensor())) {
-				err = fCamDevice->Sensor()->SetParameterValue(id, when, value, size);
+			uint32 newWidth = 0;
+			uint32 newHeight = 0;
+			bool haveNewDims = false;
+
+			{
+				BAutolock lock(dev->Locker());
+				err = dev->SetParameterValue(id, when, value, size);
+				if ((err < B_OK) && (dev->Sensor())) {
+					err = dev->Sensor()->SetParameterValue(id, when, value, size);
+				}
+				if (err >= B_OK) {
+					BRect frame = dev->VideoFrame();
+					newWidth = (uint32)(frame.Width() + 1);
+					newHeight = (uint32)(frame.Height() + 1);
+					haveNewDims = true;
+				}
 			}
+			// The CamDevice lock is released above BEFORE we take fLock.
+			// FrameGenerator holds fLock and then acquires the CamDevice lock
+			// (inside FillFrameBuffer); grabbing the two in the opposite order
+			// here would deadlock.
 
 			/* FIX BUG 10: Aggiorna fOutput.format quando cambia la risoluzione.
 			 * Senza questo fix, SetParameterValue aggiornava solo lo stato interno
@@ -1033,10 +1051,13 @@ VideoProducer::SetParameterValue(
 			 * format_is_compatible() confrontava la nuova risoluzione richiesta
 			 * con la vecchia fOutput.format ancora impostata alla risoluzione iniziale.
 			 */
-			if (err >= B_OK) {
-				BRect frame = fCamDevice->VideoFrame();
-				uint32 newWidth = (uint32)(frame.Width() + 1);
-				uint32 newHeight = (uint32)(frame.Height() + 1);
+			if (haveNewDims) {
+				/* fLock is the lock FrameGenerator holds while it dereferences
+				 * fBufferGroup. Recreating the group under it (instead of under
+				 * the CamDevice lock, as before) prevents the use-after-free
+				 * where the generator was reading a group we had just deleted.
+				 */
+				BAutolock plock(fLock);
 
 				/* Aggiorna solo se le dimensioni sono effettivamente cambiate */
 				if (fOutput.format.u.raw_video.display.line_width != newWidth ||
@@ -1076,6 +1097,8 @@ VideoProducer::SetParameterValue(
 					}
 				}
 			}
+			break;
+		}
 	}
 
 	if (err >= B_OK)
