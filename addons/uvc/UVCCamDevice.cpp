@@ -1476,12 +1476,28 @@ UVCCamDevice::_ParseVideoStreaming(const usbvc_class_descriptor* _descriptor,
 			// expose other usable resolutions on the same VS interface.
 			const uint32 kMaxReasonableFrameSize = 50 * 1024 * 1024; // 50MB
 			const uint16 kMaxReasonableDim = 8192;
+			// Discrete frame intervals live in the trailing bytes after the
+			// fixed part of the descriptor (up to and including
+			// frame_interval_type). A well-formed descriptor's
+			// frame_interval_type (device-controlled uint8, up to 255) must
+			// match what its bLength can actually hold; reject garbage/oversized
+			// values so the loops that iterate discrete_frame_intervals[] below
+			// don't read past the descriptor.
+			const uint32 kFrameDescFixedLen =
+				offsetof(usb_video_frame_descriptor, frame_interval_type) + 1;
+			const uint32 maxDiscreteFromLen =
+				(descriptor->length > kFrameDescFixedLen)
+					? (uint32)(descriptor->length - kFrameDescFixedLen)
+						/ (uint32)sizeof(uint32)
+					: 0;
 			const bool descSane = (descriptor->width > 0
 				&& descriptor->height > 0
 				&& descriptor->width <= kMaxReasonableDim
 				&& descriptor->height <= kMaxReasonableDim
 				&& descriptor->max_video_frame_buffer_size
-					<= kMaxReasonableFrameSize);
+					<= kMaxReasonableFrameSize
+				&& (descriptor->frame_interval_type == 0
+					|| descriptor->frame_interval_type <= maxDiscreteFromLen));
 
 			const char* tag = (_descriptor->descriptorSubtype
 					== USB_VIDEO_VS_FRAME_UNCOMPRESSED)
@@ -1495,12 +1511,26 @@ UVCCamDevice::_ParseVideoStreaming(const usbvc_class_descriptor* _descriptor,
 					tag, descriptor->width, descriptor->height,
 					descriptor->max_video_frame_buffer_size,
 					fDevice->VendorID(), fDevice->ProductID());
-			} else if (_descriptor->descriptorSubtype
-					== USB_VIDEO_VS_FRAME_UNCOMPRESSED) {
-				fUncompressedFrames.AddItem(
-					new usb_video_frame_descriptor(*descriptor));
 			} else {
-				fMJPEGFrames.AddItem(new usb_video_frame_descriptor(*descriptor));
+				// The struct stores discrete intervals in a fixed-size union:
+				// discrete_frame_intervals[0] is a flexible array member that
+				// overlaps the 12-byte `continuous` variant, so a plain copy of
+				// the descriptor can only hold kIntervalsInCopy intervals.
+				// Clamp the stored count so every downstream
+				// `i < frame_interval_type` loop over this copy stays in bounds.
+				const uint8 kIntervalsInCopy = (uint8)(
+					sizeof(usb_video_frame_descriptor::continuous)
+						/ sizeof(uint32));
+				usb_video_frame_descriptor* copy =
+					new usb_video_frame_descriptor(*descriptor);
+				if (copy->frame_interval_type > kIntervalsInCopy)
+					copy->frame_interval_type = kIntervalsInCopy;
+
+				if (_descriptor->descriptorSubtype
+						== USB_VIDEO_VS_FRAME_UNCOMPRESSED)
+					fUncompressedFrames.AddItem(copy);
+				else
+					fMJPEGFrames.AddItem(copy);
 			}
 			printf("\tbFrameIdx=%d,stillsupported=%s,"
 				"fixedframerate=%s\n", descriptor->frame_index,
@@ -5205,11 +5235,32 @@ UVCCamDevice::FillFrameBuffer(BBuffer* buffer, bigtime_t* stamp)
 					BUSBInterface* iface = const_cast<BUSBInterface*>(
 						cfg->InterfaceAt(fStreamingIndex));
 					if (iface != NULL) {
+						// Bring the interface down to alt 0. Going N->0 is safe:
+						// only the 0->N direction trips Haiku's SetAlternate
+						// double-free. SetAlternate() destroys and recreates the
+						// BUSBEndpoint objects, so fIsoIn is now dangling — drop
+						// it immediately, before the pump thread can dereference
+						// it (this was a use-after-free).
 						iface->SetAlternate(0);
+						fIsoIn = NULL;
+						fCurrentVideoAlternate = 0;
 						snooze(100000);
-						iface->SetAlternate(streamAlt);
-						syslog(LOG_INFO, "UVCCamDevice: recovery alt cycle complete "
-							"(%u -> 0 -> %u)\n", streamAlt, streamAlt);
+
+						// Re-select the streaming alternate through the normal
+						// path. _SelectBestAlternate() applies the 0->N
+						// double-free workaround AND re-fetches fIsoIn /
+						// fIsoMaxPacketSize / fBuffer. A raw SetAlternate(streamAlt)
+						// here would skip the workaround and leave fIsoIn pointing
+						// at freed memory.
+						status_t rs = _SelectBestAlternate();
+						if (rs != B_OK) {
+							syslog(LOG_ERR, "UVCCamDevice: recovery re-select "
+								"failed: %s\n", strerror(rs));
+						} else {
+							syslog(LOG_INFO, "UVCCamDevice: recovery alt cycle "
+								"complete (%u -> 0 -> %u)\n", streamAlt,
+								fCurrentVideoAlternate);
+						}
 					}
 				}
 			}
@@ -5662,33 +5713,49 @@ UVCCamDevice::_ConvertYUY2toRGB32(unsigned char* dst, unsigned char* src,
 
 		// Process this row (width pixels = width/2 YUY2 macro-pixels)
 		for (int32 x = 0; x < width; x += 2) {
-			// Read YUY2 macro-pixel (2 pixels)
+			// Read the luma + shared chroma-U of this macro-pixel.
 			uint8 y0 = srcRow[0];
 			uint8 u  = srcRow[1];
-			uint8 y1 = srcRow[2];
-			uint8 v  = srcRow[3];
-			srcRow += 4;
 
 			// Lookup pre-computed values (no multiplications!)
 			int32 yVal0 = yTable[y0];
-			int32 yVal1 = yTable[y1];
 			int32 uB = uBTable[u];
 			int32 uG = uGTable[u];
-			int32 vR = vRTable[v];
-			int32 vG = vGTable[v];
 
-			// Pixel 0: BGRA (combine Y with U/V contributions, then shift)
-			dstRow[0] = clamp255((yVal0 + uB + 128) >> 8);           // B
-			dstRow[1] = clamp255((yVal0 + uG + vG + 128) >> 8);      // G
-			dstRow[2] = clamp255((yVal0 + vR + 128) >> 8);           // R
-			dstRow[3] = 255;                                          // A
+			if (x + 1 < width) {
+				// Full macro-pixel: second luma + shared chroma-V.
+				uint8 y1 = srcRow[2];
+				uint8 v  = srcRow[3];
+				int32 yVal1 = yTable[y1];
+				int32 vR = vRTable[v];
+				int32 vG = vGTable[v];
 
-			// Pixel 1: BGRA
-			dstRow[4] = clamp255((yVal1 + uB + 128) >> 8);           // B
-			dstRow[5] = clamp255((yVal1 + uG + vG + 128) >> 8);      // G
-			dstRow[6] = clamp255((yVal1 + vR + 128) >> 8);           // R
-			dstRow[7] = 255;                                          // A
-			dstRow += 8;
+				// Pixel 0: BGRA (combine Y with U/V contributions, then shift)
+				dstRow[0] = clamp255((yVal0 + uB + 128) >> 8);           // B
+				dstRow[1] = clamp255((yVal0 + uG + vG + 128) >> 8);      // G
+				dstRow[2] = clamp255((yVal0 + vR + 128) >> 8);           // R
+				dstRow[3] = 255;                                          // A
+
+				// Pixel 1: BGRA
+				dstRow[4] = clamp255((yVal1 + uB + 128) >> 8);           // B
+				dstRow[5] = clamp255((yVal1 + uG + vG + 128) >> 8);      // G
+				dstRow[6] = clamp255((yVal1 + vR + 128) >> 8);           // R
+				dstRow[7] = 255;                                          // A
+				dstRow += 8;
+			} else {
+				// Odd width: the lone trailing pixel has no paired chroma-V in
+				// the source. Reading srcRow[2..3] would over-read the row (and,
+				// on the last row, the dst buffer) — emit just this pixel with
+				// neutral V instead.
+				int32 vR = vRTable[128];
+				int32 vG = vGTable[128];
+				dstRow[0] = clamp255((yVal0 + uB + 128) >> 8);           // B
+				dstRow[1] = clamp255((yVal0 + uG + vG + 128) >> 8);      // G
+				dstRow[2] = clamp255((yVal0 + vR + 128) >> 8);           // R
+				dstRow[3] = 255;                                          // A
+				dstRow += 4;
+			}
+			srcRow += 4;
 		}
 	}
 }
@@ -5806,26 +5873,38 @@ UVCCamDevice::_ConvertUYVYtoRGB32(unsigned char* dst, const unsigned char* src,
 		for (int32 x = 0; x < width; x += 2) {
 			uint8 u  = srcRow[0];
 			uint8 y0 = srcRow[1];
-			uint8 v  = srcRow[2];
-			uint8 y1 = srcRow[3];
-			srcRow += 4;
 
 			int32 yVal0 = yTable[y0];
-			int32 yVal1 = yTable[y1];
 			int32 uB = uBTable[u];
 			int32 uG = uGTable[u];
-			int32 vR = vRTable[v];
-			int32 vG = vGTable[v];
 
-			dstRow[0] = clamp255((yVal0 + uB + 128) >> 8);
-			dstRow[1] = clamp255((yVal0 + uG + vG + 128) >> 8);
-			dstRow[2] = clamp255((yVal0 + vR + 128) >> 8);
-			dstRow[3] = 255;
-			dstRow[4] = clamp255((yVal1 + uB + 128) >> 8);
-			dstRow[5] = clamp255((yVal1 + uG + vG + 128) >> 8);
-			dstRow[6] = clamp255((yVal1 + vR + 128) >> 8);
-			dstRow[7] = 255;
-			dstRow += 8;
+			if (x + 1 < width) {
+				uint8 v  = srcRow[2];
+				uint8 y1 = srcRow[3];
+				int32 yVal1 = yTable[y1];
+				int32 vR = vRTable[v];
+				int32 vG = vGTable[v];
+
+				dstRow[0] = clamp255((yVal0 + uB + 128) >> 8);
+				dstRow[1] = clamp255((yVal0 + uG + vG + 128) >> 8);
+				dstRow[2] = clamp255((yVal0 + vR + 128) >> 8);
+				dstRow[3] = 255;
+				dstRow[4] = clamp255((yVal1 + uB + 128) >> 8);
+				dstRow[5] = clamp255((yVal1 + uG + vG + 128) >> 8);
+				dstRow[6] = clamp255((yVal1 + vR + 128) >> 8);
+				dstRow[7] = 255;
+				dstRow += 8;
+			} else {
+				// Odd width: lone trailing pixel, no paired chroma-V available.
+				int32 vR = vRTable[128];
+				int32 vG = vGTable[128];
+				dstRow[0] = clamp255((yVal0 + uB + 128) >> 8);
+				dstRow[1] = clamp255((yVal0 + uG + vG + 128) >> 8);
+				dstRow[2] = clamp255((yVal0 + vR + 128) >> 8);
+				dstRow[3] = 255;
+				dstRow += 4;
+			}
+			srcRow += 4;
 		}
 	}
 }

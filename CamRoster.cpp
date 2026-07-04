@@ -10,6 +10,7 @@
 #include "CamDebug.h"
 
 #include <new>
+#include <Autolock.h>
 #include <OS.h>
 
 #undef B_WEBCAM_MKINTFUNC
@@ -56,12 +57,17 @@ CamRoster::DeviceAdded(BUSBDevice* _device)
 	// Check if this device is already known (spurious re-enumeration).
 	// SetAlternate() on one webcam can trigger bus-level re-enumeration
 	// of ALL devices. Skip re-initialization if already tracked.
-	for (int32 i = 0; i < fCameras.CountItems(); i++) {
-		CamDevice* existing = (CamDevice*)fCameras.ItemAt(i);
-		if (existing != NULL && existing->Matches(_device)) {
-			syslog(LOG_INFO, "CamRoster: Device already known, skipping re-init "
-				"(spurious re-enumeration)\n");
-			return B_OK;
+	// Hold fLocker while walking fCameras so we don't race the Media Kit
+	// reader threads (CountFlavors/GetFlavorAt/InstantiateNodeFor).
+	{
+		BAutolock lock(fLocker);
+		for (int32 i = 0; i < fCameras.CountItems(); i++) {
+			CamDevice* existing = (CamDevice*)fCameras.ItemAt(i);
+			if (existing != NULL && existing->Matches(_device)) {
+				syslog(LOG_INFO, "CamRoster: Device already known, skipping re-init "
+					"(spurious re-enumeration)\n");
+				return B_OK;
+			}
 		}
 	}
 
@@ -103,7 +109,12 @@ CamRoster::DeviceAdded(BUSBDevice* _device)
 				RestoreDeviceParams(cam, cache);
 			}
 
-			fCameras.AddItem(cam);
+			// Publish the camera under the lock so a concurrent reader never
+			// observes a half-updated BList.
+			{
+				BAutolock lock(fLocker);
+				fCameras.AddItem(cam);
+			}
 			fAddon->CameraAdded(cam);
 			return B_OK;
 		}
@@ -120,11 +131,22 @@ void
 CamRoster::DeviceRemoved(BUSBDevice* _device)
 {
 	PRINT((CH "()" CT));
-	for (int32 i = 0; i < fCameras.CountItems(); ++i) {
-		CamDevice* cam = (CamDevice *)fCameras.ItemAt(i);
-		if (cam == NULL)
-			continue;
-		if (cam->Matches(_device)) {
+
+	// Find the matching camera and unlink it from the list under fLocker, so
+	// that once we start tearing it down no reader can still hand it out.
+	// InstantiateNodeFor holds fLocker across node creation and looks the
+	// camera up by list membership, so removing it here (under the same lock)
+	// closes the use-after-free window against the Media Kit reader threads.
+	CamDevice* cam = NULL;
+	{
+		BAutolock lock(fLocker);
+		for (int32 i = 0; i < fCameras.CountItems(); ++i) {
+			CamDevice* c = (CamDevice *)fCameras.ItemAt(i);
+			if (c == NULL)
+				continue;
+			if (!c->Matches(_device))
+				continue;
+
 			// Check if this is a real removal or a spurious re-enumeration.
 			// During SetAlternate(), Haiku may fire DeviceRemoved for devices
 			// still physically connected. Verify with a control transfer.
@@ -140,33 +162,45 @@ CamRoster::DeviceRemoved(BUSBDevice* _device)
 				}
 			}
 
-			PRINT((CH ": camera %s:%s removed" CT, cam->BrandName(), cam->ModelName()));
+			PRINT((CH ": camera %s:%s removed" CT, c->BrandName(), c->ModelName()));
 
 			// PHASE 3: Cache device params before cleanup
 			// (device pointer is still valid at this point)
-			CacheDeviceParams(cam);
+			CacheDeviceParams(c);
 
 			fCameras.RemoveItem(i);
-
-			// Stop all USB transfers and wait for threads to finish
-			cam->Unplugged();
-
-			// Invalidate the VideoProducer's device pointer and stop it.
-			// The Media Kit may still send messages to the node after
-			// StopNode returns, so we must NOT delete the CamDevice here.
-			cam->QuitVideoNode();
-
-			// Notify Media Kit that the flavor is no longer available
-			fAddon->CameraRemoved(cam);
-
-			// Defer deletion: the Media Kit event loop may still reference
-			// the VideoProducer (and its CamDevice) after CameraRemoved.
-			// Wait long enough for pending messages to drain, then delete.
-			snooze(200000);
-			delete cam;
-			return;
+			cam = c;
+			break;
 		}
 	}
+
+	if (cam == NULL)
+		return;
+
+	// Teardown runs outside fLocker: Unplugged() and StopNode() can block for
+	// seconds and we must not stall the Media Kit reader threads that long.
+	// This is safe because `cam` is already unlinked from fCameras.
+
+	// Stop all USB transfers and wait for threads to finish
+	cam->Unplugged();
+
+	// Invalidate the VideoProducer's device pointer and stop it.
+	// The Media Kit may still send messages to the node after
+	// StopNode returns, so we must NOT delete the CamDevice here.
+	cam->QuitVideoNode();
+
+	// Same for the AudioProducer: without this its real-time generator thread
+	// keeps calling into the CamDevice and would use-after-free once we delete.
+	cam->QuitAudioNode();
+
+	// Notify Media Kit that the flavor is no longer available
+	fAddon->CameraRemoved(cam);
+
+	// Defer deletion: the Media Kit event loop may still reference
+	// the VideoProducer (and its CamDevice) after CameraRemoved.
+	// Wait long enough for pending messages to drain, then delete.
+	snooze(200000);
+	delete cam;
 }
 
 

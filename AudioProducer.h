@@ -116,6 +116,11 @@ virtual					~AudioProducer();
 
 virtual	status_t		InitCheck() const { return fInitStatus; }
 
+		// Invalidate the back-pointer to the CamDevice before it is destroyed.
+		// Called (with NULL) from CamDevice::QuitAudioNode() after the audio
+		// generator thread has been stopped and joined.
+		void			SetCamDevice(CamDevice *dev) { fCamDevice = dev; }
+
 
 /* BMediaNode */
 public:
