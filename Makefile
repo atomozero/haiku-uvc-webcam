@@ -49,6 +49,7 @@ SOURCES = \
 	CamDebug.cpp \
 	CamDeframer.cpp \
 	CamDevice.cpp \
+	CamFaceDetector.cpp \
 	CamFilterInterface.cpp \
 	CamRoster.cpp \
 	CamSensor.cpp \

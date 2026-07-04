@@ -6,7 +6,9 @@
 #include <fcntl.h>
 #include <malloc.h>
 #include <math.h>
+#include <new>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/uio.h>
 #include <syslog.h>
@@ -24,6 +26,7 @@
 #include <interface/Bitmap.h>
 
 #include "CamDevice.h"
+#include "CamFaceDetector.h"
 #include "CamSensor.h"
 
 #define SINGLE_PARAMETER_GROUP 1
@@ -127,6 +130,37 @@ VideoProducer::VideoProducer(
 	fConnectedFormat.field_rate = 30.0f;
 	fConnectedFormat.interlace = 1;
 
+	// Optional, opt-in face detection. Disabled unless WEBCAM_FACE_DETECT is
+	// set, so cameras used by everyone else pay nothing for it.
+	fFaceDetector = NULL;
+	fFaceDetectEnabled = false;
+	fFaceDrawBoxes = true;
+	fFaceDetectInterval = 3;	// analyse every 3rd frame by default
+	fLastFaceCount = 0;
+
+	const char* faceEnv = getenv("WEBCAM_FACE_DETECT");
+	if (faceEnv != NULL && faceEnv[0] != '0' && faceEnv[0] != '\0') {
+		fFaceDetectEnabled = true;
+		// "boxes" or "1" draws overlays; "quiet" only logs detections.
+		if (strcmp(faceEnv, "quiet") == 0)
+			fFaceDrawBoxes = false;
+
+		const char* intervalEnv = getenv("WEBCAM_FACE_DETECT_INTERVAL");
+		if (intervalEnv != NULL) {
+			int32 n = atoi(intervalEnv);
+			if (n >= 1 && n <= 60)
+				fFaceDetectInterval = n;
+		}
+
+		fFaceDetector = new(std::nothrow) CamFaceDetector();
+		if (fFaceDetector == NULL)
+			fFaceDetectEnabled = false;
+		else
+			syslog(LOG_INFO, "Producer: face detection enabled "
+				"(interval=%" B_PRId32 ", overlay=%d)\n",
+				fFaceDetectInterval, fFaceDrawBoxes);
+	}
+
 	AddNodeKind(B_PHYSICAL_INPUT);
 
 	fInitStatus = B_OK;
@@ -142,6 +176,9 @@ VideoProducer::~VideoProducer()
 		Disconnect(fOutput.source, fOutput.destination);
 	if (fRunning)
 		HandleStop();
+
+	delete fFaceDetector;
+	fFaceDetector = NULL;
 
 	/* FIX BUG 7: Always decrement counter since we always increment in constructor.
 	 * Counter is now for debugging/statistics only, not for access control. */
@@ -1393,6 +1430,35 @@ VideoProducer::FrameGenerator()
 			fStats[0].missed++;
 		}
 #endif
+
+		// Optional face detection on the decoded BGRA frame. Runs only when
+		// explicitly enabled, and only every Nth frame so it stays off the
+		// per-frame latency critical path. The overlay (cheap rectangle
+		// draw) uses the most recent detections on every frame.
+		if (fFaceDetectEnabled && fFaceDetector != NULL) {
+			uint8* pixels = (uint8*)buffer->Data();
+			int32 fw = fConnectedFormat.display.line_width;
+			int32 fh = fConnectedFormat.display.line_count;
+			// The buffer is allocated as 4 * line_width * line_count, so the
+			// real row pitch is line_width * 4 regardless of bytes_per_row.
+			int32 fstride = fw * 4;
+
+			if (pixels != NULL && fw > 0 && fh > 0) {
+				if ((fFrame % fFaceDetectInterval) == 0) {
+					fLastFaceCount = fFaceDetector->Detect(pixels, fw, fh,
+						fstride, fLastFaces);
+					if (fLastFaceCount > 0 && frameLog < 10) {
+						syslog(LOG_INFO, "Producer: face detection found "
+							"%" B_PRId32 " face(s)\n", fLastFaceCount);
+					}
+				}
+				if (fFaceDrawBoxes && fLastFaceCount > 0) {
+					fFaceDetector->DrawBoxes(pixels, fw, fh, fstride,
+						fLastFaces, fLastFaceCount);
+				}
+			}
+		}
+
 		fStats[0].frames = fFrame;
 		fStats[0].actual++;;
 		fStats[0].stamp = system_time();
