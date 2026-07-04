@@ -350,6 +350,8 @@ public:
 									size_t *size);
 	virtual status_t			SetParameterValue(int32 id, bigtime_t when,
 									const void *value, size_t size);
+	virtual int32				ResolutionParameterID() const
+									{ return (int32)fResolutionParameterID; }
 	virtual status_t			FillFrameBuffer(BBuffer *buffer,
 									bigtime_t *stamp = NULL);
 
