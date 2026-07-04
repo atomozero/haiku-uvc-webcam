@@ -114,6 +114,19 @@ a person is. The feature is off unless the variable is set, so cameras used by
 everyone else are unaffected. For identity recognition, run a separate consumer
 application against the media node — that work does not belong in the driver.
 
+When detection is on, the node also publishes the detected regions on its
+parameter web as a read-only text parameter named **Faces**, so an external
+recognition app can crop just those regions instead of re-scanning every frame.
+The value is ASCII encoded:
+
+```
+<frameWidth> <frameHeight> <count> [x y w h]...
+```
+
+for example `640 480 2 200 150 120 160 470 180 90 110` (coordinates in
+full-resolution pixels). Read it with `BControllable::GetParameterValue()` or
+watch it via the Media Kit's parameter-change notifications.
+
 ## Diagnostic tools
 
 The `tools/` directory contains standalone utilities for debugging webcam
