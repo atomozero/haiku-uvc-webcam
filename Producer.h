@@ -148,6 +148,7 @@ static	int32				_frame_generator_(void *data);
 		enum {
 			 P_COLOR,
 			 P_INFO,
+			 P_FACES,		// read-only: detected face boxes (see fFaceString)
 			 P_LAST			// first available for addons
 		};
 		uint32				fColor;
@@ -162,6 +163,13 @@ static	int32				_frame_generator_(void *data);
 		int32				fFaceDetectInterval;	// run every Nth frame
 		int32				fLastFaceCount;
 		BRect				fLastFaces[8];			// CamFaceDetector::kMaxFaces
+
+		// Read-only parameter published to consumers so an external
+		// recognition app can crop the reported regions instead of
+		// re-scanning the whole frame. Encoded as ASCII:
+		//   "<frameW> <frameH> <count> [x y w h]..."  (full-res pixels)
+		BString				fFaceString;
+		bigtime_t			fFacesLastChange;
 
 		struct {
 			uint32 frames;

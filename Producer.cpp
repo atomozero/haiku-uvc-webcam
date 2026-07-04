@@ -137,6 +137,8 @@ VideoProducer::VideoProducer(
 	fFaceDrawBoxes = true;
 	fFaceDetectInterval = 3;	// analyse every 3rd frame by default
 	fLastFaceCount = 0;
+	fFaceString = "0 0 0";
+	fFacesLastChange = system_time();
 
 	const char* faceEnv = getenv("WEBCAM_FACE_DETECT");
 	if (faceEnv != NULL && faceEnv[0] != '0' && faceEnv[0] != '\0') {
@@ -264,6 +266,14 @@ VideoProducer::NodeRegistered()
 	state->AddItem(B_HOST_TO_LENDIAN_INT32(0x0000ff00), "Green");
 	state->AddItem(B_HOST_TO_LENDIAN_INT32(0x000000ff), "Blue");
 	*/
+
+	// Publish detected face regions as a read-only text parameter so an
+	// external recognition app can read them from the node's parameter web.
+	if (fFaceDetectEnabled) {
+		BParameterGroup *fg = main->MakeGroup("Face Detection");
+		fg->MakeTextParameter(P_FACES, B_MEDIA_RAW_VIDEO, "Faces",
+			B_GENERIC, 256);
+	}
 
 	int32 id = P_LAST;
 	if (fCamDevice) {
@@ -1015,6 +1025,16 @@ VideoProducer::GetParameterValue(
 			*size = fInfoString.Length() + 1;
 			memcpy(value, fInfoString.String(), *size);
 			return B_OK;
+		case P_FACES:
+		{
+			BAutolock lock(fLock);
+			if (*size < (size_t)(fFaceString.Length() + 1))
+				return EINVAL;
+			*last_change = fFacesLastChange;
+			*size = fFaceString.Length() + 1;
+			memcpy(value, fFaceString.String(), *size);
+			return B_OK;
+		}
 	}
 
 	if (fCamDevice) {
@@ -1052,6 +1072,9 @@ VideoProducer::SetParameterValue(
 			break;
 		case P_INFO:
 			// forbidden
+			return;
+		case P_FACES:
+			// read-only: published by the frame generator
 			return;
 		default:
 			if (fCamDevice == NULL)
@@ -1451,6 +1474,23 @@ VideoProducer::FrameGenerator()
 						syslog(LOG_INFO, "Producer: face detection found "
 							"%" B_PRId32 " face(s)\n", fLastFaceCount);
 					}
+
+					// Publish the regions for external consumers. Format:
+					// "<frameW> <frameH> <count> [x y w h]..." in full-res
+					// pixel coordinates. (Already under fLock here.)
+					BString s;
+					s << fw << " " << fh << " " << fLastFaceCount;
+					for (int32 i = 0; i < fLastFaceCount; i++) {
+						const BRect& r = fLastFaces[i];
+						s << " " << (int32)r.left << " " << (int32)r.top
+							<< " " << (int32)(r.Width() + 1)
+							<< " " << (int32)(r.Height() + 1);
+					}
+					fFaceString = s;
+					fFacesLastChange = system_time();
+					BroadcastNewParameterValue(fFacesLastChange, P_FACES,
+						(void*)fFaceString.String(),
+						fFaceString.Length() + 1);
 				}
 				if (fFaceDrawBoxes && fLastFaceCount > 0) {
 					fFaceDetector->DrawBoxes(pixels, fw, fh, fstride,
