@@ -17,7 +17,7 @@ static const int32 kWorkWidth = 160;
 
 // Skin thresholds in YCbCr (Hsu/Abdel-Mottaleb/Jain style). These are broad on
 // purpose: the geometry filters below reject most non-face skin regions.
-static const int32 kYMin = 60;
+static const int32 kYMin = 45;			// lowered from 60: keep shadowed skin
 static const int32 kCbMin = 77;
 static const int32 kCbMax = 127;
 static const int32 kCrMin = 133;
@@ -204,7 +204,7 @@ CamFaceDetector::Detect(const uint8* bgra, int32 width, int32 height,
 
 	// 4) Filter components by size, fill ratio and aspect ratio to keep the
 	//    ones that plausibly bound an upright face.
-	int32 minArea = (workW * workH) / 200;	// >= 0.5% of the frame
+	int32 minArea = (workW * workH) / 300;	// >= ~0.33% of the frame
 	if (minArea < 12)
 		minArea = 12;
 
@@ -218,15 +218,20 @@ CamFaceDetector::Detect(const uint8* bgra, int32 width, int32 height,
 		if (area[c] < minArea)
 			continue;
 		// Fill ratio: a face region is fairly solid, not a thin scatter.
-		if (area[c] * 100 < bw * bh * 35)
+		// Loosened to 28%: glasses/beard/uneven light fragment the skin blob.
+		if (area[c] * 100 < bw * bh * 28)
 			continue;
-		// Aspect ratio: faces are roughly as wide as tall, up to somewhat
-		// taller (head + a bit of neck). Reject wide bands (walls, arms).
+		// Aspect ratio: faces are roughly as wide as tall. Loosened to
+		// 0.62..2.5 so a wide forehead+cheeks blob (shorter than wide) or a
+		// face+neck blob (taller) still qualifies, while thin wide bands
+		// (walls, arms) are still rejected.
 		int32 ratio = bh * 100 / bw;	// height/width * 100
-		if (ratio < 80 || ratio > 220)
+		if (ratio < 62 || ratio > 250)
 			continue;
 		// Reject regions that are implausibly large (likely a background).
-		if (bw * 100 > workW * 80 || bh * 100 > workH * 90)
+		// Raised caps: on a webcam the face often fills most of the frame,
+		// so only reject a blob that covers essentially the whole image.
+		if (bw * 100 > workW * 96 || bh * 100 > workH * 98)
 			continue;
 
 		cand[candCount].x = minX[c];
