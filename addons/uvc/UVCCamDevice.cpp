@@ -5193,11 +5193,32 @@ UVCCamDevice::FillFrameBuffer(BBuffer* buffer, bigtime_t* stamp)
 					BUSBInterface* iface = const_cast<BUSBInterface*>(
 						cfg->InterfaceAt(fStreamingIndex));
 					if (iface != NULL) {
+						// Bring the interface down to alt 0. Going N->0 is safe:
+						// only the 0->N direction trips Haiku's SetAlternate
+						// double-free. SetAlternate() destroys and recreates the
+						// BUSBEndpoint objects, so fIsoIn is now dangling — drop
+						// it immediately, before the pump thread can dereference
+						// it (this was a use-after-free).
 						iface->SetAlternate(0);
+						fIsoIn = NULL;
+						fCurrentVideoAlternate = 0;
 						snooze(100000);
-						iface->SetAlternate(streamAlt);
-						syslog(LOG_INFO, "UVCCamDevice: recovery alt cycle complete "
-							"(%u -> 0 -> %u)\n", streamAlt, streamAlt);
+
+						// Re-select the streaming alternate through the normal
+						// path. _SelectBestAlternate() applies the 0->N
+						// double-free workaround AND re-fetches fIsoIn /
+						// fIsoMaxPacketSize / fBuffer. A raw SetAlternate(streamAlt)
+						// here would skip the workaround and leave fIsoIn pointing
+						// at freed memory.
+						status_t rs = _SelectBestAlternate();
+						if (rs != B_OK) {
+							syslog(LOG_ERR, "UVCCamDevice: recovery re-select "
+								"failed: %s\n", strerror(rs));
+						} else {
+							syslog(LOG_INFO, "UVCCamDevice: recovery alt cycle "
+								"complete (%u -> 0 -> %u)\n", streamAlt,
+								fCurrentVideoAlternate);
+						}
 					}
 				}
 			}
