@@ -10,6 +10,7 @@ USB camera, kernel patches, or even the rest of the driver compiled.
 | `test_deframer_fix.cpp` | Frame boundary detection via EOF and FID toggle |
 | `test_memory_management.cpp` | CamFrame pool reuse, BMallocIO lifecycle |
 | `test_video_conversion.cpp` | YUV→RGB lookup tables (correctness and speed) |
+| `test_face_detector.cpp` | CamFaceDetector skin-region detection and box overlay |
 
 ## Build & run
 
