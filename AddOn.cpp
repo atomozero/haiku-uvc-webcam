@@ -296,31 +296,39 @@ WebCamMediaAddOn::InstantiateNodeFor(
 		}
 	}
 
-	fRoster->Unlock();
-
-	if (cam == NULL)
-		return NULL;
-
-	if (isAudioFlavor) {
-		AudioProducer *audioNode = new AudioProducer(this, cam,
-			cam->FlavorInfo()->name, cam->FlavorInfo()->internal_id);
-		if (audioNode != NULL && audioNode->InitCheck() < B_OK) {
-			delete audioNode;
-			return NULL;
+	// Keep the roster locked across node creation. DeviceRemoved() unlinks a
+	// camera from the list under this same lock before tearing it down, so as
+	// long as we hold the lock the `cam` pointer we resolved above cannot be
+	// deleted out from under us (use-after-free otherwise).
+	BMediaNode* result = NULL;
+	if (cam != NULL) {
+		if (isAudioFlavor) {
+			AudioProducer *audioNode = new AudioProducer(this, cam,
+				cam->FlavorInfo()->name, cam->FlavorInfo()->internal_id);
+			if (audioNode != NULL && audioNode->InitCheck() < B_OK) {
+				delete audioNode;
+				audioNode = NULL;
+			}
+			// Register the audio node so the CamDevice can stop it on unplug.
+			if (audioNode != NULL)
+				cam->SetAudioNode(audioNode);
+			result = audioNode;
+		} else {
+			// Instantiate VideoProducer for video flavor
+			VideoProducer *videoNode = new VideoProducer(this, cam, cam->FlavorInfo()->name,
+				cam->FlavorInfo()->internal_id);
+			if (videoNode != NULL && videoNode->InitCheck() < B_OK) {
+				delete videoNode;
+				videoNode = NULL;
+			}
+			if (videoNode != NULL)
+				cam->SetVideoNode(videoNode);
+			result = videoNode;
 		}
-		return audioNode;
-	} else {
-		// Instantiate VideoProducer for video flavor
-		VideoProducer *videoNode = new VideoProducer(this, cam, cam->FlavorInfo()->name,
-			cam->FlavorInfo()->internal_id);
-		if (videoNode != NULL && videoNode->InitCheck() < B_OK) {
-			delete videoNode;
-			videoNode = NULL;
-		}
-		if (videoNode != NULL)
-			cam->SetVideoNode(videoNode);
-		return videoNode;
 	}
+
+	fRoster->Unlock();
+	return result;
 }
 
 

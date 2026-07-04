@@ -438,6 +438,10 @@ class CamDevice {
 	BMediaNode*			VideoNode() const { return fVideoNode; }
 	void				QuitVideoNode();
 
+	void				SetAudioNode(BMediaNode* node) { fAudioNode = node; }
+	BMediaNode*			AudioNode() const { return fAudioNode; }
+	void				QuitAudioNode();
+
 	// locking
 	bool				Lock();
 	void				Unlock();
@@ -533,6 +537,7 @@ static	int32			sInstanceCounter;		// Global counter for unique IDs
 		BRect			fVideoFrame;
 		int fDumpFD;
 	BMediaNode*		fVideoNode;
+	BMediaNode*		fAudioNode;
 
 		// PHASE 3/4: USB packet statistics for error tracking
 		uint32			fPacketSuccessCount;
