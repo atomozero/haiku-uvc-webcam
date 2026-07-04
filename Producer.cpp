@@ -139,6 +139,9 @@ VideoProducer::VideoProducer(
 	fLastFaceCount = 0;
 	fFaceString = "0 0 0";
 	fFacesLastChange = system_time();
+	fFaceAELock = false;
+	fFaceLocked = false;
+	fFaceMissStreak = 0;
 
 	const char* faceEnv = getenv("WEBCAM_FACE_DETECT");
 	if (faceEnv != NULL && faceEnv[0] != '0' && faceEnv[0] != '\0') {
@@ -154,13 +157,17 @@ VideoProducer::VideoProducer(
 				fFaceDetectInterval = n;
 		}
 
+		const char* aeLockEnv = getenv("WEBCAM_FACE_AE_LOCK");
+		if (aeLockEnv != NULL && aeLockEnv[0] != '0' && aeLockEnv[0] != '\0')
+			fFaceAELock = true;
+
 		fFaceDetector = new(std::nothrow) CamFaceDetector();
 		if (fFaceDetector == NULL)
 			fFaceDetectEnabled = false;
 		else
 			syslog(LOG_INFO, "Producer: face detection enabled "
-				"(interval=%" B_PRId32 ", overlay=%d)\n",
-				fFaceDetectInterval, fFaceDrawBoxes);
+				"(interval=%" B_PRId32 ", overlay=%d, ae_lock=%d)\n",
+				fFaceDetectInterval, fFaceDrawBoxes, fFaceAELock);
 	}
 
 	AddNodeKind(B_PHYSICAL_INPUT);
@@ -1246,6 +1253,13 @@ VideoProducer::HandleStop(void)
 		syslog(LOG_INFO, "Producer: HandleStop - thread exited cleanly\n");
 	}
 
+	// Release any face-tracking control lock so the camera does not stay
+	// stuck in manual exposure/white balance after streaming stops.
+	if (fFaceLocked && fCamDevice) {
+		fCamDevice->LockControlsForFace(false);
+		fFaceLocked = false;
+	}
+
 	if (fCamDevice) {
 		BAutolock lock(fCamDevice->Locker());
 		fCamDevice->StopTransfer();
@@ -1491,6 +1505,25 @@ VideoProducer::FrameGenerator()
 					BroadcastNewParameterValue(fFacesLastChange, P_FACES,
 						(void*)fFaceString.String(),
 						fFaceString.Length() + 1);
+
+					// Optional hardware feedback: freeze AE/WB while a face
+					// is in view, release it after a short absence. Only on
+					// transitions, so USB control traffic stays minimal.
+					if (fFaceAELock && device != NULL) {
+						if (fLastFaceCount > 0) {
+							fFaceMissStreak = 0;
+							if (!fFaceLocked) {
+								device->LockControlsForFace(true);
+								fFaceLocked = true;
+							}
+						} else if (fFaceLocked) {
+							if (++fFaceMissStreak >= 5) {
+								device->LockControlsForFace(false);
+								fFaceLocked = false;
+								fFaceMissStreak = 0;
+							}
+						}
+					}
 				}
 				if (fFaceDrawBoxes && fLastFaceCount > 0) {
 					fFaceDetector->DrawBoxes(pixels, fw, fh, fstride,

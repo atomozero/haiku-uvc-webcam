@@ -171,6 +171,13 @@ static	int32				_frame_generator_(void *data);
 		BString				fFaceString;
 		bigtime_t			fFacesLastChange;
 
+		// Optional feedback into the camera hardware when a face is present
+		// (WEBCAM_FACE_AE_LOCK). Freezes auto-exposure / white balance so the
+		// recognizer gets a stably-lit, stable-tone face.
+		bool				fFaceAELock;		// feature enabled
+		bool				fFaceLocked;		// controls currently frozen
+		int32				fFaceMissStreak;	// detection passes with no face
+
 		struct {
 			uint32 frames;
 			uint32 actual;

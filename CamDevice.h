@@ -383,6 +383,16 @@ class CamDevice {
 	virtual status_t	GetParameterValue(int32 id, bigtime_t *last_change, void *value, size_t *size);
 	virtual status_t	SetParameterValue(int32 id, bigtime_t when, const void *value, size_t size);
 
+	// Optional aids for downstream face recognition. Base implementations
+	// are no-ops so devices that lack the underlying UVC controls simply
+	// ignore them. See UVCCamDevice for the concrete behaviour.
+	//
+	// LockControlsForFace: freeze auto-exposure and auto white balance
+	// while a face is in view, so brightness and skin tone stay stable
+	// across frames (helps embedding stability). Restores automatic mode
+	// when called with lock=false.
+	virtual status_t	LockControlsForFace(bool lock);
+
 
 	// for use by deframer
 	virtual size_t		MinRawFrameSize();

@@ -100,6 +100,7 @@ Update to a recent nightly, or apply the patches in `patches/`.
 | `WEBCAM_PROBE_DELAY=N` | Extra ms before probe/commit (default 100) |
 | `WEBCAM_FACE_DETECT=1` | Enable face detection overlay (`quiet` = detect + log only, no boxes) |
 | `WEBCAM_FACE_DETECT_INTERVAL=N` | Analyse every Nth frame (default 3, range 1..60) |
+| `WEBCAM_FACE_AE_LOCK=1` | Freeze auto-exposure/white balance while a face is in view |
 
 Set them in the shell that launches `media_server`.
 
@@ -126,6 +127,13 @@ The value is ASCII encoded:
 for example `640 480 2 200 150 120 160 470 180 90 110` (coordinates in
 full-resolution pixels). Read it with `BControllable::GetParameterValue()` or
 watch it via the Media Kit's parameter-change notifications.
+
+Setting `WEBCAM_FACE_AE_LOCK=1` additionally lets the driver help the *image*:
+while a face is in view it freezes the camera's auto-exposure and auto white
+balance (using UVC controls the app cannot reach), so brightness and skin tone
+stay stable across frames — which keeps recognition embeddings consistent. The
+automatic modes are restored when the face leaves the frame or streaming stops.
+Requires a camera that exposes AE-mode / WB-auto controls.
 
 ## Diagnostic tools
 
