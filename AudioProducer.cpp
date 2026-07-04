@@ -790,6 +790,13 @@ AudioProducer::HandleStart(bigtime_t performance_time)
 				(unsigned)fOutput.format.u.raw_audio.frame_rate,
 				(unsigned)actualRate);
 			fOutput.format.u.raw_audio.frame_rate = (float)actualRate;
+			// The generator paces and timestamps buffers from
+			// fConnectedFormat.frame_rate (frozen in Connect() from the
+			// descriptor-parsed rate). Update it too, otherwise the audio is
+			// paced at the wrong rate and drifts, eventually over/underrunning
+			// the ring buffer. Done here, before the generator thread is
+			// spawned below, so there is no race with it.
+			fConnectedFormat.frame_rate = (float)actualRate;
 		}
 	} else {
 		syslog(LOG_WARNING, "AudioProducer: Device has no audio support\n");
