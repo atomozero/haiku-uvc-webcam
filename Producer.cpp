@@ -142,6 +142,8 @@ VideoProducer::VideoProducer(
 	fFaceAELock = false;
 	fFaceLocked = false;
 	fFaceMissStreak = 0;
+	fFaceROI = false;
+	fLastROISent = BRect(-1, -1, -1, -1);
 
 	const char* faceEnv = getenv("WEBCAM_FACE_DETECT");
 	if (faceEnv != NULL && faceEnv[0] != '0' && faceEnv[0] != '\0') {
@@ -161,13 +163,17 @@ VideoProducer::VideoProducer(
 		if (aeLockEnv != NULL && aeLockEnv[0] != '0' && aeLockEnv[0] != '\0')
 			fFaceAELock = true;
 
+		const char* roiEnv = getenv("WEBCAM_FACE_ROI");
+		if (roiEnv != NULL && roiEnv[0] != '0' && roiEnv[0] != '\0')
+			fFaceROI = true;
+
 		fFaceDetector = new(std::nothrow) CamFaceDetector();
 		if (fFaceDetector == NULL)
 			fFaceDetectEnabled = false;
 		else
 			syslog(LOG_INFO, "Producer: face detection enabled "
-				"(interval=%" B_PRId32 ", overlay=%d, ae_lock=%d)\n",
-				fFaceDetectInterval, fFaceDrawBoxes, fFaceAELock);
+				"(interval=%" B_PRId32 ", overlay=%d, ae_lock=%d, roi=%d)\n",
+				fFaceDetectInterval, fFaceDrawBoxes, fFaceAELock, fFaceROI);
 	}
 
 	AddNodeKind(B_PHYSICAL_INPUT);
@@ -1259,6 +1265,7 @@ VideoProducer::HandleStop(void)
 		fCamDevice->LockControlsForFace(false);
 		fFaceLocked = false;
 	}
+	fLastROISent = BRect(-1, -1, -1, -1);
 
 	if (fCamDevice) {
 		BAutolock lock(fCamDevice->Locker());
@@ -1521,6 +1528,29 @@ VideoProducer::FrameGenerator()
 								device->LockControlsForFace(false);
 								fFaceLocked = false;
 								fFaceMissStreak = 0;
+							}
+						}
+					}
+
+					// Optional hardware feedback: point the camera's
+					// auto-exposure/focus/white-balance at the largest face.
+					// Only resend when the box moves meaningfully so we do
+					// not flood the control endpoint.
+					if (fFaceROI && device != NULL && fLastFaceCount > 0) {
+						const BRect& f = fLastFaces[0];	// largest (sorted)
+						bool moved = fLastROISent.left < 0
+							|| fabs(f.left - fLastROISent.left) > 16
+							|| fabs(f.top - fLastROISent.top) > 16
+							|| fabs(f.Width() - fLastROISent.Width()) > 16
+							|| fabs(f.Height() - fLastROISent.Height()) > 16;
+						if (moved) {
+							// AE (D0) | AWB (D2) | AF (D3) = 0x0D
+							const uint16 kAuto = 0x0D;
+							if (device->SetRegionOfInterest(
+									(uint16)f.left, (uint16)f.top,
+									(uint16)f.right, (uint16)f.bottom,
+									kAuto) == B_OK) {
+								fLastROISent = f;
 							}
 						}
 					}

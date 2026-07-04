@@ -25,6 +25,14 @@
 #define TRACE(x...) do {} while(0)
 //#define TRACE(x...) printf(x)
 
+// Camera Terminal "Region of Interest" control (UVC 1.5). Not present in
+// older Haiku USB_video headers, so define it here as a fallback.
+#ifndef USB_VIDEO_CT_REGION_OF_INTEREST_CONTROL
+#	define USB_VIDEO_CT_REGION_OF_INTEREST_CONTROL 0x14
+#endif
+// Bit in the Camera Terminal bmControls advertising ROI support (D21).
+#define UVC_CT_ROI_CONTROL_BIT 21
+
 
 usb_webcam_support_descriptor kSupportedDevices[] = {
 	// Specific VID/PID devices first (higher priority than generic class match)
@@ -6765,6 +6773,36 @@ UVCCamDevice::LockControlsForFace(bool lock)
 	fFaceLockActive = false;
 	syslog(LOG_INFO, "UVCCamDevice: face control lock OFF (restored)\n");
 	return B_OK;
+}
+
+
+status_t
+UVCCamDevice::SetRegionOfInterest(uint16 left, uint16 top, uint16 right,
+	uint16 bottom, uint16 autoControls)
+{
+	if (!fHasCameraTerminal || fCameraTerminalID == 0)
+		return B_NOT_SUPPORTED;
+
+	// Only send if the camera advertises ROI support, otherwise the
+	// SET_CUR would just stall on every call.
+	if ((fCameraTerminalControls & (1UL << UVC_CT_ROI_CONTROL_BIT)) == 0)
+		return B_NOT_SUPPORTED;
+
+	if (right <= left || bottom <= top)
+		return B_BAD_VALUE;
+
+	// UVC CT_REGION_OF_INTEREST payload (10 bytes, little-endian):
+	//   wROI_Top, wROI_Left, wROI_Bottom, wROI_Right, bmAutoControls
+	uint8 payload[10];
+	payload[0] = top & 0xff;			payload[1] = (top >> 8) & 0xff;
+	payload[2] = left & 0xff;			payload[3] = (left >> 8) & 0xff;
+	payload[4] = bottom & 0xff;			payload[5] = (bottom >> 8) & 0xff;
+	payload[6] = right & 0xff;			payload[7] = (right >> 8) & 0xff;
+	payload[8] = autoControls & 0xff;	payload[9] = (autoControls >> 8) & 0xff;
+
+	BAutolock a(fLocker);
+	return _SetCTControlValue(USB_VIDEO_CT_REGION_OF_INTEREST_CONTROL,
+		payload, sizeof(payload));
 }
 
 

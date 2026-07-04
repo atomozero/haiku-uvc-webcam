@@ -101,6 +101,7 @@ Update to a recent nightly, or apply the patches in `patches/`.
 | `WEBCAM_FACE_DETECT=1` | Enable face detection overlay (`quiet` = detect + log only, no boxes) |
 | `WEBCAM_FACE_DETECT_INTERVAL=N` | Analyse every Nth frame (default 3, range 1..60) |
 | `WEBCAM_FACE_AE_LOCK=1` | Freeze auto-exposure/white balance while a face is in view |
+| `WEBCAM_FACE_ROI=1` | Steer camera auto-exposure/focus/WB onto the face (needs UVC ROI support) |
 
 Set them in the shell that launches `media_server`.
 
@@ -134,6 +135,15 @@ balance (using UVC controls the app cannot reach), so brightness and skin tone
 stay stable across frames — which keeps recognition embeddings consistent. The
 automatic modes are restored when the face leaves the frame or streaming stops.
 Requires a camera that exposes AE-mode / WB-auto controls.
+
+Setting `WEBCAM_FACE_ROI=1` goes one step further and uses the UVC
+`CT_REGION_OF_INTEREST` control to tell the camera to meter exposure, focus and
+white balance on the *face rectangle* rather than the whole scene. This is the
+proper fix for a backlit subject (a bright window behind the person). It only
+takes effect on cameras that advertise ROI support, and is resent to the
+hardware only when the face moves meaningfully. Because it depends on
+vendor-specific hardware support, treat it as best-effort: it is a no-op on
+cameras without the control.
 
 ## Diagnostic tools
 
