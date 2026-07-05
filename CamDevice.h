@@ -349,6 +349,9 @@ typedef struct {
 	const char *vendor;
 	const char *product;
 	const char *sensors; // possible sensors this cam uses (comma separated)
+	uint32 quirks;       // per-device uvc_quirk_flags bitmask (0 = none); see
+	                     // addons/uvc/UVCQuirks.h. Trailing field so existing
+	                     // table rows default it to 0 via aggregate init.
 } usb_webcam_support_descriptor;
 
 // This class represents each webcam
@@ -366,6 +369,12 @@ class CamDevice {
 	virtual const char*	BrandName();
 	virtual const char*	ModelName();
 	const flavor_info*	FlavorInfo() const { return &fFlavorInfo; };
+
+	// Per-device quirk mask from the matched kSupportedDevices[] entry (0 if
+	// matched by the generic UVC fallback or none). Subclasses feed this to
+	// ResolveWebcamQuirks(). Lives here because fSupportedDeviceIndex and the
+	// addon's device table are base-class state.
+	uint32				MatchedEntryQuirks() const;
 	virtual bool		SupportsBulk();
 	virtual bool		SupportsIsochronous();
 	virtual status_t	StartTransfer();

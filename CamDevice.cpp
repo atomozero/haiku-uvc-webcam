@@ -371,6 +371,15 @@ CamDevice::ModelName()
 }
 
 
+uint32
+CamDevice::MatchedEntryQuirks() const
+{
+	if (fCamDeviceAddon.SupportedDevices() != NULL && fSupportedDeviceIndex >= 0)
+		return fCamDeviceAddon.SupportedDevices()[fSupportedDeviceIndex].quirks;
+	return 0;
+}
+
+
 bool
 CamDevice::SupportsBulk()
 {

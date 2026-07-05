@@ -8,6 +8,7 @@
 
 #include "UVCCamDevice.h"
 #include "UVCDeframer.h"
+#include "UVCQuirks.h"
 #include "CamDebug.h"
 #include "CamConfig.h"
 
@@ -506,6 +507,7 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 	fIsNV12(false),
 	fUncompressedPixelFormat(UVC_FMT_UNKNOWN),
 	fMicrodiaQuirk(false),
+	fQuirks(0),
 	fFrameBasedCodec(UVC_CODEC_UNKNOWN),
 	fFrameBasedFormatIndex(0),
 	fFrameBasedBitsPerPixel(0),
@@ -1207,14 +1209,14 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 		else
 			fIsMJPEG = false;
 
-		// P33: the 352-pixel internal buffer width is a Sonix-bridge quirk,
-		// not unique to Microdia 0c45:6409. Enable the same stride
-		// compensation for any device under the Sonix VID (0x0c45). The
-		// runtime gate in _ConvertYUY2toRGB32 (srcSize > expectedSize)
-		// still prevents the quirk from firing on Sonix sensors that
-		// happen to emit correctly-sized frames, so the broader trigger
-		// is safe.
-		if (fDevice->VendorID() == 0x0c45) {
+		// Resolve device quirks from the data tables (per-device entry quirks
+		// OR-ed with vendor-wide quirks) instead of hard-coding VID checks in
+		// the streaming path. See addons/uvc/UVCQuirks.{h,cpp}. The runtime
+		// gate in _ConvertYUY2toRGB32 (srcSize > expectedSize) still prevents
+		// the stride compensation from firing on correctly-sized frames.
+		fQuirks = ResolveWebcamQuirks(fDevice->VendorID(), fDevice->ProductID(),
+			MatchedEntryQuirks());
+		if ((fQuirks & UVC_QUIRK_SONIX_STRIDE) != 0) {
 			fMicrodiaQuirk = true;
 			syslog(LOG_INFO, "UVCCamDevice: Sonix stride quirk armed for "
 				"%04x:%04x (applied at runtime only when srcSize > expected)\n",

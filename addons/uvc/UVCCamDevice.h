@@ -630,6 +630,7 @@ private:
 			bool				fIsNV12;		// Back-compat: true when fUncompressedPixelFormat == UVC_FMT_NV12
 			uvc_uncompressed_format fUncompressedPixelFormat;
 			bool				fMicrodiaQuirk;	// Microdia 0c45:6409 stride quirk
+			uint32				fQuirks;		// resolved uvc_quirk_flags mask
 
 			// Frame-based encoded formats (H.264 / H.265 / VP8 / M-JPEG2000).
 			// Detected and logged for diagnostics; not currently decoded, so
