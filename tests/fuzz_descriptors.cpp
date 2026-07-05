@@ -153,8 +153,60 @@ main()
 		munmap(mapBase, mapLen);
 	}
 
-	printf("\nno out-of-bounds reads, no invariant violations\n");
-	printf("accepted=%ld rejected=%ld (bad=%ld)\n", valid, invalid, badInvariant);
+	printf("frame validator: no OOB reads, no invariant violations "
+		"(accepted=%ld rejected=%ld bad=%ld)\n", valid, invalid, badInvariant);
+
+	// Phase 2: fuzz the safe descriptor walker over arbitrary buffers. Any read
+	// past the buffer faults on the guard page; we also assert every yielded
+	// descriptor lies fully within the buffer and that the walk terminates.
+	long walked = 0;
+	for (long it = 0; it < kIterations; it++) {
+		size_t len = (size_t)(rand() % (kMaxLen + 1));
+		void* mapBase = NULL;
+		size_t mapLen = 0;
+		uint8* buf = GuardedBuffer(len, &mapBase, &mapLen);
+		if (buf == NULL) {
+			printf("mmap failed at walker iter %ld\n", it);
+			return 2;
+		}
+		for (size_t i = 0; i < len; i++)
+			buf[i] = (uint8)(rand() & 0xff);
+
+		if (sigsetjmp(sJmp, 1) != 0) {
+			printf("\nWALKER OUT-OF-BOUNDS READ at iter %ld: len=%zu\n", it, len);
+			munmap(mapBase, mapLen);
+			return 1;
+		}
+
+		UVCDescriptorCursor cur(buf, len);
+		const uint8* d;
+		size_t l;
+		size_t iters = 0;
+		bool ok = true;
+		while (cur.Next(&d, &l)) {
+			// Every yielded descriptor must lie fully within [buf, buf+len).
+			if (!(d >= buf && (size_t)(d - buf) + l <= len && l >= 2)) {
+				ok = false;
+				break;
+			}
+			walked++;
+			// Termination guard: a descriptor is >= 2 bytes, so a buffer of
+			// `len` bytes can yield at most len/2 of them.
+			if (++iters > len) {
+				ok = false;
+				break;
+			}
+		}
+		if (!ok) {
+			printf("\nWALKER INVARIANT VIOLATION at iter %ld: len=%zu\n", it, len);
+			munmap(mapBase, mapLen);
+			return 1;
+		}
+		munmap(mapBase, mapLen);
+	}
+	printf("descriptor walker: no OOB reads, all walks bounded "
+		"(descriptors walked=%ld)\n", walked);
+
 	printf("\nPASS\n");
 	return 0;
 }

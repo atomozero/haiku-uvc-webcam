@@ -21,20 +21,37 @@ static const uint32 kMaxReasonableDim = 8192;
 static const uint32 kMaxReasonableFrameSize = 50u * 1024 * 1024;	// 50 MB
 
 
-static inline uint16
-ReadLE16(const uint8* p)
+// --- Bounds-checked field readers -------------------------------------------
+
+uint8
+UVCDescByte(const uint8* desc, size_t len, size_t off)
 {
-	return (uint16)((uint32)p[0] | ((uint32)p[1] << 8));
+	if (desc == NULL || off >= len)
+		return 0;
+	return desc[off];
 }
 
 
-static inline uint32
-ReadLE32(const uint8* p)
+uint16
+UVCDescLE16(const uint8* desc, size_t len, size_t off)
 {
-	return (uint32)p[0] | ((uint32)p[1] << 8)
-		| ((uint32)p[2] << 16) | ((uint32)p[3] << 24);
+	if (desc == NULL || off + 2 > len)
+		return 0;
+	return (uint16)((uint32)desc[off] | ((uint32)desc[off + 1] << 8));
 }
 
+
+uint32
+UVCDescLE32(const uint8* desc, size_t len, size_t off)
+{
+	if (desc == NULL || off + 4 > len)
+		return 0;
+	return (uint32)desc[off] | ((uint32)desc[off + 1] << 8)
+		| ((uint32)desc[off + 2] << 16) | ((uint32)desc[off + 3] << 24);
+}
+
+
+// --- Frame descriptor validation --------------------------------------------
 
 UVCFrameDescCheck
 UVCCheckFrameDescriptor(const uint8* bytes, size_t avail)
@@ -48,14 +65,16 @@ UVCCheckFrameDescriptor(const uint8* bytes, size_t avail)
 	// The descriptor's own length must be internally consistent: at least the
 	// fixed header, and no larger than what is actually available. This is the
 	// gate that stops a lying bLength from driving out-of-bounds reads below.
-	const uint8 bLength = bytes[kOffLength];
+	const uint8 bLength = UVCDescByte(bytes, avail, kOffLength);
 	if (bLength < kUVCFrameDescFixedLen || (size_t)bLength > avail)
 		return r;
 
-	const uint16 width = ReadLE16(bytes + kOffWidth);
-	const uint16 height = ReadLE16(bytes + kOffHeight);
-	const uint32 maxBuf = ReadLE32(bytes + kOffMaxVideoFrameSize);
-	const uint8 ftype = bytes[kOffFrameIntervalType];
+	// All field reads go through the bounds-checked readers (belt and braces:
+	// avail >= fixed header is already guaranteed above).
+	const uint16 width = UVCDescLE16(bytes, avail, kOffWidth);
+	const uint16 height = UVCDescLE16(bytes, avail, kOffHeight);
+	const uint32 maxBuf = UVCDescLE32(bytes, avail, kOffMaxVideoFrameSize);
+	const uint8 ftype = UVCDescByte(bytes, avail, kOffFrameIntervalType);
 
 	// Discrete intervals (4 bytes each) sit after the fixed header, bounded by
 	// the descriptor's own (already validated) bLength.
@@ -75,4 +94,46 @@ UVCCheckFrameDescriptor(const uint8* bytes, size_t avail)
 	r.maxVideoFrameSize = maxBuf;
 	r.frameIntervalType = ftype;	// <= maxIntervals, so buffer-safe to iterate
 	return r;
+}
+
+
+// --- Safe descriptor walker -------------------------------------------------
+
+UVCDescriptorCursor::UVCDescriptorCursor(const uint8* buf, size_t len)
+	:
+	fBuf(buf),
+	fLen(buf != NULL ? len : 0),
+	fPos(0)
+{
+}
+
+
+void
+UVCDescriptorCursor::Reset()
+{
+	fPos = 0;
+}
+
+
+bool
+UVCDescriptorCursor::Next(const uint8** outDesc, size_t* outLen)
+{
+	// Need at least the 2-byte header (bLength, bDescriptorType).
+	if (fPos + 2 > fLen)
+		return false;
+
+	const uint8 bLength = fBuf[fPos];
+
+	// A length below the header, or one that would run past the buffer, ends
+	// the walk instead of reading past the end.
+	if (bLength < 2 || fPos + (size_t)bLength > fLen)
+		return false;
+
+	if (outDesc != NULL)
+		*outDesc = fBuf + fPos;
+	if (outLen != NULL)
+		*outLen = bLength;
+
+	fPos += bLength;
+	return true;
 }

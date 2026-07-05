@@ -40,4 +40,36 @@ static const size_t kUVCFrameDescFixedLen = 26;
 UVCFrameDescCheck UVCCheckFrameDescriptor(const uint8* bytes, size_t avail);
 
 
+// --- Bounds-checked field readers -------------------------------------------
+// Read a little-endian field from a descriptor of `len` readable bytes. If the
+// field is not fully within [0, len) they return 0 instead of reading past the
+// end — so parsing code can never be walked off a descriptor by a bad offset.
+uint8  UVCDescByte(const uint8* desc, size_t len, size_t off);
+uint16 UVCDescLE16(const uint8* desc, size_t len, size_t off);
+uint32 UVCDescLE32(const uint8* desc, size_t len, size_t off);
+
+
+// --- Safe descriptor walker -------------------------------------------------
+// Iterates a raw buffer of consecutive USB descriptors ([bLength][bType]...)
+// with full bounds checking. It never reads past the buffer and stops cleanly
+// at the end or at the first length that is malformed (bLength < 2) or would
+// run past the buffer — turning "walk off the end" into "stop iterating".
+class UVCDescriptorCursor {
+public:
+						UVCDescriptorCursor(const uint8* buf, size_t len);
+
+	// Yield the next descriptor: set *outDesc/*outLen to its bytes and length
+	// (always >= 2 and fully within the buffer), advance, and return true.
+	// Return false at the end of the buffer or on a malformed length.
+	bool				Next(const uint8** outDesc, size_t* outLen);
+
+	void				Reset();
+
+private:
+	const uint8*		fBuf;
+	size_t				fLen;
+	size_t				fPos;
+};
+
+
 #endif	// _UVC_DESCRIPTORS_H

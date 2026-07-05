@@ -109,6 +109,51 @@ main()
 	Expect("reject NULL", !UVCCheckFrameDescriptor(NULL, 38).valid);
 	Expect("reject avail 0", !UVCCheckFrameDescriptor(buf, 0).valid);
 
+	// --- Bounds-checked field readers ---
+	uint8 fld[4] = { 0x11, 0x22, 0x33, 0x44 };
+	Expect("LE16 in range", UVCDescLE16(fld, 4, 0) == 0x2211);
+	Expect("LE32 in range", UVCDescLE32(fld, 4, 0) == 0x44332211);
+	Expect("LE16 out of range -> 0", UVCDescLE16(fld, 4, 3) == 0);
+	Expect("LE32 out of range -> 0", UVCDescLE32(fld, 4, 1) == 0);
+	Expect("Byte out of range -> 0", UVCDescByte(fld, 4, 4) == 0);
+
+	// --- Safe descriptor walker ---
+	// Two well-formed descriptors: lengths 4 and 6.
+	uint8 seq[10] = { 4, 0x24, 0xAA, 0xBB,   6, 0x24, 1, 2, 3, 4 };
+	{
+		UVCDescriptorCursor cur(seq, sizeof(seq));
+		const uint8* d; size_t l; int n = 0;
+		bool ok = true;
+		while (cur.Next(&d, &l)) {
+			if (n == 0) ok = ok && (l == 4 && d == seq);
+			if (n == 1) ok = ok && (l == 6 && d == seq + 4);
+			n++;
+			if (n > 8) { ok = false; break; }	// runaway guard
+		}
+		Expect("walk two descriptors", ok && n == 2);
+	}
+	// Truncated tail: second descriptor claims 6 bytes but only 3 remain.
+	{
+		uint8 trunc[7] = { 4, 0x24, 0xAA, 0xBB,   6, 0x24, 1 };
+		UVCDescriptorCursor cur(trunc, sizeof(trunc));
+		const uint8* d; size_t l; int n = 0;
+		while (cur.Next(&d, &l)) { n++; if (n > 8) break; }
+		Expect("stop at truncated tail", n == 1);
+	}
+	// Malformed length (bLength < 2) stops the walk.
+	{
+		uint8 bad[4] = { 1, 0x24, 0, 0 };
+		UVCDescriptorCursor cur(bad, sizeof(bad));
+		const uint8* d; size_t l;
+		Expect("stop on bLength < 2", !cur.Next(&d, &l));
+	}
+	// Empty / NULL buffers yield nothing.
+	{
+		UVCDescriptorCursor cur(NULL, 10);
+		const uint8* d; size_t l;
+		Expect("NULL buffer -> no walk", !cur.Next(&d, &l));
+	}
+
 	printf("\n%d passed, %d failed\n", sPass, sFail);
 	return sFail == 0 ? 0 : 1;
 }
