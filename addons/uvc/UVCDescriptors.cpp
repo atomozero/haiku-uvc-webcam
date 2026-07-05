@@ -97,6 +97,51 @@ UVCCheckFrameDescriptor(const uint8* bytes, size_t avail)
 }
 
 
+// --- Uncompressed format descriptor validation ------------------------------
+
+// Field offsets within a VS_FORMAT_UNCOMPRESSED descriptor.
+enum {
+	kOffFmtIndex			= 3,	// bFormatIndex
+	kOffNumFrameDesc		= 4,	// bNumFrameDescriptors
+	kOffGuid				= 5,	// guidFormat[16]
+	kOffBitsPerPixel		= 21,	// bBitsPerPixel
+	kOffDefaultFrameIndex	= 22,	// bDefaultFrameIndex
+};
+
+UVCUncompressedFormatCheck
+UVCCheckUncompressedFormatDescriptor(const uint8* bytes, size_t avail)
+{
+	UVCUncompressedFormatCheck r;
+	r.valid = false;
+	r.formatIndex = 0;
+	r.numFrameDescriptors = 0;
+	r.defaultFrameIndex = 0;
+	r.bitsPerPixel = 0;
+	for (int i = 0; i < 16; i++)
+		r.guid[i] = 0;
+
+	if (bytes == NULL || avail < kUVCUncFormatFixedLen)
+		return r;
+
+	const uint8 bLength = UVCDescByte(bytes, avail, kOffLength);
+	if (bLength < kUVCUncFormatFixedLen || (size_t)bLength > avail)
+		return r;
+
+	const uint8 formatIndex = UVCDescByte(bytes, avail, kOffFmtIndex);
+	if (formatIndex == 0)	// UVC indices are 1-based; 0 is unusable
+		return r;
+
+	r.formatIndex = formatIndex;
+	r.numFrameDescriptors = UVCDescByte(bytes, avail, kOffNumFrameDesc);
+	for (int i = 0; i < 16; i++)
+		r.guid[i] = UVCDescByte(bytes, avail, kOffGuid + i);
+	r.bitsPerPixel = UVCDescByte(bytes, avail, kOffBitsPerPixel);
+	r.defaultFrameIndex = UVCDescByte(bytes, avail, kOffDefaultFrameIndex);
+	r.valid = true;
+	return r;
+}
+
+
 // --- Safe descriptor walker -------------------------------------------------
 
 UVCDescriptorCursor::UVCDescriptorCursor(const uint8* buf, size_t len)

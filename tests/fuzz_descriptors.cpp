@@ -207,6 +207,59 @@ main()
 	printf("descriptor walker: no OOB reads, all walks bounded "
 		"(descriptors walked=%ld)\n", walked);
 
+	// Phase 3: fuzz the uncompressed-format descriptor validator.
+	long fmtValid = 0, fmtInvalid = 0;
+	for (long it = 0; it < kIterations; it++) {
+		size_t len = (size_t)(rand() % (kMaxLen + 1));
+		void* mapBase = NULL;
+		size_t mapLen = 0;
+		uint8* buf = GuardedBuffer(len, &mapBase, &mapLen);
+		if (buf == NULL) {
+			printf("mmap failed at format iter %ld\n", it);
+			return 2;
+		}
+		// Half random, half plausible-then-mutated.
+		if ((rand() & 1) && len >= 27) {
+			memset(tmpl, 0, sizeof(tmpl));
+			tmpl[0] = (uint8)len;			// bLength
+			tmpl[1] = 0x24; tmpl[2] = 0x04;
+			tmpl[3] = (uint8)(1 + rand() % 8);	// format index
+			int flips = rand() % 4;
+			for (int f = 0; f < flips; f++)
+				tmpl[rand() % len] = (uint8)(rand() & 0xff);
+			memcpy(buf, tmpl, len);
+		} else {
+			for (size_t i = 0; i < len; i++)
+				buf[i] = (uint8)(rand() & 0xff);
+		}
+
+		if (sigsetjmp(sJmp, 1) != 0) {
+			printf("\nFORMAT OUT-OF-BOUNDS READ at iter %ld: len=%zu\n", it, len);
+			munmap(mapBase, mapLen);
+			return 1;
+		}
+
+		UVCUncompressedFormatCheck f =
+			UVCCheckUncompressedFormatDescriptor(buf, len);
+		if (f.valid) {
+			fmtValid++;
+			bool ok = (size_t)buf[0] >= kUVCUncFormatFixedLen
+				&& (size_t)buf[0] <= len
+				&& f.formatIndex != 0;
+			if (!ok) {
+				printf("\nFORMAT INVARIANT VIOLATION at iter %ld: len=%zu "
+					"bLength=%u idx=%u\n", it, len, buf[0], f.formatIndex);
+				munmap(mapBase, mapLen);
+				return 1;
+			}
+		} else {
+			fmtInvalid++;
+		}
+		munmap(mapBase, mapLen);
+	}
+	printf("format validator: no OOB reads, no invariant violations "
+		"(accepted=%ld rejected=%ld)\n", fmtValid, fmtInvalid);
+
 	printf("\nPASS\n");
 	return 0;
 }

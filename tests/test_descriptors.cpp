@@ -154,6 +154,49 @@ main()
 		Expect("NULL buffer -> no walk", !cur.Next(&d, &l));
 	}
 
+	// --- Uncompressed format descriptor validator ---
+	{
+		uint8 fmtBuf[32];
+		memset(fmtBuf, 0, sizeof(fmtBuf));
+		fmtBuf[0] = 27;			// bLength (spec fixed size)
+		fmtBuf[1] = 0x24;		// CS_INTERFACE
+		fmtBuf[2] = 0x04;		// VS_FORMAT_UNCOMPRESSED
+		fmtBuf[3] = 1;			// bFormatIndex
+		fmtBuf[4] = 5;			// bNumFrameDescriptors
+		// GUID at offset 5 (YUY2-ish sentinel).
+		for (int i = 0; i < 16; i++) fmtBuf[5 + i] = (uint8)(0x40 + i);
+		fmtBuf[21] = 16;		// bits per pixel
+		fmtBuf[22] = 2;			// default frame index
+
+		UVCUncompressedFormatCheck f = UVCCheckUncompressedFormatDescriptor(
+			fmtBuf, 27);
+		bool guidOk = true;
+		for (int i = 0; i < 16; i++)
+			guidOk = guidOk && (f.guid[i] == (uint8)(0x40 + i));
+		Expect("valid uncompressed format", f.valid && f.formatIndex == 1
+			&& f.numFrameDescriptors == 5 && f.defaultFrameIndex == 2
+			&& f.bitsPerPixel == 16 && guidOk);
+
+		// Too short to read the GUID/fields.
+		Expect("reject format avail < 27",
+			!UVCCheckUncompressedFormatDescriptor(fmtBuf, 20).valid);
+
+		// bLength claims 27 but only 20 available.
+		Expect("reject format bLength > avail",
+			!UVCCheckUncompressedFormatDescriptor(fmtBuf, 20).valid);
+
+		// bLength below spec fixed size.
+		fmtBuf[0] = 20;
+		Expect("reject format bLength < 27",
+			!UVCCheckUncompressedFormatDescriptor(fmtBuf, 27).valid);
+		fmtBuf[0] = 27;
+
+		// formatIndex 0 is unusable.
+		fmtBuf[3] = 0;
+		Expect("reject format index 0",
+			!UVCCheckUncompressedFormatDescriptor(fmtBuf, 27).valid);
+	}
+
 	printf("\n%d passed, %d failed\n", sPass, sFail);
 	return sFail == 0 ? 0 : 1;
 }

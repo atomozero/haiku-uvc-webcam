@@ -40,6 +40,26 @@ static const size_t kUVCFrameDescFixedLen = 26;
 UVCFrameDescCheck UVCCheckFrameDescriptor(const uint8* bytes, size_t avail);
 
 
+// Result of validating a VS_FORMAT_UNCOMPRESSED descriptor.
+struct UVCUncompressedFormatCheck {
+	bool	valid;
+	uint8	formatIndex;			// 1-based; 0 is rejected
+	uint8	numFrameDescriptors;
+	uint8	defaultFrameIndex;
+	uint8	bitsPerPixel;
+	uint8	guid[16];				// safely copied 16-byte format GUID
+};
+
+// Fixed length of a VS_FORMAT_UNCOMPRESSED descriptor (UVC spec: 27 bytes).
+static const size_t kUVCUncFormatFixedLen = 27;
+
+// Validate a raw VS_FORMAT_UNCOMPRESSED descriptor, reading only within
+// `avail`. The 16-byte GUID is copied out safely (zeroed if unavailable) so the
+// caller never identifies a format from stale memory.
+UVCUncompressedFormatCheck UVCCheckUncompressedFormatDescriptor(
+	const uint8* bytes, size_t avail);
+
+
 // --- Bounds-checked field readers -------------------------------------------
 // Read a little-endian field from a descriptor of `len` readable bytes. If the
 // field is not fully within [0, len) they return 0 instead of reading past the

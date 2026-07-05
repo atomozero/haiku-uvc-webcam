@@ -1391,8 +1391,20 @@ UVCCamDevice::_ParseVideoStreaming(const usbvc_class_descriptor* _descriptor,
 		{
 			const usbvc_format_descriptor* descriptor
 				= (const usbvc_format_descriptor*)_descriptor;
+			// Bounds-safe extraction (UVCDescriptors): reject a short or lying
+			// descriptor instead of identifying a format from a stale 16-byte
+			// GUID. avail = the descriptor's own bLength.
+			const UVCUncompressedFormatCheck fmt =
+				UVCCheckUncompressedFormatDescriptor(
+					(const uint8*)_descriptor, _descriptor->length);
+			if (!fmt.valid) {
+				syslog(LOG_WARNING, "UVCCamDevice: rejecting malformed "
+					"VS_FORMAT_UNCOMPRESSED descriptor (bLength=%u)\n",
+					_descriptor->length);
+				break;
+			}
 			uvc_uncompressed_format detected
-				= identify_uncompressed_format(descriptor->uncompressed.format);
+				= identify_uncompressed_format(fmt.guid);
 
 			// Format selection across multiple uncompressed descriptors:
 			//   - First format wins if no recognized format has been seen yet
@@ -1417,9 +1429,8 @@ UVCCamDevice::_ParseVideoStreaming(const usbvc_class_descriptor* _descriptor,
 					|| preferenceRank(detected)
 						> preferenceRank(fUncompressedPixelFormat)) {
 				fUncompressedPixelFormat = detected;
-				fUncompressedFormatIndex = descriptor->formatIndex;
-				fDefaultUncompressedFrameIndex
-					= descriptor->uncompressed.defaultFrameIndex;
+				fUncompressedFormatIndex = fmt.formatIndex;
+				fDefaultUncompressedFrameIndex = fmt.defaultFrameIndex;
 				fIsNV12 = (detected == UVC_FMT_NV12);
 			}
 			printf("VS_FORMAT_UNCOMPRESSED:\tbFormatIdx=%d,#frmdesc=%d,guid=",
