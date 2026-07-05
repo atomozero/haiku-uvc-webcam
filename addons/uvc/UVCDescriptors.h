@@ -60,6 +60,35 @@ UVCUncompressedFormatCheck UVCCheckUncompressedFormatDescriptor(
 	const uint8* bytes, size_t avail);
 
 
+// Result of validating a VC_EXTENSION_UNIT descriptor. This descriptor is the
+// riskiest to parse: it has two device-controlled variable-length arrays
+// (source_id[bNrInPins] and bmControls[bControlSize]), and the offset of
+// bControlSize and iExtension is computed from those untrusted counts.
+struct UVCExtensionUnitCheck {
+	bool	valid;
+	uint8	unitID;
+	uint8	numControls;
+	uint8	numInputPins;
+	uint8	guid[16];			// safely copied 16-byte extension GUID
+	uint8	controlSize;		// bControlSize, or 0 if not within bounds
+	uint8	iExtension;			// string index, or 0 if not within bounds
+	uint8	sourceIds[8];		// first up to 8 source ids
+	uint8	sourceIdCount;		// number of valid entries in sourceIds[]
+};
+
+// Fixed prefix of a VC_EXTENSION_UNIT descriptor: bytes 0..21 (through
+// bNrInPins). The variable arrays follow.
+static const size_t kUVCXUFixedLen = 22;
+
+// Validate a raw VC_EXTENSION_UNIT descriptor, reading only within `avail`. The
+// GUID/unit id/control count are extracted when the fixed prefix is present;
+// bControlSize and iExtension are read only when their device-computed offsets
+// fall inside the descriptor (0 otherwise), so the notorious Extension()
+// offset math can never run off the end.
+UVCExtensionUnitCheck UVCCheckExtensionUnitDescriptor(
+	const uint8* bytes, size_t avail);
+
+
 // --- Bounds-checked field readers -------------------------------------------
 // Read a little-endian field from a descriptor of `len` readable bytes. If the
 // field is not fully within [0, len) they return 0 instead of reading past the

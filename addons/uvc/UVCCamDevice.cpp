@@ -7009,25 +7009,37 @@ void
 UVCCamDevice::_ParseExtensionUnit(
 	const usb_video_extension_unit_descriptor* descriptor)
 {
+	// Bounds-safe extraction (UVCDescriptors). The XU descriptor's variable
+	// arrays and its Extension()/ControlSize() offset math are driven by two
+	// untrusted count bytes; validate first and read via the checked view so a
+	// malformed descriptor can't walk the parser off the end of the buffer.
+	const UVCExtensionUnitCheck xuChk = UVCCheckExtensionUnitDescriptor(
+		(const uint8*)descriptor, descriptor->length);
+	if (!xuChk.valid) {
+		syslog(LOG_WARNING, "UVCCamDevice: skipping malformed VC_EXTENSION_UNIT "
+			"descriptor (bLength=%u)\n", descriptor->length);
+		return;
+	}
+
 	// Create extension unit info structure
 	extension_unit_info* xu = new extension_unit_info;
 	memset(xu, 0, sizeof(extension_unit_info));
 
-	// Copy basic info
-	xu->unit_id = descriptor->unit_id;
-	memcpy(xu->guid, descriptor->guid_extension_code, 16);
-	xu->num_controls = descriptor->num_controls;
-	xu->num_input_pins = descriptor->num_input_pins;
+	// Copy basic info (all from the validated, bounds-checked view)
+	xu->unit_id = xuChk.unitID;
+	memcpy(xu->guid, xuChk.guid, 16);
+	xu->num_controls = xuChk.numControls;
+	xu->num_input_pins = xuChk.numInputPins;
 
-	// Copy source IDs (up to 8)
-	uint8 pinCount = (descriptor->num_input_pins < 8)
-		? descriptor->num_input_pins : 8;
+	// Copy source IDs (already clamped to what fits, up to 8)
+	uint8 pinCount = (xuChk.sourceIdCount < 8) ? xuChk.sourceIdCount : 8;
 	for (uint8 i = 0; i < pinCount; i++) {
-		xu->source_ids[i] = descriptor->source_id[i];
+		xu->source_ids[i] = xuChk.sourceIds[i];
 	}
 
-	// Get description string from device
-	const char* desc = fDevice->DecodeStringDescriptor(descriptor->Extension());
+	// Get description string from device (iExtension is 0 when out of bounds).
+	const char* desc = xuChk.iExtension != 0
+		? fDevice->DecodeStringDescriptor(xuChk.iExtension) : NULL;
 	if (desc != NULL) {
 		strncpy(xu->description, desc, sizeof(xu->description) - 1);
 		xu->description[sizeof(xu->description) - 1] = '\0';

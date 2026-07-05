@@ -197,6 +197,48 @@ main()
 			!UVCCheckUncompressedFormatDescriptor(fmtBuf, 27).valid);
 	}
 
+	// --- Extension unit descriptor validator ---
+	{
+		// Well-formed: 1 input pin, control size 1 -> bLength = 24+1+1 = 26.
+		uint8 xu[32];
+		memset(xu, 0, sizeof(xu));
+		xu[0] = 26;			// bLength
+		xu[1] = 0x24; xu[2] = 0x06;	// CS_INTERFACE, VC_EXTENSION_UNIT
+		xu[3] = 4;			// bUnitID
+		for (int i = 0; i < 16; i++) xu[4 + i] = (uint8)(0x70 + i);	// GUID
+		xu[20] = 8;			// bNumControls
+		xu[21] = 1;			// bNrInPins
+		xu[22] = 3;			// source_id[0]
+		xu[23] = 1;			// bControlSize
+		xu[24] = 0x0F;		// bmControls[0]
+		xu[25] = 7;			// iExtension
+
+		UVCExtensionUnitCheck x = UVCCheckExtensionUnitDescriptor(xu, 26);
+		bool guidOk = true;
+		for (int i = 0; i < 16; i++)
+			guidOk = guidOk && (x.guid[i] == (uint8)(0x70 + i));
+		Expect("valid XU", x.valid && x.unitID == 4 && x.numControls == 8
+			&& x.numInputPins == 1 && guidOk && x.controlSize == 1
+			&& x.iExtension == 7 && x.sourceIdCount == 1 && x.sourceIds[0] == 3);
+
+		// Too short for the fixed prefix.
+		Expect("reject XU avail < 22",
+			!UVCCheckExtensionUnitDescriptor(xu, 20).valid);
+
+		// bLength lies (claims 26 but only 22 available).
+		Expect("reject XU bLength > avail",
+			!UVCCheckExtensionUnitDescriptor(xu, 22).valid);
+
+		// Hostile counts: 200 input pins in a 26-byte descriptor. The fixed
+		// prefix is still readable, so the unit is kept, but the computed
+		// bControlSize / iExtension offsets fall outside -> 0, no over-read.
+		xu[21] = 200;
+		UVCExtensionUnitCheck h = UVCCheckExtensionUnitDescriptor(xu, 26);
+		Expect("hostile pin count stays in bounds", h.valid
+			&& h.controlSize == 0 && h.iExtension == 0
+			&& h.sourceIdCount <= 8);
+	}
+
 	printf("\n%d passed, %d failed\n", sPass, sFail);
 	return sFail == 0 ? 0 : 1;
 }

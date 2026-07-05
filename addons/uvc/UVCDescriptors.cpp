@@ -142,6 +142,80 @@ UVCCheckUncompressedFormatDescriptor(const uint8* bytes, size_t avail)
 }
 
 
+// --- Extension unit descriptor validation -----------------------------------
+
+// Field offsets within a VC_EXTENSION_UNIT descriptor.
+enum {
+	kOffXUUnitID			= 3,	// bUnitID
+	kOffXUGuid				= 4,	// guidExtensionCode[16]
+	kOffXUNumControls		= 20,	// bNumControls
+	kOffXUNumInputPins		= 21,	// bNrInPins
+	kOffXUSourceIds			= 22,	// source_id[bNrInPins]
+};
+
+UVCExtensionUnitCheck
+UVCCheckExtensionUnitDescriptor(const uint8* bytes, size_t avail)
+{
+	UVCExtensionUnitCheck r;
+	r.valid = false;
+	r.unitID = 0;
+	r.numControls = 0;
+	r.numInputPins = 0;
+	r.controlSize = 0;
+	r.iExtension = 0;
+	r.sourceIdCount = 0;
+	for (int i = 0; i < 16; i++)
+		r.guid[i] = 0;
+	for (int i = 0; i < 8; i++)
+		r.sourceIds[i] = 0;
+
+	// The fixed prefix (through bNrInPins) must be present; that also covers
+	// the 16-byte GUID (offsets 4..19).
+	if (bytes == NULL || avail < kUVCXUFixedLen)
+		return r;
+
+	const uint8 bLength = UVCDescByte(bytes, avail, kOffLength);
+	if (bLength < kUVCXUFixedLen || (size_t)bLength > avail)
+		return r;
+
+	r.unitID = UVCDescByte(bytes, avail, kOffXUUnitID);
+	for (int i = 0; i < 16; i++)
+		r.guid[i] = UVCDescByte(bytes, avail, kOffXUGuid + i);
+	r.numControls = UVCDescByte(bytes, avail, kOffXUNumControls);
+
+	const uint8 pins = UVCDescByte(bytes, avail, kOffXUNumInputPins);
+	r.numInputPins = pins;
+
+	// Source IDs start at offset 22, one byte per input pin. Copy up to 8, and
+	// only those that lie inside the descriptor's own bLength.
+	size_t si = 0;
+	for (uint8 i = 0; i < pins && si < 8; i++) {
+		const size_t off = kOffXUSourceIds + (size_t)i;
+		if (off >= (size_t)bLength)
+			break;
+		r.sourceIds[si++] = UVCDescByte(bytes, avail, off);
+	}
+	r.sourceIdCount = (uint8)si;
+
+	// bControlSize sits right after the source_id array (offset 22 + pins), and
+	// iExtension after the bmControls array (offset 22 + pins + 1 + ctrlSize).
+	// Both offsets are device-computed, so read each only when it falls inside
+	// the descriptor; otherwise leave it 0 rather than reading past the end.
+	const size_t ctrlSizeOff = (size_t)kOffXUSourceIds + (size_t)pins;
+	if (ctrlSizeOff < (size_t)bLength)
+		r.controlSize = UVCDescByte(bytes, avail, ctrlSizeOff);
+
+	const size_t iExtOff = ctrlSizeOff + 1 + (size_t)r.controlSize;
+	if (iExtOff < (size_t)bLength)
+		r.iExtension = UVCDescByte(bytes, avail, iExtOff);
+
+	// The identifying part (unit id + GUID) is safely in hand; keep the unit so
+	// a slightly-truncated descriptor doesn't cost a usable vendor feature.
+	r.valid = true;
+	return r;
+}
+
+
 // --- Safe descriptor walker -------------------------------------------------
 
 UVCDescriptorCursor::UVCDescriptorCursor(const uint8* buf, size_t len)

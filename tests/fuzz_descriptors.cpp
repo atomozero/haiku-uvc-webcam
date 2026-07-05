@@ -260,6 +260,64 @@ main()
 	printf("format validator: no OOB reads, no invariant violations "
 		"(accepted=%ld rejected=%ld)\n", fmtValid, fmtInvalid);
 
+	// Phase 4: fuzz the extension-unit validator (the riskiest descriptor:
+	// two device-controlled variable-length arrays + computed offsets).
+	long xuValid = 0, xuInvalid = 0;
+	for (long it = 0; it < kIterations; it++) {
+		size_t len = (size_t)(rand() % (kMaxLen + 1));
+		void* mapBase = NULL;
+		size_t mapLen = 0;
+		uint8* buf = GuardedBuffer(len, &mapBase, &mapLen);
+		if (buf == NULL) {
+			printf("mmap failed at XU iter %ld\n", it);
+			return 2;
+		}
+		if ((rand() & 1) && len >= 22) {
+			// Plausible XU header, then hostile pin/control counts + flips.
+			memset(tmpl, 0, sizeof(tmpl));
+			tmpl[0] = (uint8)len;
+			tmpl[1] = 0x24; tmpl[2] = 0x06;
+			tmpl[3] = (uint8)(rand() & 0xff);		// unit id
+			tmpl[21] = (uint8)(rand() & 0xff);		// bNrInPins (often hostile)
+			int flips = rand() % 5;
+			for (int f = 0; f < flips; f++)
+				tmpl[rand() % len] = (uint8)(rand() & 0xff);
+			memcpy(buf, tmpl, len);
+		} else {
+			for (size_t i = 0; i < len; i++)
+				buf[i] = (uint8)(rand() & 0xff);
+		}
+
+		if (sigsetjmp(sJmp, 1) != 0) {
+			printf("\nXU OUT-OF-BOUNDS READ at iter %ld: len=%zu", it, len);
+			if (len > 21) printf(" pins=%u", buf[21]);
+			printf("\n");
+			munmap(mapBase, mapLen);
+			return 1;
+		}
+
+		UVCExtensionUnitCheck x = UVCCheckExtensionUnitDescriptor(buf, len);
+		if (x.valid) {
+			xuValid++;
+			bool ok = (size_t)buf[0] >= kUVCXUFixedLen
+				&& (size_t)buf[0] <= len
+				&& x.sourceIdCount <= 8
+				&& x.sourceIdCount <= x.numInputPins;
+			if (!ok) {
+				printf("\nXU INVARIANT VIOLATION at iter %ld: len=%zu bLength=%u "
+					"pins=%u srcCount=%u\n", it, len, buf[0], x.numInputPins,
+					x.sourceIdCount);
+				munmap(mapBase, mapLen);
+				return 1;
+			}
+		} else {
+			xuInvalid++;
+		}
+		munmap(mapBase, mapLen);
+	}
+	printf("extension-unit validator: no OOB reads, no invariant violations "
+		"(accepted=%ld rejected=%ld)\n", xuValid, xuInvalid);
+
 	printf("\nPASS\n");
 	return 0;
 }
