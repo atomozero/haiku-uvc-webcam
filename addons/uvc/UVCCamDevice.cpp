@@ -9,6 +9,7 @@
 #include "UVCCamDevice.h"
 #include "UVCDeframer.h"
 #include "UVCQuirks.h"
+#include "UVCDescriptors.h"
 #include "CamDebug.h"
 #include "CamConfig.h"
 
@@ -1464,30 +1465,16 @@ UVCCamDevice::_ParseVideoStreaming(const usbvc_class_descriptor* _descriptor,
 			// huge buffers or trigger asserts. Skipping the AddItem is
 			// safe: a camera that advertises corrupt data here can still
 			// expose other usable resolutions on the same VS interface.
-			const uint32 kMaxReasonableFrameSize = 50 * 1024 * 1024; // 50MB
-			const uint16 kMaxReasonableDim = 8192;
-			// Discrete frame intervals live in the trailing bytes after the
-			// fixed part of the descriptor (up to and including
-			// frame_interval_type). A well-formed descriptor's
-			// frame_interval_type (device-controlled uint8, up to 255) must
-			// match what its bLength can actually hold; reject garbage/oversized
-			// values so the loops that iterate discrete_frame_intervals[] below
-			// don't read past the descriptor.
-			const uint32 kFrameDescFixedLen =
-				offsetof(usb_video_frame_descriptor, frame_interval_type) + 1;
-			const uint32 maxDiscreteFromLen =
-				(descriptor->length > kFrameDescFixedLen)
-					? (uint32)(descriptor->length - kFrameDescFixedLen)
-						/ (uint32)sizeof(uint32)
-					: 0;
-			const bool descSane = (descriptor->width > 0
-				&& descriptor->height > 0
-				&& descriptor->width <= kMaxReasonableDim
-				&& descriptor->height <= kMaxReasonableDim
-				&& descriptor->max_video_frame_buffer_size
-					<= kMaxReasonableFrameSize
-				&& (descriptor->frame_interval_type == 0
-					|| descriptor->frame_interval_type <= maxDiscreteFromLen));
+			//
+			// Validation lives in the bounds-safe, fuzzed helper
+			// UVCCheckFrameDescriptor() (addons/uvc/UVCDescriptors) — it reads
+			// only within `avail` and rejects an inconsistent bLength or a
+			// frame_interval_type that would run the interval loop past the
+			// descriptor. Passing descriptor->length keeps today's contract
+			// (the USB kit already sized the blob to bLength).
+			const UVCFrameDescCheck frameChk = UVCCheckFrameDescriptor(
+				(const uint8*)descriptor, descriptor->length);
+			const bool descSane = frameChk.valid;
 
 			const char* tag = (_descriptor->descriptorSubtype
 					== USB_VIDEO_VS_FRAME_UNCOMPRESSED)

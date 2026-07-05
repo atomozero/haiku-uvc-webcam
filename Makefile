@@ -56,6 +56,7 @@ SOURCES = \
 	addons/uvc/UVCCamDevice.cpp \
 	addons/uvc/UVCDeframer.cpp \
 	addons/uvc/UVCQuirks.cpp \
+	addons/uvc/UVCDescriptors.cpp \
 	addons/NW80xCamDevice.cpp
 
 OBJECTS = $(SOURCES:.cpp=.o)
