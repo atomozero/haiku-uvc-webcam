@@ -239,6 +239,44 @@ main()
 			&& h.sourceIdCount <= 8);
 	}
 
+	// --- VS input/output header bmaControls bound ---
+	{
+		// Input header (array at 13): 2 formats, control_size 1 -> needs 15.
+		Expect("input: 2 fmts fit",
+			UVCVSHeaderSafeFormatCount(2, 1, 13, 15) == 2);
+		// Only 14 bytes: only 1 entry fits.
+		Expect("input: truncated -> 1",
+			UVCVSHeaderSafeFormatCount(2, 1, 13, 14) == 1);
+		// Hostile num_formats, small descriptor: clamped to what fits.
+		Expect("input: hostile 200 fmts clamped",
+			UVCVSHeaderSafeFormatCount(200, 1, 13, 15) == 2);
+		// control_size 0 -> 0 (no zero-stride walk).
+		Expect("control_size 0 -> 0",
+			UVCVSHeaderSafeFormatCount(5, 0, 13, 40) == 0);
+		// bLength at/under the array offset -> 0.
+		Expect("bLength <= arrayOffset -> 0",
+			UVCVSHeaderSafeFormatCount(5, 2, 13, 13) == 0);
+		// Wider control entries.
+		Expect("input: control_size 4",
+			UVCVSHeaderSafeFormatCount(10, 4, 13, 25) == 3);
+		// Output header (array at 9).
+		Expect("output: 3 fmts fit",
+			UVCVSHeaderSafeFormatCount(3, 1, 9, 12) == 3);
+
+		// Invariant sweep: the count never implies reading past bLength.
+		bool inv = true;
+		for (int nf = 0; nf < 256 && inv; nf++)
+			for (int cs = 0; cs < 16 && inv; cs++)
+				for (int bl = 0; bl < 64 && inv; bl++) {
+					uint8 c = UVCVSHeaderSafeFormatCount(
+						(uint8)nf, (uint8)cs, 13, (uint8)bl);
+					if (c > nf) inv = false;
+					if (c > 0 && (13 + (size_t)c * cs) > (size_t)bl) inv = false;
+					if (cs == 0 && c != 0) inv = false;
+				}
+		Expect("VS header count invariant sweep", inv);
+	}
+
 	printf("\n%d passed, %d failed\n", sPass, sFail);
 	return sFail == 0 ? 0 : 1;
 }

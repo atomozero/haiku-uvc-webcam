@@ -21,6 +21,25 @@ static const uint32 kMaxReasonableDim = 8192;
 static const uint32 kMaxReasonableFrameSize = 50u * 1024 * 1024;	// 50 MB
 
 
+// --- VS input/output header helpers -----------------------------------------
+
+uint8
+UVCVSHeaderSafeFormatCount(uint8 numFormats, uint8 controlSize,
+	size_t arrayOffset, uint8 bLength)
+{
+	// A zero-stride array can't be walked (and would loop forever); and if the
+	// descriptor doesn't even reach the array there are no entries.
+	if (controlSize == 0 || (size_t)bLength <= arrayOffset)
+		return 0;
+
+	const size_t room = (size_t)bLength - arrayOffset;
+	size_t fit = room / (size_t)controlSize;
+	if (fit > (size_t)numFormats)
+		fit = numFormats;
+	return (uint8)fit;
+}
+
+
 // --- Bounds-checked field readers -------------------------------------------
 
 uint8

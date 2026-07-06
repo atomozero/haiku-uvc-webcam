@@ -89,6 +89,21 @@ UVCExtensionUnitCheck UVCCheckExtensionUnitDescriptor(
 	const uint8* bytes, size_t avail);
 
 
+// Fixed prefix lengths of the VS input/output header descriptors, i.e. the
+// offset at which the bmaControls[bNumFormats][bControlSize] array begins.
+static const size_t kUVCVSInputHeaderFixedLen = 13;
+static const size_t kUVCVSOutputHeaderFixedLen = 9;
+
+// Number of bmaControls entries that fit fully inside a VS input/output header
+// of length `bLength`, whose array starts at `arrayOffset` and whose entries
+// are `controlSize` bytes each. Never exceeds `numFormats`, and returns 0 when
+// controlSize is 0 (a zero-stride array would otherwise loop forever). Use it
+// to bound the bmaControls iteration so a large bNumFormats/bControlSize can't
+// walk the parser past the descriptor.
+uint8 UVCVSHeaderSafeFormatCount(uint8 numFormats, uint8 controlSize,
+	size_t arrayOffset, uint8 bLength);
+
+
 // --- Bounds-checked field readers -------------------------------------------
 // Read a little-endian field from a descriptor of `len` readable bytes. If the
 // field is not fully within [0, len) they return 0 instead of reading past the

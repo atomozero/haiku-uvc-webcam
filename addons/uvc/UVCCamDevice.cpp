@@ -1352,6 +1352,11 @@ UVCCamDevice::_ParseVideoStreaming(const usbvc_class_descriptor* _descriptor,
 		{
 			const usb_video_class_specific_vs_interface_input_header_descriptor* descriptor
 				= (const usb_video_class_specific_vs_interface_input_header_descriptor*)_descriptor;
+			if (_descriptor->length < kUVCVSInputHeaderFixedLen) {
+				syslog(LOG_WARNING, "UVCCamDevice: skipping short VS_INPUT_HEADER "
+					"(bLength=%u)\n", _descriptor->length);
+				break;
+			}
 			printf("VS_INPUT_HEADER:\t#fmts=%d,ept=0x%x (%s)\n", descriptor->num_formats,
 				descriptor->_endpoint_address.endpoint_number,
 				descriptor->_endpoint_address.direction ? "IN" : "OUT");
@@ -1371,19 +1376,30 @@ UVCCamDevice::_ParseVideoStreaming(const usbvc_class_descriptor* _descriptor,
 				printf("\ttrigger button fixed to still capture=%s\n",
 					descriptor->trigger_usage ? "no" : "yes");
 			}
-			const struct usb_video_class_specific_vs_interface_input_header_descriptor::ma_controls*
-				controls = descriptor->_ma_controls;
-			for (uint8 i = 0; i < descriptor->num_formats; i++,
-				controls =
-				(const struct usb_video_class_specific_vs_interface_input_header_descriptor
-					::ma_controls*)((const char*)controls + descriptor->control_size)) {
+			// Bounds-safe iteration of bmaControls[num_formats][control_size]:
+			// only entries whose control byte fits within the descriptor, so a
+			// large num_formats/control_size can't walk us past bLength.
+			const uint8* inHdrBytes = (const uint8*)_descriptor;
+			const uint8 inHdrLen = _descriptor->length;
+			const uint8 inSafeFormats = UVCVSHeaderSafeFormatCount(
+				descriptor->num_formats, descriptor->control_size,
+				kUVCVSInputHeaderFixedLen, inHdrLen);
+			if (inSafeFormats < descriptor->num_formats) {
+				syslog(LOG_WARNING, "UVCCamDevice: VS_INPUT_HEADER advertises %u "
+					"formats but only %u fit bLength=%u; ignoring the rest\n",
+					descriptor->num_formats, inSafeFormats, inHdrLen);
+			}
+			for (uint8 i = 0; i < inSafeFormats; i++) {
+				const uint8 ctl = UVCDescByte(inHdrBytes, inHdrLen,
+					kUVCVSInputHeaderFixedLen
+						+ (size_t)i * descriptor->control_size);
 				printf("\tfmt%d: %s %s %s %s - %s %s\n", i,
-					(controls->key_frame_rate) ? "wKeyFrameRate" : "",
-					(controls->p_frame_rate) ? "wPFrameRate" : "",
-					(controls->comp_quality) ? "wCompQuality" : "",
-					(controls->comp_window_size) ? "wCompWindowSize" : "",
-					(controls->generate_key_frame) ? "<Generate Key Frame>" : "",
-					(controls->update_frame_segment) ? "<Update Frame Segment>" : "");
+					(ctl & 0x01) ? "wKeyFrameRate" : "",
+					(ctl & 0x02) ? "wPFrameRate" : "",
+					(ctl & 0x04) ? "wCompQuality" : "",
+					(ctl & 0x08) ? "wCompWindowSize" : "",
+					(ctl & 0x10) ? "<Generate Key Frame>" : "",
+					(ctl & 0x20) ? "<Update Frame Segment>" : "");
 			}
 			break;
 		}
@@ -1588,21 +1604,35 @@ UVCCamDevice::_ParseVideoStreaming(const usbvc_class_descriptor* _descriptor,
 		{
 			const usb_video_class_specific_vs_interface_output_header_descriptor* descriptor
 				= (const usb_video_class_specific_vs_interface_output_header_descriptor*)_descriptor;
+			if (_descriptor->length < kUVCVSOutputHeaderFixedLen) {
+				syslog(LOG_WARNING, "UVCCamDevice: skipping short VS_OUTPUT_HEADER "
+					"(bLength=%u)\n", _descriptor->length);
+				break;
+			}
 			printf("VS_OUTPUT_HEADER:\t#fmts=%d,ept=0x%x (%s)\n",
 				descriptor->num_formats, descriptor->_endpoint_address.endpoint_number,
 				descriptor->_endpoint_address.direction ? "IN" : "OUT");
 			printf("\toutput terminal id=%d\n", descriptor->terminal_link);
-			const struct usb_video_class_specific_vs_interface_output_header_descriptor::ma_controls*
-				controls = descriptor->_ma_controls;
-			for (uint8 i = 0; i < descriptor->num_formats; i++,
-				controls
-					= (const struct usb_video_class_specific_vs_interface_output_header_descriptor
-					::ma_controls*)((const char*)controls + descriptor->control_size)) {
+			// Bounds-safe iteration of bmaControls[num_formats][control_size].
+			const uint8* outHdrBytes = (const uint8*)_descriptor;
+			const uint8 outHdrLen = _descriptor->length;
+			const uint8 outSafeFormats = UVCVSHeaderSafeFormatCount(
+				descriptor->num_formats, descriptor->control_size,
+				kUVCVSOutputHeaderFixedLen, outHdrLen);
+			if (outSafeFormats < descriptor->num_formats) {
+				syslog(LOG_WARNING, "UVCCamDevice: VS_OUTPUT_HEADER advertises %u "
+					"formats but only %u fit bLength=%u; ignoring the rest\n",
+					descriptor->num_formats, outSafeFormats, outHdrLen);
+			}
+			for (uint8 i = 0; i < outSafeFormats; i++) {
+				const uint8 ctl = UVCDescByte(outHdrBytes, outHdrLen,
+					kUVCVSOutputHeaderFixedLen
+						+ (size_t)i * descriptor->control_size);
 				printf("\tfmt%d: %s %s %s %s\n", i,
-					(controls->key_frame_rate) ? "wKeyFrameRate" : "",
-					(controls->p_frame_rate) ? "wPFrameRate" : "",
-					(controls->comp_quality) ? "wCompQuality" : "",
-					(controls->comp_window_size) ? "wCompWindowSize" : "");
+					(ctl & 0x01) ? "wKeyFrameRate" : "",
+					(ctl & 0x02) ? "wPFrameRate" : "",
+					(ctl & 0x04) ? "wCompQuality" : "",
+					(ctl & 0x08) ? "wCompWindowSize" : "");
 			}
 			break;
 		}

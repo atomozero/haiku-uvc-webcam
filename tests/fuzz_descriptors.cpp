@@ -318,6 +318,57 @@ main()
 	printf("extension-unit validator: no OOB reads, no invariant violations "
 		"(accepted=%ld rejected=%ld)\n", xuValid, xuInvalid);
 
+	// Phase 5: fuzz the VS input/output header bmaControls iteration (the
+	// adopted safe-count + bounds-checked read loop) against a guard page.
+	long hdrEntries = 0;
+	for (long it = 0; it < kIterations; it++) {
+		size_t len = (size_t)(rand() % (kMaxLen + 1));
+		void* mapBase = NULL;
+		size_t mapLen = 0;
+		uint8* buf = GuardedBuffer(len, &mapBase, &mapLen);
+		if (buf == NULL) {
+			printf("mmap failed at hdr iter %ld\n", it);
+			return 2;
+		}
+		for (size_t i = 0; i < len; i++)
+			buf[i] = (uint8)(rand() & 0xff);
+
+		// Treat the buffer as the descriptor: bLength == its real size, so the
+		// reads (avail = len) match production (a kit-delivered bLength blob).
+		const uint8 bLength = (uint8)(len > 255 ? 255 : len);
+		const size_t arrayOffset = (rand() & 1) ? 13 : 9;
+		const uint8 numFormats = len > 3 ? buf[3] : 0;
+		const uint8 controlSize = (rand() & 1)
+			? (uint8)(rand() & 0xff) : (uint8)(1 + rand() % 4);
+
+		if (sigsetjmp(sJmp, 1) != 0) {
+			printf("\nVS-HEADER OUT-OF-BOUNDS READ at iter %ld: len=%zu\n", it, len);
+			munmap(mapBase, mapLen);
+			return 1;
+		}
+
+		uint8 count = UVCVSHeaderSafeFormatCount(numFormats, controlSize,
+			arrayOffset, bLength);
+		bool ok = count <= numFormats
+			&& (controlSize != 0 || count == 0)
+			&& (count == 0
+				|| arrayOffset + (size_t)count * controlSize <= (size_t)bLength);
+		if (!ok) {
+			printf("\nVS-HEADER COUNT INVARIANT VIOLATION at iter %ld: "
+				"nf=%u cs=%u off=%zu bLen=%u count=%u\n", it, numFormats,
+				controlSize, arrayOffset, bLength, count);
+			munmap(mapBase, mapLen);
+			return 1;
+		}
+		for (uint8 i = 0; i < count; i++) {
+			(void)UVCDescByte(buf, len, arrayOffset + (size_t)i * controlSize);
+			hdrEntries++;
+		}
+		munmap(mapBase, mapLen);
+	}
+	printf("VS header controls: no OOB reads, all iterations bounded "
+		"(entries=%ld)\n", hdrEntries);
+
 	printf("\nPASS\n");
 	return 0;
 }
