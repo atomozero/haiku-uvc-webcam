@@ -449,14 +449,21 @@ CamDevice::StopTransfer()
 	// watchdog) rather than block teardown forever or kill it — killing a
 	// thread stuck mid-transfer would race a use-after-free on its stack. Mark
 	// the device stalled so it refuses reuse until physically re-enumerated.
-	// The thread itself might Lock(), so unlock before waiting.
-	fLocker.Unlock();
+	// The pump thread itself might Lock(), so release fLocker while joining.
+	// But not every caller holds it: HandleStop() does, the reconfig path
+	// (_HandleResolutionChange) does not. Unconditionally unlocking there would
+	// release a lock we don't own and corrupt it — so only unlock if this
+	// thread actually holds it, and re-lock to match on the way out.
+	const bool hadLock = fLocker.IsLocked();
+	if (hadLock)
+		fLocker.Unlock();
 	status_t threadResult;
 	status_t waitErr = (fPumpThread >= 0)
 		? wait_for_thread_etc(fPumpThread, B_RELATIVE_TIMEOUT, 3000000,
 			&threadResult)
 		: B_OK;
-	fLocker.Lock();
+	if (hadLock)
+		fLocker.Lock();
 	if (waitErr == B_TIMED_OUT) {
 		syslog(LOG_ERR, "CamDevice: data pump wedged on stop — abandoning "
 			"thread and marking device stalled (reconnect the camera)\n");
