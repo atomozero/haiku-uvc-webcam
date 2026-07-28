@@ -1337,9 +1337,20 @@ VideoProducer::FrameGenerator()
 		}
 
 		bigtime_t frameDuration = (bigtime_t)(1000000 / fConnectedFormat.field_rate);
-		// For real camera: don't drop "late" frames - process all available frames
-		// The camera produces frames at its own rate, we should display them all
-		wait_until = system_time() + frameDuration;
+		if (frameDuration <= 0)
+			frameDuration = 33333;	// ~30 fps fallback if field_rate is 0/garbage
+
+		// Advance the pacing deadline by exactly one frame instead of
+		// "now + frameDuration". The latter resets the schedule every iteration,
+		// so any processing delay accumulates as drift/jitter; accumulating from
+		// the previous deadline keeps a steady cadence. If we have fallen far
+		// behind real time (e.g. the camera stalled) or run implausibly ahead,
+		// resync to now so we neither burst frames to catch up nor stall.
+		wait_until += frameDuration;
+		bigtime_t nowReal = system_time();
+		if (wait_until < nowReal - frameDuration
+				|| wait_until > nowReal + 2 * frameDuration)
+			wait_until = nowReal + frameDuration;
 
 		// Only skip if semaphore was explicitly released (timing change signal)
 		if (err == B_OK) {
