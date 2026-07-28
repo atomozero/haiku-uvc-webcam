@@ -869,7 +869,10 @@ VideoProducer::Connect(status_t error, const media_source &source,
 	fprintf(stderr, "=== Connect END (SUCCESS) ===\n\n");
 
 	/* Tell frame generation thread to recalculate delay value */
-	release_sem(fFrameSync);
+	/* Guard: fFrameSync is -1 before HandleStart and after HandleStop; releasing
+	 * a stale/-1 id would perturb a reused semaphore or fail. */
+	if (fFrameSync >= 0)
+		release_sem(fFrameSync);
 }
 
 void
@@ -1240,7 +1243,10 @@ VideoProducer::HandleTimeWarp(bigtime_t performance_time)
 	fFrameBase = fFrame;
 
 	/* Tell frame generation thread to recalculate delay value */
-	release_sem(fFrameSync);
+	/* Guard: fFrameSync is -1 before HandleStart and after HandleStop; releasing
+	 * a stale/-1 id would perturb a reused semaphore or fail. */
+	if (fFrameSync >= 0)
+		release_sem(fFrameSync);
 }
 
 
@@ -1253,7 +1259,10 @@ VideoProducer::HandleSeek(bigtime_t performance_time)
 	fFrameBase = fFrame;
 
 	/* Tell frame generation thread to recalculate delay value */
-	release_sem(fFrameSync);
+	/* Guard: fFrameSync is -1 before HandleStart and after HandleStop; releasing
+	 * a stale/-1 id would perturb a reused semaphore or fail. */
+	if (fFrameSync >= 0)
+		release_sem(fFrameSync);
 }
 
 
