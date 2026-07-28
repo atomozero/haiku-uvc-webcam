@@ -1093,6 +1093,10 @@ CamDevice::DataPumpThread()
 
 		int consecutiveFailures = 0;
 		int32 transferAttempts = 0;
+		// After this many back-to-back failures the recovery attempts (endpoint
+		// stall clear at 200, subclass alternate cycle at 300) are considered
+		// exhausted and the pump gives up on a wedged controller.
+		const int kPumpGiveUpFailures = 500;
 
 		while (atomic_get(&fTransferEnabled)) {
 			ssize_t len = -1;
@@ -1137,21 +1141,22 @@ CamDevice::DataPumpThread()
 			// Handle transfer errors
 			if (len < 0) {
 				consecutiveFailures++;
+				// The subclass may run its own recovery as the count climbs
+				// (UVCCamDevice cycles the streaming alternate at 300). For that
+				// — and the escalation below — to fire, the counter must keep
+				// climbing while errors persist rather than being reset.
 				OnConsecutiveTransferFailures(consecutiveFailures);
 
 				if (consecutiveFailures == 10) {
 					syslog(LOG_WARNING, "USB: 10 consecutive transfer failures (err=%zd)\n", len);
 				}
-				if (consecutiveFailures >= 50 && consecutiveFailures < 200) {
-					snooze(10000);
-					consecutiveFailures = 0;
-				}
-				if (consecutiveFailures >= 200) {
-					// Likely EHCI host system error - controller may be dead.
-					// Try to recover by clearing the endpoint stall and
-					// re-initializing the isochronous pipe.
-					syslog(LOG_ERR, "USB: 200+ consecutive failures, "
-						"attempting endpoint recovery\n");
+
+				if (consecutiveFailures == 200) {
+					// Controller/endpoint may be stalled. Make one endpoint-stall
+					// recovery attempt (the subclass tries an alternate cycle at
+					// 300) before giving up below.
+					syslog(LOG_ERR, "USB: 200 consecutive failures, "
+						"clearing endpoint stall\n");
 					{
 						BAutolock lock(fLocker);
 						if (fIsoIn != NULL) {
@@ -1161,7 +1166,26 @@ CamDevice::DataPumpThread()
 						}
 					}
 					snooze(500000);
-					consecutiveFailures = 0;
+				} else if (consecutiveFailures >= kPumpGiveUpFailures) {
+					// Recovery did not help and every transfer is still failing:
+					// the controller is wedged (a known Haiku EHCI limitation with
+					// some devices). Stop driving it instead of hammering it
+					// thousands of times a second — which floods the syslog and can
+					// keep the controller from recovering. Mark the device stalled
+					// so StartTransfer refuses until re-enumeration, then exit the
+					// pump thread cleanly, matching the wedged-device strategy.
+					syslog(LOG_ERR, "USB: %d consecutive failures after recovery; "
+						"marking device stalled and stopping the data pump\n",
+						consecutiveFailures);
+					MarkStalled();
+					atomic_set(&fTransferEnabled, 0);
+					break;
+				} else if (consecutiveFailures >= 50
+						&& (consecutiveFailures % 50) == 0) {
+					// Periodic light backoff so a persistently failing controller
+					// is not polled in a tight busy-loop. The counter is NOT reset
+					// here, so the escalations above still fire.
+					snooze(10000);
 				}
 				// Don't return or continue - fall through to process any completed packets!
 			} else {
