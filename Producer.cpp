@@ -913,7 +913,17 @@ void
 VideoProducer::LateNoticeReceived(const media_source &source,
 		bigtime_t how_much, bigtime_t performance_time)
 {
-	TOUCH(source); TOUCH(how_much); TOUCH(performance_time);
+	TOUCH(source); TOUCH(performance_time);
+	// The consumer received a buffer `how_much` us late. Frames are already
+	// stamped a full event-latency ahead, so a persistent shortfall means the
+	// pipeline can't keep up. Log it (rate-limited) so it is diagnosable
+	// instead of silently swallowed; a finer adaptive response (drop/adjust)
+	// can build on this hook later.
+	static int32 sLateCount = 0;
+	if ((sLateCount++ % 30) == 0) {
+		syslog(LOG_WARNING, "Producer: consumer reported a frame %lld us late "
+			"(occurrence %d)\n", (long long)how_much, (int)sLateCount);
+	}
 }
 
 
@@ -1449,13 +1459,17 @@ VideoProducer::FrameGenerator()
 		{
 			BTimeSource* ts = TimeSource();
 			if (ts != NULL) {
-				// Get current performance time - this tells the consumer
-				// "display this frame at this performance time"
-				h->start_time = ts->PerformanceTimeFor(system_time());
+				// Stamp the presentation time a full event-latency AHEAD of now
+				// and send the buffer now, so it reaches the consumer with the
+				// lead time it needs. Stamping "now" (as before) meant the frame
+				// was already past its presentation time by the time it arrived
+				// downstream, so latency-honouring consumers dropped it as late.
+				h->start_time = ts->PerformanceTimeFor(system_time())
+					+ EventLatency();
 			} else {
-				// Fallback: use fPerformanceTimeBase + elapsed time
+				// Fallback: use fPerformanceTimeBase + elapsed time (+ lead).
 				bigtime_t elapsed = system_time() - fStartRealTime;
-				h->start_time = fPerformanceTimeBase + elapsed;
+				h->start_time = fPerformanceTimeBase + elapsed + EventLatency();
 			}
 		}
 		fProcessingLatency = system_time() - now;
