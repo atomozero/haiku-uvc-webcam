@@ -1,5 +1,7 @@
 # UVC Webcam Driver for Haiku
 
+[![tests](https://github.com/atomozero/haiku-uvc-webcam/actions/workflows/tests.yml/badge.svg)](https://github.com/atomozero/haiku-uvc-webcam/actions/workflows/tests.yml)
+
 Native USB Video Class driver for Haiku OS. Plug in a UVC webcam and use it
 with MediaPlayer, Cortex, BubiCam, or any media node consumer. Supports MJPEG
 and uncompressed formats up to 1080p, audio capture from built-in microphones,
@@ -23,6 +25,26 @@ If this driver saves you a Windows reboot, consider supporting development:
 * Automatic resolution fallback when bandwidth is insufficient
 * Extension Unit detection (Sonix, Microsoft H264, Logitech, Realtek)
 * No external dependencies beyond Haiku system libraries and libturbojpeg
+
+## Robustness
+
+USB descriptors and Probe/Commit responses are device-controlled data — a buggy
+or hostile camera can lie about lengths and sizes. This driver treats them as
+untrusted:
+
+* **Bounds-safe descriptor parsing** — frame, format and extension-unit
+  descriptors are validated by pure functions that read only within the bytes
+  actually present, never past a lying `bLength`. They are unit-tested against a
+  corpus of real captures (AUKEY, Microdia) and continuously **fuzzed** with
+  guard pages (5 validators × 500k inputs, zero out-of-bounds reads).
+* **Probe/Commit sanitisation** — implausible negotiated sizes (a Microdia was
+  seen reporting a ~2 GB max frame) are clamped before any bandwidth math or
+  allocation uses them.
+* **Wedged-device recovery** — if a camera stalls, the pump thread is abandoned
+  rather than force-killed, the node is marked stalled and refuses restarts
+  until re-enumeration, so a broken camera never hangs the media server.
+* **Data-driven quirk registry** — per-device workarounds (e.g. the Sonix line
+  stride) live in a table covered by tests, not scattered VID/PID branches.
 
 ## Quick start
 
@@ -65,8 +87,24 @@ Then:
 ```
 make              # build the media addon
 make install      # install to ~/config/non-packaged/add-ons/media/
+make test         # build and run the unit + fuzz tests (no camera needed)
+make hpkg         # build a Haiku package (aukey_webcam_v4-*.hpkg)
 make dist-zip     # build a distributable archive
 ```
+
+`make test` builds only the pure parsing/quirk modules, so it also runs on a
+plain Linux runner — that is what the CI badge above tracks.
+
+### Install from a package
+
+Grab the `.hpkg` from the [releases](https://github.com/atomozero/haiku-uvc-webcam/releases)
+(or build it with `make hpkg`) and drop it into `~/config/packages/`:
+
+```
+cp aukey_webcam_v4-*.hpkg ~/config/packages/
+```
+
+The add-on activates immediately; restart the media server (or reboot) to load it.
 
 ## Troubleshooting
 

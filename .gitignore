@@ -22,6 +22,13 @@
 # Test binaries
 test_*
 !test_*.cpp
+tests/test_quirks
+tests/test_descriptors
+tests/fuzz_descriptors
+
+# Packaging artifacts
+*.hpkg
+pkgroot/
 
 # Backup files
 *.bak
@@ -52,6 +59,7 @@ tools/sonix_xu_probe
 tools/try_layouts
 tools/uvc_benchmark
 tools/uvc_controls_probe
+tools/uvc_descriptor_dump
 tools/verify_alignment
 tools/visualize_yuv
 tools/yuv2bmp

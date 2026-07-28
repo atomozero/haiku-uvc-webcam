@@ -1,0 +1,21 @@
+name			aukey_webcam_v4
+version			0.8.0-1
+architecture	x86_64
+summary			"USB UVC webcam media add-on"
+description		"USB Video Class (UVC) webcam driver as a Haiku Media Kit add-on:
+video (YUY2 and MJPEG), UAC audio, camera and vendor extension-unit controls,
+multi-stream and hot-plug support. Hardened release: data-driven device quirk
+registry, bounds-safe descriptor parsing (unit-tested and fuzzed), probe/commit
+value sanitisation, and wedged-device recovery that survives a stalled camera
+without hanging the media server."
+vendor			"atomozero"
+packager		"atomozero <atomozero@users.noreply.github.com>"
+copyrights		"2004-2026 Haiku UVC Webcam contributors"
+licenses		"MIT"
+provides {
+	aukey_webcam_v4 = 0.8.0
+}
+requires {
+	haiku
+	lib:libturbojpeg
+}

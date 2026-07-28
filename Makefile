@@ -73,7 +73,8 @@ $(TARGET): $(OBJECTS)
 
 clean:
 	rm -f $(OBJECTS) $(TARGET)
-	rm -rf dist haiku-uvc-webcam-$(ARCH_SUFFIX).zip
+	rm -rf dist pkgroot haiku-uvc-webcam-$(ARCH_SUFFIX).zip
+	rm -f aukey_webcam_v4-*.hpkg
 
 # Standalone unit + fuzz tests for the pure modules (UVCQuirks / UVCDescriptors).
 # They have no libbe / Haiku-only dependencies (the headers fall back to
@@ -93,7 +94,23 @@ test:
 		tests/fuzz_descriptors.cpp addons/uvc/UVCDescriptors.cpp
 	./tests/fuzz_descriptors
 
-.PHONY: all clean install dist-zip test
+.PHONY: all clean install dist-zip test hpkg
+
+# Build a Haiku package (.hpkg) from the compiled add-on. The package layout
+# mirrors the install location (add-ons/media/), and the metadata is kept in
+# packaging/aukey_webcam_v4.PackageInfo so a release is reproducible from a
+# clean checkout: `make hpkg` on Haiku (needs the `package` tool). The version
+# lives in the .PackageInfo; keep it in step with the git tag.
+HPKG = aukey_webcam_v4-0.8.0-1-$(ARCH_SUFFIX).hpkg
+
+hpkg: $(TARGET)
+	rm -rf pkgroot
+	mkdir -p pkgroot/add-ons/media
+	cp $(TARGET) pkgroot/add-ons/media/
+	cd pkgroot && package create -q -i ../packaging/aukey_webcam_v4.PackageInfo ../$(HPKG)
+	rm -rf pkgroot
+	@echo ""
+	@echo "Created $(HPKG)"
 
 install: $(TARGET)
 	mkdir -p /boot/home/config/non-packaged/add-ons/media
@@ -126,5 +143,3 @@ dist-zip: $(TARGET)
 	@echo ""
 	@echo "Created haiku-uvc-webcam-$(ARCH_SUFFIX).zip"
 	@echo "Contains: $(TARGET:.media_addon=-$(ARCH_SUFFIX).media_addon) + complete sources"
-
-.PHONY: all clean install dist-zip
