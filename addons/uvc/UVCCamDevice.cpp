@@ -400,10 +400,16 @@ score_streaming_interface(const BUSBInterface* iface, uint8* scratch,
 				break;
 			case USB_VIDEO_VS_FORMAT_UNCOMPRESSED:
 			{
-				const usbvc_format_descriptor* fd
-					= (const usbvc_format_descriptor*)generic;
-				if (identify_uncompressed_format(fd->uncompressed.format)
-						!= UVC_FMT_UNKNOWN)
+				// Read the 16-byte GUID through the bounds-safe validator so a
+				// short descriptor can't have us identify a format from stale
+				// scratch memory.
+				const usbvc_class_descriptor* cd
+					= (const usbvc_class_descriptor*)generic;
+				UVCUncompressedFormatCheck fmt
+					= UVCCheckUncompressedFormatDescriptor(
+						(const uint8*)generic, cd->length);
+				if (fmt.valid
+						&& identify_uncompressed_format(fmt.guid) != UVC_FMT_UNKNOWN)
 					score += 50;
 				else
 					score += 5;
@@ -1645,6 +1651,14 @@ UVCCamDevice::_ParseVideoStreaming(const usbvc_class_descriptor* _descriptor,
 		}
 		case USB_VIDEO_VS_FORMAT_MJPEG:
 		{
+			// VS_FORMAT_MJPEG is a fixed 11-byte descriptor; reject a short one
+			// rather than read its fields (format/default-frame index) from
+			// stale scratch memory.
+			if (_descriptor->length < 11) {
+				syslog(LOG_WARNING, "UVCCamDevice: skipping short VS_FORMAT_MJPEG "
+					"(bLength=%u)\n", _descriptor->length);
+				break;
+			}
 			const usbvc_format_descriptor* descriptor
 				= (const usbvc_format_descriptor*)_descriptor;
 			fMJPEGFormatIndex = descriptor->formatIndex;
