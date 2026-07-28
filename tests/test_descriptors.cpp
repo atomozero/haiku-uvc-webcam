@@ -313,6 +313,56 @@ main()
 			&& s.maxVideoFrameSize == 50u * 1024 * 1024);
 	}
 
+	// --- Real-camera regression corpus ---
+	// Descriptors shaped like the two cameras this driver was validated against
+	// (parameters taken from their device logs; reconstructed, not raw-captured
+	// — a raw-descriptor dump tool would let us store true captures later). If a
+	// future parsing change rejects a real device shape, these fail.
+	{
+		uint8 b[64];
+
+		// Microdia 0c45:6409 — YUY2, 5 resolutions, 3 discrete intervals each.
+		const uint16 microdia[][2] = {
+			{640,480},{352,288},{320,240},{176,144},{160,120}
+		};
+		bool ok = true;
+		for (size_t i = 0; i < sizeof(microdia) / sizeof(microdia[0]); i++) {
+			uint8 len = MakeFrame(b, microdia[i][0], microdia[i][1],
+				(uint32)microdia[i][0] * microdia[i][1] * 2, 3);
+			UVCFrameDescCheck c = UVCCheckFrameDescriptor(b, len);
+			ok = ok && c.valid && c.width == microdia[i][0]
+				&& c.height == microdia[i][1] && c.frameIntervalType == 3;
+		}
+		Expect("corpus: Microdia YUY2 frame descriptors", ok);
+
+		// Microdia YUY2 uncompressed format descriptor (real YUY2 GUID).
+		memset(b, 0, sizeof(b));
+		b[0] = 27; b[1] = 0x24; b[2] = 0x04; b[3] = 1; b[4] = 5;
+		const uint8 yuy2Guid[16] = { 0x59,0x55,0x59,0x32, 0x00,0x00, 0x10,0x00,
+			0x80,0x00, 0x00,0xaa,0x00,0x38,0x9b,0x71 };
+		for (int i = 0; i < 16; i++) b[5 + i] = yuy2Guid[i];
+		b[21] = 16; b[22] = 1;
+		UVCUncompressedFormatCheck f = UVCCheckUncompressedFormatDescriptor(b, 27);
+		bool guidOk = true;
+		for (int i = 0; i < 16; i++) guidOk = guidOk && (f.guid[i] == yuy2Guid[i]);
+		Expect("corpus: Microdia YUY2 format descriptor",
+			f.valid && f.formatIndex == 1 && guidOk);
+
+		// AUKEY 1bcf:0001 — MJPEG, 6 resolutions (same frame-descriptor layout).
+		const uint16 aukey[][2] = {
+			{1920,1080},{1280,720},{1024,768},{800,600},{640,480},{320,240}
+		};
+		ok = true;
+		for (size_t i = 0; i < sizeof(aukey) / sizeof(aukey[0]); i++) {
+			uint8 len = MakeFrame(b, aukey[i][0], aukey[i][1],
+				(uint32)aukey[i][0] * aukey[i][1] * 2, 1);
+			UVCFrameDescCheck c = UVCCheckFrameDescriptor(b, len);
+			ok = ok && c.valid && c.width == aukey[i][0]
+				&& c.height == aukey[i][1];
+		}
+		Expect("corpus: AUKEY MJPEG frame descriptors", ok);
+	}
+
 	printf("\n%d passed, %d failed\n", sPass, sFail);
 	return sFail == 0 ? 0 : 1;
 }
