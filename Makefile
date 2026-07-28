@@ -75,6 +75,26 @@ clean:
 	rm -f $(OBJECTS) $(TARGET)
 	rm -rf dist haiku-uvc-webcam-$(ARCH_SUFFIX).zip
 
+# Standalone unit + fuzz tests for the pure modules (UVCQuirks / UVCDescriptors).
+# They have no libbe / Haiku-only dependencies (the headers fall back to
+# <stdint.h> off Haiku), so this target also runs on a plain Linux CI runner
+# — see .github/workflows/tests.yml.
+TEST_CXX ?= g++
+TEST_FLAGS = -O2 -Wall -I addons/uvc
+
+test:
+	$(TEST_CXX) $(TEST_FLAGS) -o tests/test_quirks \
+		tests/test_quirks.cpp addons/uvc/UVCQuirks.cpp
+	./tests/test_quirks
+	$(TEST_CXX) $(TEST_FLAGS) -o tests/test_descriptors \
+		tests/test_descriptors.cpp addons/uvc/UVCDescriptors.cpp
+	./tests/test_descriptors
+	$(TEST_CXX) $(TEST_FLAGS) -o tests/fuzz_descriptors \
+		tests/fuzz_descriptors.cpp addons/uvc/UVCDescriptors.cpp
+	./tests/fuzz_descriptors
+
+.PHONY: all clean install dist-zip test
+
 install: $(TARGET)
 	mkdir -p /boot/home/config/non-packaged/add-ons/media
 	# Stop media servers BEFORE replacing the addon to avoid crashes
