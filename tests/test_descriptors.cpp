@@ -363,6 +363,46 @@ main()
 		Expect("corpus: AUKEY MJPEG frame descriptors", ok);
 	}
 
+	// --- Real hardware captures (via tools/uvc_descriptor_dump on 0c45:6409) ---
+	// Actual on-the-wire bytes, so the validators are exercised against a real
+	// device shape, not just reconstructed ones.
+	{
+		// VS_FORMAT_UNCOMPRESSED: formatIndex 1, 5 frames, YUY2 GUID, 16 bpp.
+		static const uint8 realFormat[] = {
+			0x1b,0x24,0x04,0x01,0x05, 0x59,0x55,0x59,0x32,0x00,0x00,0x10,0x00,
+			0x80,0x00,0x00,0xaa,0x00,0x38,0x9b,0x71, 0x10,0x01,0x00,0x00,0x00,0x00
+		};
+		UVCUncompressedFormatCheck f = UVCCheckUncompressedFormatDescriptor(
+			realFormat, sizeof(realFormat));
+		Expect("real: Microdia YUY2 format", f.valid && f.formatIndex == 1
+			&& f.numFrameDescriptors == 5 && f.bitsPerPixel == 0x10
+			&& f.guid[0] == 0x59 && f.guid[3] == 0x32);
+
+		// VS_FRAME_UNCOMPRESSED: 640x480, 5 discrete intervals, bLength 46.
+		static const uint8 realFrame[] = {
+			0x2e,0x24,0x05,0x01,0x00, 0x80,0x02, 0xe0,0x01, 0x00,0x00,0x77,0x01,
+			0x00,0x00,0xca,0x08, 0x00,0x60,0x09,0x00, 0x15,0x16,0x05,0x00, 0x05,
+			0x15,0x16,0x05,0x00, 0x20,0xa1,0x07,0x00, 0x2a,0x2c,0x0a,0x00,
+			0x40,0x42,0x0f,0x00, 0x80,0x84,0x1e,0x00
+		};
+		UVCFrameDescCheck fr = UVCCheckFrameDescriptor(realFrame, sizeof(realFrame));
+		Expect("real: Microdia 640x480 frame", fr.valid && fr.width == 640
+			&& fr.height == 480 && fr.maxVideoFrameSize == 640 * 480 * 2
+			&& fr.frameIntervalType == 5);
+
+		// VC_EXTENSION_UNIT: Sonix XU, unit 4, GUID 7033f028..., 1 pin, ctrlSize 1.
+		static const uint8 realXU[] = {
+			0x1a,0x24,0x06,0x04, 0x70,0x33,0xf0,0x28,0x11,0x63,0x2e,0x4a,0xba,
+			0x2c,0x68,0x90,0xeb,0x33,0x40,0x16, 0x08,0x01,0x03,0x01,0x1f,0x00
+		};
+		UVCExtensionUnitCheck xc = UVCCheckExtensionUnitDescriptor(
+			realXU, sizeof(realXU));
+		Expect("real: Microdia Sonix extension unit", xc.valid && xc.unitID == 4
+			&& xc.numControls == 8 && xc.numInputPins == 1
+			&& xc.controlSize == 1 && xc.sourceIdCount == 1
+			&& xc.sourceIds[0] == 3 && xc.guid[0] == 0x70 && xc.guid[3] == 0x28);
+	}
+
 	printf("\n%d passed, %d failed\n", sPass, sFail);
 	return sFail == 0 ? 0 : 1;
 }
