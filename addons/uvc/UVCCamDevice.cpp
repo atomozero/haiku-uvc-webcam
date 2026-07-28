@@ -5213,6 +5213,11 @@ UVCCamDevice::FillFrameBuffer(BBuffer* buffer, bigtime_t* stamp)
 {
 	fFillFrameCount++;
 
+	// Fast-fail on a stalled device: its endpoint only recovers on physical
+	// re-enumeration, so there is nothing to deliver and no point touching it.
+	if (IsStalled())
+		return B_DEVICE_NOT_FOUND;
+
 	// Debug: verify fDeframer
 	static int32 sDeframerCheck = 0;
 	if (++sDeframerCheck <= 3) {

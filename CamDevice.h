@@ -381,6 +381,16 @@ class CamDevice {
 	virtual status_t	StopTransfer();
 	virtual bool		TransferEnabled() const { return atomic_get((int32*)&fTransferEnabled) != 0; };
 
+	// "Stalled" means the data pump got wedged in an uninterruptible kernel
+	// USB wait (a known platform limit — such a thread survives even
+	// kill_thread and is only reclaimed by a reboot). Rather than hang teardown
+	// or kill the thread (racing a use-after-free on its stack), the driver
+	// abandons it and marks the device stalled: it refuses further transfers
+	// until the device is physically re-enumerated, and is leaked rather than
+	// deleted so the wedged thread never dereferences freed memory.
+	bool				IsStalled() const { return atomic_get((int32*)&fStalled) != 0; }
+	void				MarkStalled() { atomic_set(&fStalled, 1); }
+
 	virtual status_t	SuggestVideoFrame(uint32 &width, uint32 &height);
 	virtual status_t	AcceptVideoFrame(uint32 &width, uint32 &height);
 	virtual status_t	SetVideoFrame(BRect rect);
@@ -545,6 +555,7 @@ static	int32			sInstanceCounter;		// Global counter for unique IDs
 		int				fSupportedDeviceIndex;
 		bool			fChipIsBigEndian;
 		int32			fTransferEnabled; // Changed to int32 for atomic operations
+		int32			fStalled;         // data pump wedged; device needs re-enumeration
 		thread_id		fPumpThread;
 		BLocker			fLocker;
 		uint8			*fBuffer;

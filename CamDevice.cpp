@@ -73,6 +73,7 @@ CamDevice::CamDevice(CamDeviceAddon &_addon, BUSBDevice* _device)
 	  fSupportedDeviceIndex(-1),
 	  fChipIsBigEndian(false),
 	  fTransferEnabled(0), // Now int32 for atomic operations
+	  fStalled(0),
 	  fPumpThread(-1),
 	  fLocker("WebcamDeviceLock"),
 	  fPacketSuccessCount(0),
@@ -318,17 +319,19 @@ CamDevice::Unplugged()
 		// Signal the data pump thread to stop
 		atomic_set(&fTransferEnabled, 0);
 
-		// Wait for the thread to finish (with timeout)
+		// Wait for the thread to finish, with a REAL timeout. wait_for_thread()
+		// has no timeout, so if the pump is wedged in an uninterruptible kernel
+		// USB wait it would hang the disconnect path forever. Use
+		// wait_for_thread_etc; on timeout, abandon the thread (leak it) and mark
+		// the device stalled so it is refused/leaked rather than reused/freed.
 		if (fPumpThread >= 0) {
 			status_t threadResult;
-			// Wait up to 2 seconds for clean shutdown
-			bigtime_t deadline = system_time() + 2000000;
-			while (system_time() < deadline) {
-				status_t err = wait_for_thread(fPumpThread, &threadResult);
-				if (err == B_OK || err == B_BAD_THREAD_ID)
-					break;
-				// Thread still running, wait a bit
-				snooze(10000); // 10ms
+			status_t waitErr = wait_for_thread_etc(fPumpThread,
+				B_RELATIVE_TIMEOUT, 2000000, &threadResult);
+			if (waitErr == B_TIMED_OUT) {
+				syslog(LOG_ERR, "CamDevice: data pump wedged on unplug — "
+					"abandoning thread and marking device stalled\n");
+				atomic_set(&fStalled, 1);
 			}
 			fPumpThread = -1;
 		}
@@ -401,6 +404,14 @@ CamDevice::StartTransfer()
 	PRINT((CH "()" CT));
 	if (atomic_get(&fTransferEnabled))
 		return EALREADY;
+	// Refuse to start on a device whose previous pump thread wedged: the USB
+	// endpoint only recovers on physical re-enumeration, and spawning a new
+	// pump would just wedge again (or race the abandoned thread).
+	if (atomic_get(&fStalled)) {
+		syslog(LOG_ERR, "CamDevice: refusing StartTransfer — device is stalled, "
+			"reconnect the camera\n");
+		return B_DEVICE_NOT_FOUND;
+	}
 	// Use URGENT_DISPLAY_PRIORITY (120) for timely USB isochronous transfers
 	// Lower priority causes scheduling delays that lead to missed USB frames
 	fPumpThread = spawn_thread(_DataPumpThread, "USB Webcam Data Pump",
@@ -432,11 +443,26 @@ CamDevice::StopTransfer()
 	// Use atomic operation to safely signal thread to stop
 	atomic_set(&fTransferEnabled, 0);
 
-	// the thread itself might Lock(), so unlock before waiting
-	// The atomic operation ensures thread-safe access to fTransferEnabled
+	// Bounded join. The pump thread may be wedged in an uninterruptible kernel
+	// USB wait that never returns (a known platform limit). Wait a few seconds;
+	// if it doesn't exit, abandon it (leak it deliberately, like BubiCam's
+	// watchdog) rather than block teardown forever or kill it — killing a
+	// thread stuck mid-transfer would race a use-after-free on its stack. Mark
+	// the device stalled so it refuses reuse until physically re-enumerated.
+	// The thread itself might Lock(), so unlock before waiting.
 	fLocker.Unlock();
-	wait_for_thread(fPumpThread, &err);
+	status_t threadResult;
+	status_t waitErr = (fPumpThread >= 0)
+		? wait_for_thread_etc(fPumpThread, B_RELATIVE_TIMEOUT, 3000000,
+			&threadResult)
+		: B_OK;
 	fLocker.Lock();
+	if (waitErr == B_TIMED_OUT) {
+		syslog(LOG_ERR, "CamDevice: data pump wedged on stop — abandoning "
+			"thread and marking device stalled (reconnect the camera)\n");
+		atomic_set(&fStalled, 1);
+	}
+	fPumpThread = -1;
 
 	// Log error statistics summary on stream stop
 	LogErrorStatistics();

@@ -200,6 +200,19 @@ CamRoster::DeviceRemoved(BUSBDevice* _device)
 	// the VideoProducer (and its CamDevice) after CameraRemoved.
 	// Wait long enough for pending messages to drain, then delete.
 	snooze(200000);
+
+	// If the data pump wedged, an abandoned thread may still hold this
+	// CamDevice and could dereference it whenever its kernel wait finally
+	// returns. Leak the object instead of freeing it — a small, bounded leak
+	// (reclaimed at reboot) is the accepted trade for not risking a
+	// use-after-free crash. This mirrors BubiCam leaking a wedged node.
+	if (cam->IsStalled()) {
+		syslog(LOG_ERR, "CamRoster: camera is stalled (wedged data pump) — "
+			"leaking the CamDevice instead of deleting to avoid a "
+			"use-after-free by the abandoned thread\n");
+		return;
+	}
+
 	delete cam;
 }
 

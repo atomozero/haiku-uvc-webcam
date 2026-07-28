@@ -1214,8 +1214,15 @@ VideoProducer::HandleStop(void)
 	status_t waitResult = wait_for_thread_etc(fThread, B_RELATIVE_TIMEOUT,
 		5000000, &threadStatus); // 5 seconds
 	if (waitResult == B_TIMED_OUT) {
-		syslog(LOG_WARNING, "Producer: HandleStop - thread timeout, killing\n");
-		kill_thread(fThread);
+		// The frame generator didn't exit in time — most likely it is blocked
+		// behind a wedged data pump. Abandon it (leak it) instead of
+		// kill_thread: the generator holds fLock across FillFrameBuffer/
+		// SendBuffer, so killing it there would strand the lock and deadlock
+		// later teardown. Mark the device stalled so it is not reused.
+		syslog(LOG_ERR, "Producer: HandleStop - frame generator wedged, "
+			"abandoning thread and marking device stalled\n");
+		if (fCamDevice)
+			fCamDevice->MarkStalled();
 	} else if (waitResult != B_OK) {
 		syslog(LOG_ERR, "Producer: HandleStop - wait failed: %s\n", strerror(waitResult));
 	} else {

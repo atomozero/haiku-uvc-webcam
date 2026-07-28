@@ -839,7 +839,16 @@ AudioProducer::HandleStop(void)
 	fFrameSync = -1;
 
 	status_t threadStatus;
-	wait_for_thread_etc(fThread, B_RELATIVE_TIMEOUT, 5000000, &threadStatus);
+	status_t waitErr = wait_for_thread_etc(fThread, B_RELATIVE_TIMEOUT,
+		5000000, &threadStatus);
+	if (waitErr == B_TIMED_OUT) {
+		// Generator didn't exit — abandon it (already the behaviour: no
+		// kill_thread) and mark the device stalled so it isn't reused.
+		syslog(LOG_ERR, "AudioProducer: HandleStop - generator wedged, "
+			"abandoning thread and marking device stalled\n");
+		if (fCamDevice != NULL)
+			fCamDevice->MarkStalled();
+	}
 
 	// Stop USB audio transfer on device
 	if (fCamDevice != NULL) {
