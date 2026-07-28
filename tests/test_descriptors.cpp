@@ -277,6 +277,42 @@ main()
 		Expect("VS header count invariant sweep", inv);
 	}
 
+	// --- Probe/commit size sanitisation ---
+	{
+		const uint32 raw = 320 * 240 * 4;	// 307200
+
+		// Sane values pass through unchanged.
+		UVCProbeSizes s = UVCSanitizeProbeSizes(153600, 3072, raw);
+		Expect("probe: sane values kept", !s.clamped
+			&& s.maxVideoFrameSize == 153600 && s.maxPayloadTransferSize == 3072);
+
+		// Garbage frame size (the observed ~2 GB) falls back to the raw size.
+		s = UVCSanitizeProbeSizes(2125179710u, 3072, raw);
+		Expect("probe: garbage frame clamped to raw", s.clamped
+			&& s.maxVideoFrameSize == raw && s.maxPayloadTransferSize == 3072);
+
+		// Garbage payload (the observed ~1 GB) is clamped to the ceiling.
+		s = UVCSanitizeProbeSizes(153600, 1124729481u, raw);
+		Expect("probe: garbage payload clamped", s.clamped
+			&& s.maxVideoFrameSize == 153600
+			&& s.maxPayloadTransferSize == 3072u * 8);
+
+		// Zero frame -> raw; zero payload stays zero (no constraint).
+		s = UVCSanitizeProbeSizes(0, 0, raw);
+		Expect("probe: zero frame -> raw, zero payload kept", s.clamped
+			&& s.maxVideoFrameSize == raw && s.maxPayloadTransferSize == 0);
+
+		// No known resolution (raw 0): ceiling is 50 MB, a sane value passes.
+		s = UVCSanitizeProbeSizes(153600, 3072, 0);
+		Expect("probe: raw 0 keeps sane frame", !s.clamped
+			&& s.maxVideoFrameSize == 153600);
+
+		// Frame above the 50 MB hard ceiling is clamped even if raw is larger.
+		s = UVCSanitizeProbeSizes(80u * 1024 * 1024, 3072, 8000 * 8000 * 4);
+		Expect("probe: frame above 50MB ceiling clamped", s.clamped
+			&& s.maxVideoFrameSize == 50u * 1024 * 1024);
+	}
+
 	printf("\n%d passed, %d failed\n", sPass, sFail);
 	return sFail == 0 ? 0 : 1;
 }
