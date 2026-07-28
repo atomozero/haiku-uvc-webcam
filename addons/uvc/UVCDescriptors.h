@@ -14,7 +14,16 @@
 #define _UVC_DESCRIPTORS_H
 
 
-#include <SupportDefs.h>
+#ifdef __HAIKU__
+#	include <SupportDefs.h>
+#else
+// Portable fallback so the pure validators and their unit/fuzz tests build off
+// Haiku (e.g. a Linux CI runner). On Haiku, SupportDefs provides these.
+#	include <stdint.h>
+typedef uint8_t  uint8;
+typedef uint16_t uint16;
+typedef uint32_t uint32;
+#endif
 #include <stddef.h>
 
 
@@ -102,6 +111,25 @@ static const size_t kUVCVSOutputHeaderFixedLen = 9;
 // walk the parser past the descriptor.
 uint8 UVCVSHeaderSafeFormatCount(uint8 numFormats, uint8 controlSize,
 	size_t arrayOffset, uint8 bLength);
+
+
+// --- Probe/commit value sanitisation ----------------------------------------
+// The Probe/Commit control response is device-controlled and can be garbage
+// (a Microdia was observed reporting ~2 GB max frame / ~1 GB max payload).
+// Using such values for bandwidth math or allocation misbehaves or crashes.
+struct UVCProbeSizes {
+	uint32	maxVideoFrameSize;
+	uint32	maxPayloadTransferSize;
+	bool	clamped;			// true if a value was implausible and adjusted
+};
+
+// Bound the negotiated sizes. `rawFrameSize` is the raw RGB32 size of the
+// selected resolution (width*height*4) — a real frame can never exceed it, so
+// a larger (or absurd) value falls back to it. The payload is clamped to a few
+// KB (any real USB iso payload); a zero payload is left as-is (the alternate
+// selector treats it as "no constraint").
+UVCProbeSizes UVCSanitizeProbeSizes(uint32 negFrameSize, uint32 negPayload,
+	uint32 rawFrameSize);
 
 
 // --- Bounds-checked field readers -------------------------------------------

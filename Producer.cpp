@@ -869,7 +869,10 @@ VideoProducer::Connect(status_t error, const media_source &source,
 	fprintf(stderr, "=== Connect END (SUCCESS) ===\n\n");
 
 	/* Tell frame generation thread to recalculate delay value */
-	release_sem(fFrameSync);
+	/* Guard: fFrameSync is -1 before HandleStart and after HandleStop; releasing
+	 * a stale/-1 id would perturb a reused semaphore or fail. */
+	if (fFrameSync >= 0)
+		release_sem(fFrameSync);
 }
 
 void
@@ -910,7 +913,17 @@ void
 VideoProducer::LateNoticeReceived(const media_source &source,
 		bigtime_t how_much, bigtime_t performance_time)
 {
-	TOUCH(source); TOUCH(how_much); TOUCH(performance_time);
+	TOUCH(source); TOUCH(performance_time);
+	// The consumer received a buffer `how_much` us late. Frames are already
+	// stamped a full event-latency ahead, so a persistent shortfall means the
+	// pipeline can't keep up. Log it (rate-limited) so it is diagnosable
+	// instead of silently swallowed; a finer adaptive response (drop/adjust)
+	// can build on this hook later.
+	static int32 sLateCount = 0;
+	if ((sLateCount++ % 30) == 0) {
+		syslog(LOG_WARNING, "Producer: consumer reported a frame %lld us late "
+			"(occurrence %d)\n", (long long)how_much, (int)sLateCount);
+	}
 }
 
 
@@ -1247,7 +1260,10 @@ VideoProducer::HandleTimeWarp(bigtime_t performance_time)
 	fFrameBase = fFrame;
 
 	/* Tell frame generation thread to recalculate delay value */
-	release_sem(fFrameSync);
+	/* Guard: fFrameSync is -1 before HandleStart and after HandleStop; releasing
+	 * a stale/-1 id would perturb a reused semaphore or fail. */
+	if (fFrameSync >= 0)
+		release_sem(fFrameSync);
 }
 
 
@@ -1260,7 +1276,10 @@ VideoProducer::HandleSeek(bigtime_t performance_time)
 	fFrameBase = fFrame;
 
 	/* Tell frame generation thread to recalculate delay value */
-	release_sem(fFrameSync);
+	/* Guard: fFrameSync is -1 before HandleStart and after HandleStop; releasing
+	 * a stale/-1 id would perturb a reused semaphore or fail. */
+	if (fFrameSync >= 0)
+		release_sem(fFrameSync);
 }
 
 
@@ -1325,9 +1344,20 @@ VideoProducer::FrameGenerator()
 		}
 
 		bigtime_t frameDuration = (bigtime_t)(1000000 / fConnectedFormat.field_rate);
-		// For real camera: don't drop "late" frames - process all available frames
-		// The camera produces frames at its own rate, we should display them all
-		wait_until = system_time() + frameDuration;
+		if (frameDuration <= 0)
+			frameDuration = 33333;	// ~30 fps fallback if field_rate is 0/garbage
+
+		// Advance the pacing deadline by exactly one frame instead of
+		// "now + frameDuration". The latter resets the schedule every iteration,
+		// so any processing delay accumulates as drift/jitter; accumulating from
+		// the previous deadline keeps a steady cadence. If we have fallen far
+		// behind real time (e.g. the camera stalled) or run implausibly ahead,
+		// resync to now so we neither burst frames to catch up nor stall.
+		wait_until += frameDuration;
+		bigtime_t nowReal = system_time();
+		if (wait_until < nowReal - frameDuration
+				|| wait_until > nowReal + 2 * frameDuration)
+			wait_until = nowReal + frameDuration;
 
 		// Only skip if semaphore was explicitly released (timing change signal)
 		if (err == B_OK) {
@@ -1447,13 +1477,17 @@ VideoProducer::FrameGenerator()
 		{
 			BTimeSource* ts = TimeSource();
 			if (ts != NULL) {
-				// Get current performance time - this tells the consumer
-				// "display this frame at this performance time"
-				h->start_time = ts->PerformanceTimeFor(system_time());
+				// Stamp the presentation time a full event-latency AHEAD of now
+				// and send the buffer now, so it reaches the consumer with the
+				// lead time it needs. Stamping "now" (as before) meant the frame
+				// was already past its presentation time by the time it arrived
+				// downstream, so latency-honouring consumers dropped it as late.
+				h->start_time = ts->PerformanceTimeFor(system_time())
+					+ EventLatency();
 			} else {
-				// Fallback: use fPerformanceTimeBase + elapsed time
+				// Fallback: use fPerformanceTimeBase + elapsed time (+ lead).
 				bigtime_t elapsed = system_time() - fStartRealTime;
-				h->start_time = fPerformanceTimeBase + elapsed;
+				h->start_time = fPerformanceTimeBase + elapsed + EventLatency();
 			}
 		}
 		fProcessingLatency = system_time() - now;

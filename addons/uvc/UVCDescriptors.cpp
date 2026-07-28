@@ -40,6 +40,41 @@ UVCVSHeaderSafeFormatCount(uint8 numFormats, uint8 controlSize,
 }
 
 
+// --- Probe/commit value sanitisation ----------------------------------------
+
+UVCProbeSizes
+UVCSanitizeProbeSizes(uint32 negFrameSize, uint32 negPayload, uint32 rawFrameSize)
+{
+	UVCProbeSizes r;
+	r.maxVideoFrameSize = negFrameSize;
+	r.maxPayloadTransferSize = negPayload;
+	r.clamped = false;
+
+	// A decoded/streamed frame cannot exceed the raw RGB32 size of the selected
+	// resolution; anything larger (or absurdly large) is a bogus negotiated
+	// value. Fall back to that ceiling so downstream math and any allocation
+	// stay bounded.
+	const uint32 kMaxSaneFrameSize = 50u * 1024 * 1024;	// 50 MB hard ceiling
+	uint32 frameCeiling = rawFrameSize;
+	if (frameCeiling == 0 || frameCeiling > kMaxSaneFrameSize)
+		frameCeiling = kMaxSaneFrameSize;
+	if (negFrameSize == 0 || negFrameSize > frameCeiling) {
+		r.maxVideoFrameSize = frameCeiling;
+		r.clamped = true;
+	}
+
+	// USB isochronous payloads are at most a few KB per (micro)frame; a value
+	// far above that is bogus. Clamp; a zero is left as-is.
+	const uint32 kMaxSanePayload = 3072u * 8;	// 24 KB, well above any HS iso payload
+	if (negPayload > kMaxSanePayload) {
+		r.maxPayloadTransferSize = kMaxSanePayload;
+		r.clamped = true;
+	}
+
+	return r;
+}
+
+
 // --- Bounds-checked field readers -------------------------------------------
 
 uint8

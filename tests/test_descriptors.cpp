@@ -277,6 +277,132 @@ main()
 		Expect("VS header count invariant sweep", inv);
 	}
 
+	// --- Probe/commit size sanitisation ---
+	{
+		const uint32 raw = 320 * 240 * 4;	// 307200
+
+		// Sane values pass through unchanged.
+		UVCProbeSizes s = UVCSanitizeProbeSizes(153600, 3072, raw);
+		Expect("probe: sane values kept", !s.clamped
+			&& s.maxVideoFrameSize == 153600 && s.maxPayloadTransferSize == 3072);
+
+		// Garbage frame size (the observed ~2 GB) falls back to the raw size.
+		s = UVCSanitizeProbeSizes(2125179710u, 3072, raw);
+		Expect("probe: garbage frame clamped to raw", s.clamped
+			&& s.maxVideoFrameSize == raw && s.maxPayloadTransferSize == 3072);
+
+		// Garbage payload (the observed ~1 GB) is clamped to the ceiling.
+		s = UVCSanitizeProbeSizes(153600, 1124729481u, raw);
+		Expect("probe: garbage payload clamped", s.clamped
+			&& s.maxVideoFrameSize == 153600
+			&& s.maxPayloadTransferSize == 3072u * 8);
+
+		// Zero frame -> raw; zero payload stays zero (no constraint).
+		s = UVCSanitizeProbeSizes(0, 0, raw);
+		Expect("probe: zero frame -> raw, zero payload kept", s.clamped
+			&& s.maxVideoFrameSize == raw && s.maxPayloadTransferSize == 0);
+
+		// No known resolution (raw 0): ceiling is 50 MB, a sane value passes.
+		s = UVCSanitizeProbeSizes(153600, 3072, 0);
+		Expect("probe: raw 0 keeps sane frame", !s.clamped
+			&& s.maxVideoFrameSize == 153600);
+
+		// Frame above the 50 MB hard ceiling is clamped even if raw is larger.
+		s = UVCSanitizeProbeSizes(80u * 1024 * 1024, 3072, 8000 * 8000 * 4);
+		Expect("probe: frame above 50MB ceiling clamped", s.clamped
+			&& s.maxVideoFrameSize == 50u * 1024 * 1024);
+	}
+
+	// --- Real-camera regression corpus ---
+	// Descriptors shaped like the two cameras this driver was validated against
+	// (parameters taken from their device logs; reconstructed, not raw-captured
+	// — a raw-descriptor dump tool would let us store true captures later). If a
+	// future parsing change rejects a real device shape, these fail.
+	{
+		uint8 b[64];
+
+		// Microdia 0c45:6409 — YUY2, 5 resolutions, 3 discrete intervals each.
+		const uint16 microdia[][2] = {
+			{640,480},{352,288},{320,240},{176,144},{160,120}
+		};
+		bool ok = true;
+		for (size_t i = 0; i < sizeof(microdia) / sizeof(microdia[0]); i++) {
+			uint8 len = MakeFrame(b, microdia[i][0], microdia[i][1],
+				(uint32)microdia[i][0] * microdia[i][1] * 2, 3);
+			UVCFrameDescCheck c = UVCCheckFrameDescriptor(b, len);
+			ok = ok && c.valid && c.width == microdia[i][0]
+				&& c.height == microdia[i][1] && c.frameIntervalType == 3;
+		}
+		Expect("corpus: Microdia YUY2 frame descriptors", ok);
+
+		// Microdia YUY2 uncompressed format descriptor (real YUY2 GUID).
+		memset(b, 0, sizeof(b));
+		b[0] = 27; b[1] = 0x24; b[2] = 0x04; b[3] = 1; b[4] = 5;
+		const uint8 yuy2Guid[16] = { 0x59,0x55,0x59,0x32, 0x00,0x00, 0x10,0x00,
+			0x80,0x00, 0x00,0xaa,0x00,0x38,0x9b,0x71 };
+		for (int i = 0; i < 16; i++) b[5 + i] = yuy2Guid[i];
+		b[21] = 16; b[22] = 1;
+		UVCUncompressedFormatCheck f = UVCCheckUncompressedFormatDescriptor(b, 27);
+		bool guidOk = true;
+		for (int i = 0; i < 16; i++) guidOk = guidOk && (f.guid[i] == yuy2Guid[i]);
+		Expect("corpus: Microdia YUY2 format descriptor",
+			f.valid && f.formatIndex == 1 && guidOk);
+
+		// AUKEY 1bcf:0001 — MJPEG, 6 resolutions (same frame-descriptor layout).
+		const uint16 aukey[][2] = {
+			{1920,1080},{1280,720},{1024,768},{800,600},{640,480},{320,240}
+		};
+		ok = true;
+		for (size_t i = 0; i < sizeof(aukey) / sizeof(aukey[0]); i++) {
+			uint8 len = MakeFrame(b, aukey[i][0], aukey[i][1],
+				(uint32)aukey[i][0] * aukey[i][1] * 2, 1);
+			UVCFrameDescCheck c = UVCCheckFrameDescriptor(b, len);
+			ok = ok && c.valid && c.width == aukey[i][0]
+				&& c.height == aukey[i][1];
+		}
+		Expect("corpus: AUKEY MJPEG frame descriptors", ok);
+	}
+
+	// --- Real hardware captures (via tools/uvc_descriptor_dump on 0c45:6409) ---
+	// Actual on-the-wire bytes, so the validators are exercised against a real
+	// device shape, not just reconstructed ones.
+	{
+		// VS_FORMAT_UNCOMPRESSED: formatIndex 1, 5 frames, YUY2 GUID, 16 bpp.
+		static const uint8 realFormat[] = {
+			0x1b,0x24,0x04,0x01,0x05, 0x59,0x55,0x59,0x32,0x00,0x00,0x10,0x00,
+			0x80,0x00,0x00,0xaa,0x00,0x38,0x9b,0x71, 0x10,0x01,0x00,0x00,0x00,0x00
+		};
+		UVCUncompressedFormatCheck f = UVCCheckUncompressedFormatDescriptor(
+			realFormat, sizeof(realFormat));
+		Expect("real: Microdia YUY2 format", f.valid && f.formatIndex == 1
+			&& f.numFrameDescriptors == 5 && f.bitsPerPixel == 0x10
+			&& f.guid[0] == 0x59 && f.guid[3] == 0x32);
+
+		// VS_FRAME_UNCOMPRESSED: 640x480, 5 discrete intervals, bLength 46.
+		static const uint8 realFrame[] = {
+			0x2e,0x24,0x05,0x01,0x00, 0x80,0x02, 0xe0,0x01, 0x00,0x00,0x77,0x01,
+			0x00,0x00,0xca,0x08, 0x00,0x60,0x09,0x00, 0x15,0x16,0x05,0x00, 0x05,
+			0x15,0x16,0x05,0x00, 0x20,0xa1,0x07,0x00, 0x2a,0x2c,0x0a,0x00,
+			0x40,0x42,0x0f,0x00, 0x80,0x84,0x1e,0x00
+		};
+		UVCFrameDescCheck fr = UVCCheckFrameDescriptor(realFrame, sizeof(realFrame));
+		Expect("real: Microdia 640x480 frame", fr.valid && fr.width == 640
+			&& fr.height == 480 && fr.maxVideoFrameSize == 640 * 480 * 2
+			&& fr.frameIntervalType == 5);
+
+		// VC_EXTENSION_UNIT: Sonix XU, unit 4, GUID 7033f028..., 1 pin, ctrlSize 1.
+		static const uint8 realXU[] = {
+			0x1a,0x24,0x06,0x04, 0x70,0x33,0xf0,0x28,0x11,0x63,0x2e,0x4a,0xba,
+			0x2c,0x68,0x90,0xeb,0x33,0x40,0x16, 0x08,0x01,0x03,0x01,0x1f,0x00
+		};
+		UVCExtensionUnitCheck xc = UVCCheckExtensionUnitDescriptor(
+			realXU, sizeof(realXU));
+		Expect("real: Microdia Sonix extension unit", xc.valid && xc.unitID == 4
+			&& xc.numControls == 8 && xc.numInputPins == 1
+			&& xc.controlSize == 1 && xc.sourceIdCount == 1
+			&& xc.sourceIds[0] == 3 && xc.guid[0] == 0x70 && xc.guid[3] == 0x28);
+	}
+
 	printf("\n%d passed, %d failed\n", sPass, sFail);
 	return sFail == 0 ? 0 : 1;
 }

@@ -1935,14 +1935,24 @@ CamDevice::LogRecoveryRecommendation(usb_error_type error)
 status_t
 CamDevice::StartReconfigThread()
 {
-	if (fReconfigThreadRunning)
-		return B_OK;  // Already running
+	// Claim the "running" slot under the reconfig lock so two concurrent
+	// callers (e.g. a bandwidth-triggered reduction and an app-driven
+	// resolution change) can't both pass the check and spawn a duplicate
+	// thread + semaphore, leaking one set.
+	{
+		BAutolock lock(fReconfigLock);
+		if (fReconfigThreadRunning)
+			return B_OK;  // Already running (or being started)
+		fReconfigThreadRunning = true;
+	}
 
 	// Create semaphore for signaling the thread
 	fReconfigSem = create_sem(0, "WebcamReconfigSem");
 	if (fReconfigSem < 0) {
 		syslog(LOG_ERR, "CamDevice: Failed to create reconfig semaphore: %s\n",
 			strerror(fReconfigSem));
+		BAutolock lock(fReconfigLock);
+		fReconfigThreadRunning = false;	// release the claim so a retry works
 		return fReconfigSem;
 	}
 
@@ -1954,10 +1964,14 @@ CamDevice::StartReconfigThread()
 			strerror(fReconfigThread));
 		delete_sem(fReconfigSem);
 		fReconfigSem = -1;
+		{
+			BAutolock lock(fReconfigLock);
+			fReconfigThreadRunning = false;	// release the claim
+		}
 		return fReconfigThread;
 	}
 
-	fReconfigThreadRunning = true;
+	// fReconfigThreadRunning was already claimed under the lock above.
 	resume_thread(fReconfigThread);
 
 	syslog(LOG_INFO, "CamDevice: Reconfig thread started (tid=%d)\n",

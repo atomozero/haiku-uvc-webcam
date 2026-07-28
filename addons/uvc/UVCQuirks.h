@@ -11,7 +11,15 @@
 #define _UVC_QUIRKS_H
 
 
-#include <SupportDefs.h>
+#ifdef __HAIKU__
+#	include <SupportDefs.h>
+#else
+// Portable fallback so this pure module and its tests build off Haiku (CI).
+#	include <stdint.h>
+typedef uint8_t  uint8;
+typedef uint16_t uint16;
+typedef uint32_t uint32;
+#endif
 
 
 // Behaviour quirks, combined as a bitmask.
