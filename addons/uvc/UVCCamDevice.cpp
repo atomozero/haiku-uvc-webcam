@@ -5951,37 +5951,6 @@ UVCCamDevice::_ConvertYUY2toRGB32(unsigned char* dst, unsigned char* src,
 		}
 	}
 
-	// TEST PATTERN MODE: Enable to debug alignment issues
-	// Shows colored bars instead of camera data for first 100 frames
-	// This verifies conversion and stride are correct
-#if 0  // DISABLED - test pattern confirmed stride is correct
-	static int32 sTestPattern = 0;
-	if (++sTestPattern <= 100) {  // Show pattern for first 100 frames
-		// Draw 8 colored vertical bars: R, G, B, W, C, M, Y, K
-		// Each bar is width/8 pixels wide
-		int barWidth = width / 8;
-		for (int32 row = 0; row < height; row++) {
-			unsigned char* dstRow = dst + row * dstStride;
-			for (int32 x = 0; x < width; x++) {
-				int bar = x / barWidth;
-				switch (bar) {
-					case 0: dstRow[0]=0;   dstRow[1]=0;   dstRow[2]=255; break; // Red (BGRA: B=0,G=0,R=255)
-					case 1: dstRow[0]=0;   dstRow[1]=255; dstRow[2]=0;   break; // Green
-					case 2: dstRow[0]=255; dstRow[1]=0;   dstRow[2]=0;   break; // Blue
-					case 3: dstRow[0]=255; dstRow[1]=255; dstRow[2]=255; break; // White
-					case 4: dstRow[0]=255; dstRow[1]=255; dstRow[2]=0;   break; // Cyan
-					case 5: dstRow[0]=255; dstRow[1]=0;   dstRow[2]=255; break; // Magenta
-					case 6: dstRow[0]=0;   dstRow[1]=255; dstRow[2]=255; break; // Yellow
-					case 7: dstRow[0]=0;   dstRow[1]=0;   dstRow[2]=0;   break; // Black
-				}
-				dstRow[3] = 255;  // Alpha
-				dstRow += 4;
-			}
-		}
-		return;
-	}
-#endif
-
 	// Row-by-row conversion for proper stride handling
 	size_t rowDataBytes = (size_t)width * 2;  // bytes of YUY2 data we read per row
 	// Hoist the per-row bounds check: rows past the source end

@@ -97,10 +97,25 @@ UVCDeframer::Flush()
 }
 
 
+// Drop oldest queued frame, caller holds fLocker.
+void
+UVCDeframer::_DropOldestFrame()
+{
+	CamFrame* stale = (CamFrame*)fFrames.RemoveItem((int32)0);
+	if (stale != NULL)
+		RecycleFrame(stale);
+	fQueueOverflows++;
+	if (fQueueOverflows <= 10 || (fQueueOverflows % 100) == 0) {
+		syslog(LOG_WARNING, "UVCDeframer: Queue full (%d), dropped oldest "
+			"(total drops=%d)\n",
+			MAXFRAMEBUF, (int)fQueueOverflows);
+	}
+}
+
+
 ssize_t
 UVCDeframer::Write(const void* buffer, size_t size)
-{
-	const uint8* buf = (const uint8*)buffer;
+{	const uint8* buf = (const uint8*)buffer;
 
 	// Track packets for this frame
 	fPacketsThisFrame++;
@@ -220,12 +235,8 @@ UVCDeframer::Write(const void* buffer, size_t size)
 				fFramesCompleted++;
 
 				// Bound the queue, drop oldest when full.
-				if (fFrames.CountItems() >= MAXFRAMEBUF) {
-					CamFrame* stale = (CamFrame*)fFrames.RemoveItem(
-						(int32)0);
-					if (stale != NULL)
-						RecycleFrame(stale);
-				}
+				if (fFrames.CountItems() >= MAXFRAMEBUF)
+					_DropOldestFrame();
 				fFrames.AddItem(fCurrentFrame);
 				release_sem(fFrameSem);
 				fCurrentFrame = NULL;
@@ -251,16 +262,7 @@ UVCDeframer::Write(const void* buffer, size_t size)
 			// players show a stale ~half-second frame burst before catching
 			// up. The evicted frame is recycled back into the pool so we
 			// don't churn the heap.
-			CamFrame* stale = (CamFrame*)fFrames.RemoveItem((int32)0);
-			if (stale != NULL)
-				RecycleFrame(stale);
-			fQueueOverflows++;
-			if (fQueueOverflows <= 10 || (fQueueOverflows % 100) == 0) {
-				syslog(LOG_WARNING,
-					"UVCDeframer: Queue full (%d), dropped oldest "
-					"(total drops=%d)\n",
-					MAXFRAMEBUF, (int)fQueueOverflows);
-			}
+			_DropOldestFrame();
 		}
 		fCurrentFrame = AllocFrame();
 		if (fCurrentFrame == NULL)
@@ -408,17 +410,8 @@ UVCDeframer::Write(const void* buffer, size_t size)
 		if (!queueLock.IsLocked())
 			return B_ERROR;
 
-		if (fFrames.CountItems() >= CAMDEFRAMER_MAX_QUEUED_FRAMES) {
-			CamFrame* stale = (CamFrame*)fFrames.RemoveItem((int32)0);
-			if (stale != NULL)
-				RecycleFrame(stale);
-			fQueueOverflows++;
-			if (fQueueOverflows <= 10 || (fQueueOverflows % 100) == 0) {
-				syslog(LOG_WARNING, "UVCDeframer: Queue full (%d) on EOF path, "
-					"dropped oldest (total drops=%d)\n",
-					CAMDEFRAMER_MAX_QUEUED_FRAMES, (int)fQueueOverflows);
-			}
-		}
+		if (fFrames.CountItems() >= CAMDEFRAMER_MAX_QUEUED_FRAMES)
+			_DropOldestFrame();
 
 		// The frame already holds its data, queue it as-is.
 		size_t frameSize = fCurrentFrame != NULL

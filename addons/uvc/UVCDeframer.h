@@ -55,6 +55,7 @@ public:
 			void				ResetStats();
 
 private:
+	void						_DropOldestFrame();
 	void						_PrintBuffer(const void* buffer, size_t size);
 
 	int32						fFrameCount;

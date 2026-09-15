@@ -62,6 +62,7 @@
 #   FIX-49  probe size hint                 static: last good size
 #   FIX-50  no frame repeat cache           static: cache removed
 #   FIX-51  zero-copy accumulation          static: queued as-is
+#   RF-01   drop-oldest helper              static: drop oldest helper
 set -e
 cd "$(dirname "$0")"
 
@@ -183,6 +184,8 @@ check "FIX-50 no frame repeat cache" \
 	"! grep -q '_CacheValidFrame' $SRC/addons/uvc/UVCCamDevice.cpp"
 check "FIX-51 zero-copy accumulation" \
 	"grep -q 'queued as-is' $SRC/addons/uvc/UVCDeframer.cpp"
+check "RF-01 drop-oldest helper" \
+	"grep -q '_DropOldestFrame' $SRC/addons/uvc/UVCDeframer.cpp"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"

@@ -1294,39 +1294,6 @@ CamDevice::DataPumpThread()
 				// PHASE 4 FIX: Use fixed packet offsets (not sequential)
 				// EHCI places data at packet_index * request_length
 
-				// DEBUG: Log first transfer results
-				// DISABLED: File I/O in hot path causes performance issues
-				#if 0
-				static bool firstResultLogged = false;
-				if (!firstResultLogged) {
-					FILE* resultLog = fopen("/boot/home/Desktop/iso_transfer_debug.log", "a");
-// 					fprintf(stderr, "DEBUG: First transfer results (first 5 packets):\n");
-					if (resultLog) {
-	fprintf(resultLog, "\n=== FIRST TRANSFER RESULTS ===\n");
-	fprintf(resultLog, "Transfer returned len=%zd\n", len);
-					}
-					for (int i = 0; i < 5 && i < numPacketDescriptors; i++) {
-	fprintf(stderr, "  packet[%d]: request=%u actual=%d status=0x%x\n",
-							i,
-							packetDescriptors[i].request_length,
-							packetDescriptors[i].actual_length,
-							packetDescriptors[i].status);
-						if (resultLog) {
-	fprintf(resultLog, "  packet[%d]: request=%u actual=%d status=0x%x\n",
-								i,
-								packetDescriptors[i].request_length,
-								packetDescriptors[i].actual_length,
-								packetDescriptors[i].status);
-						}
-					}
-					if (resultLog) {
-	fprintf(resultLog, "==============================\n");
-						fclose(resultLog);
-					}
-					firstResultLogged = true;
-				}
-				#endif
-
 				// CRITICAL FIX: EHCI kernel calculates slot size as DataLength/packet_count
 				// We must ensure: fBufferLen = slotSize * numPacketDescriptors
 				// So: slotSize = fBufferLen / numPacketDescriptors
