@@ -326,6 +326,17 @@ AudioProducer::OfflineTime()
 status_t
 AudioProducer::DeleteHook(BMediaNode *node)
 {
+	// Mirror VideoProducer::DeleteHook: clear the device back-pointer so
+	// the mic can be re-instantiated after the node is destroyed without
+	// unplugging the camera.
+	CamDevice* dev = NULL;
+	{
+		BAutolock lock(fLock);
+		dev = fCamDevice;
+		fCamDevice = NULL;
+	}
+	if (dev != NULL && dev->AudioNode() == node)
+		dev->SetAudioNode(NULL);
 	return BMediaEventLooper::DeleteHook(node);
 }
 

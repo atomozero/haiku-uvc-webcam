@@ -423,6 +423,19 @@ VideoProducer::OfflineTime()
 status_t
 VideoProducer::DeleteHook(BMediaNode * node)
 {
+	// Clear the device back-pointer so a later InstantiateNodeFor for the
+	// same camera is not refused as "already has a video node". Without
+	// this, closing the consumer without unplugging the camera (e.g. a
+	// resolution change that recreates the node, or an app crash) blocks
+	// every reconnect until media_addon_server restarts.
+	CamDevice* dev = NULL;
+	{
+		BAutolock lock(fLock);
+		dev = fCamDevice;
+		fCamDevice = NULL;
+	}
+	if (dev != NULL && dev->VideoNode() == node)
+		dev->SetVideoNode(NULL);
 	return BMediaEventLooper::DeleteHook(node);
 }
 
