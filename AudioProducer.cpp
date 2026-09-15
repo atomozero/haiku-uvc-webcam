@@ -47,9 +47,8 @@ AudioProducer::AudioProducer(
 {
 	fInitStatus = B_NO_INIT;
 
-	/* Only allow one instance of the node to exist at any time */
-	if (atomic_add(&fInstances, 1) != 0)
-		return;
+	// Keep counter for stats only, allow many mics.
+	atomic_add(&fInstances, 1);
 
 	fInternalID = internal_id;
 	fAddOn = addon;

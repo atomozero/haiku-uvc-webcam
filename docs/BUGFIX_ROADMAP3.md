@@ -15,7 +15,7 @@ Rules:
 | ID | Bug | Files | Severity | Status |
 |----|-----|-------|----------|--------|
 | FIX-19 | Suggest/Accept NULL deref and int overflow | addons/uvc/UVCCamDevice.cpp | High | done |
-| FIX-20 | Audio single-instance blocks second mic | AudioProducer.cpp | High | todo |
+| FIX-20 | Audio single-instance blocks second mic | AudioProducer.cpp | High | done |
 | FIX-21 | StopReconfigThread leaks sem on timeout | CamDevice.cpp | High | todo |
 | FIX-22 | fFrameSync TOCTOU release vs delete | Producer.cpp, AudioProducer.cpp | Medium | todo |
 | FIX-23 | Generator holds fLock across SendBuffer | Producer.cpp | Medium | todo |

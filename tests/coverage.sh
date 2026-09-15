@@ -30,6 +30,7 @@
 #   FIX-M2  MJPEG trunc / malloc-temp static: realloc-temp + trunc counter
 #   FIX-M7  XU short-transfer         static: ret != length check
 #   FIX-19  Suggest/Accept NULL+wrap   static: NULL skip + 64-bit gap
+#   FIX-20  audio multi-instance      static: no early return on instances
 set -e
 cd "$(dirname "$0")"
 
@@ -87,6 +88,7 @@ check "FIX-M2 trunc counter" "grep -q 'fFramesTruncated' $SRC/addons/uvc/UVCDefr
 check "FIX-M7 XU length check" "grep -q 'ret != length' $SRC/addons/uvc/UVCCamDevice.cpp"
 check "FIX-19 accept null skip" "grep -q 'if (descriptor == NULL)' $SRC/addons/uvc/UVCCamDevice.cpp"
 check "FIX-19 64-bit gap" "grep -q 'pixels > target' $SRC/addons/uvc/UVCCamDevice.cpp"
+check "FIX-20 multi mic" "grep -q 'allow many mics' $SRC/AudioProducer.cpp"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"
