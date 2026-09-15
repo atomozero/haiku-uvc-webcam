@@ -55,6 +55,7 @@
 #   FIX-42  no producer libc macros       static: hidden macros make call
 #   FIX-43  no orphan tests               static: simulation tests deleted
 #   FIX-44  english comments only         static: allow larger resolutions
+#   FIX-45  packet counters atomic read   static: read with atomics
 set -e
 cd "$(dirname "$0")"
 
@@ -162,6 +163,8 @@ check "FIX-43 no orphan tests" \
 	"! test -e $SRC/tests/test_deframer.cpp"
 check "FIX-44 english comments only" \
 	"grep -q 'allow larger resolutions' $SRC/Producer.cpp"
+check "FIX-45 packet counters atomic read" \
+	"grep -q 'Read with atomics' $SRC/addons/uvc/UVCCamDevice.cpp"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"

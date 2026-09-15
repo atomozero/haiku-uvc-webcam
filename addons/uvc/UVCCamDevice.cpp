@@ -5707,9 +5707,10 @@ UVCCamDevice::FillFrameBuffer(BBuffer* buffer, bigtime_t* stamp)
 	_ReportValidationStats();
 
 	// Feature 3: Update packet loss stats from base class and evaluate
-	// Use delta from last check to update the evaluation window
-	uint32 currentSuccess = fPacketSuccessCount;
-	uint32 currentError = fPacketErrorCount;
+	// Use delta from last check to update the evaluation window.
+	// Read with atomics, the pump writes them.
+	uint32 currentSuccess = (uint32)atomic_get(&fPacketSuccessCount);
+	uint32 currentError = (uint32)atomic_get(&fPacketErrorCount);
 
 	// Guard against counter reset (e.g. after resolution change restarts stream)
 	// If current < last, the base class reset its counters - resync
