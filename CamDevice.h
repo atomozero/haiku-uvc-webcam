@@ -618,7 +618,8 @@ static	int32			sInstanceCounter;		// Global counter for unique IDs
 		// Reconfiguration worker thread state
 		thread_id		fReconfigThread;
 		sem_id			fReconfigSem;
-		volatile bool	fReconfigThreadRunning;
+		// Atomic flag, set with atomic_set, read with atomic_get.
+		int32			fReconfigThreadRunning;
 		reconfig_request	fReconfigRequest;
 		BLocker			fReconfigLock;
 

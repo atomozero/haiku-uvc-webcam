@@ -87,7 +87,7 @@ CamDevice::CamDevice(CamDeviceAddon &_addon, BUSBDevice* _device)
 	  fLastLogTime(0),
 	  fReconfigThread(-1),
 	  fReconfigSem(-1),
-	  fReconfigThreadRunning(false),
+	  fReconfigThreadRunning(0),
 	  fReconfigLock("ReconfigLock")
 {
 	// Initialize reconfig request
@@ -378,7 +378,10 @@ CamDevice::Unplugged()
 	if (fSensor != NULL)
 		fSensor->StopTransfer();
 
-	// Clear USB pointers (device is being removed)
+	// Clear USB pointers only if no thread still uses them.
+	// A stalled pump holds fIsoIn/fDevice, keep them alive.
+	if (IsStalled())
+		return;
 	fDevice = NULL;
 	fBulkIn = NULL;
 	fIsoIn = NULL;
@@ -2052,9 +2055,9 @@ CamDevice::StartReconfigThread()
 	// thread + semaphore, leaking one set.
 	{
 		BAutolock lock(fReconfigLock);
-		if (fReconfigThreadRunning)
+		if (atomic_get((int32*)&fReconfigThreadRunning) != 0)
 			return B_OK;  // Already running (or being started)
-		fReconfigThreadRunning = true;
+		atomic_set(&fReconfigThreadRunning, 1);
 	}
 
 	// Create semaphore for signaling the thread
@@ -2063,7 +2066,7 @@ CamDevice::StartReconfigThread()
 		syslog(LOG_ERR, "CamDevice: Failed to create reconfig semaphore: %s\n",
 			strerror(fReconfigSem));
 		BAutolock lock(fReconfigLock);
-		fReconfigThreadRunning = false;	// release the claim so a retry works
+		atomic_set(&fReconfigThreadRunning, 0);	// release the claim so a retry works
 		return fReconfigSem;
 	}
 
@@ -2077,7 +2080,7 @@ CamDevice::StartReconfigThread()
 		fReconfigSem = -1;
 		{
 			BAutolock lock(fReconfigLock);
-			fReconfigThreadRunning = false;	// release the claim
+			atomic_set(&fReconfigThreadRunning, 0);	// release the claim
 		}
 		return fReconfigThread;
 	}
@@ -2094,7 +2097,7 @@ CamDevice::StartReconfigThread()
 status_t
 CamDevice::StopReconfigThread()
 {
-	if (!fReconfigThreadRunning)
+	if (atomic_get((int32*)&fReconfigThreadRunning) == 0)
 		return B_OK;  // Not running
 
 	syslog(LOG_INFO, "CamDevice: Stopping reconfig thread...\n");
@@ -2105,17 +2108,24 @@ CamDevice::StopReconfigThread()
 		fReconfigRequest.type = RECONFIG_SHUTDOWN;
 		fReconfigRequest.pending = true;
 	}
-	fReconfigThreadRunning = false;
+	atomic_set(&fReconfigThreadRunning, 0);
 
 	// Wake up the thread
 	if (fReconfigSem >= 0)
 		release_sem(fReconfigSem);
 
-	// Wait for thread to exit
+	// Wait for thread to exit, bounded so a wedged SetAlternate
+	// cannot hang unplug or delete forever. Leak on timeout.
 	if (fReconfigThread >= 0) {
 		status_t result;
-		wait_for_thread(fReconfigThread, &result);
+		status_t waitErr = wait_for_thread_etc(fReconfigThread,
+			B_RELATIVE_TIMEOUT, 3000000, &result);
 		fReconfigThread = -1;
+		if (waitErr == B_TIMED_OUT) {
+			syslog(LOG_ERR, "CamDevice: reconfig thread wedged, leak it\n");
+			MarkStalled();
+			return B_TIMED_OUT;
+		}
 	}
 
 	// Cleanup semaphore
@@ -2142,7 +2152,7 @@ CamDevice::ReconfigThread()
 {
 	syslog(LOG_INFO, "CamDevice: ReconfigThread started\n");
 
-	while (fReconfigThreadRunning) {
+	while (atomic_get((int32*)&fReconfigThreadRunning) != 0) {
 		// Wait for a reconfiguration request
 		status_t err = acquire_sem_etc(fReconfigSem, 1, B_RELATIVE_TIMEOUT,
 			1000000);  // 1 second timeout
@@ -2156,7 +2166,7 @@ CamDevice::ReconfigThread()
 		}
 
 		// Check if we should shutdown
-		if (!fReconfigThreadRunning)
+		if (atomic_get((int32*)&fReconfigThreadRunning) == 0)
 			break;
 
 		// Get the pending request
@@ -2204,7 +2214,7 @@ status_t
 CamDevice::RequestResolutionChange(uint32 width, uint32 height)
 {
 	// Start reconfig thread if not running
-	if (!fReconfigThreadRunning) {
+	if (atomic_get((int32*)&fReconfigThreadRunning) == 0) {
 		status_t err = StartReconfigThread();
 		if (err != B_OK) {
 			syslog(LOG_ERR, "CamDevice: Cannot request resolution change: "
