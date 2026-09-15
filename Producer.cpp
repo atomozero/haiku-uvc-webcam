@@ -884,17 +884,18 @@ VideoProducer::Connect(status_t error, const media_source &source,
 
 	syslog(LOG_INFO, "Producer: Connect SUCCESS! fConnected=true fEnabled=true bufferGroup=%p\n", fBufferGroup);
 	fprintf(stderr, "Connection established successfully!\n");
-	fprintf(stderr, "  fConnected: %s\n", fConnected ? "TRUE" : "FALSE");
-	fprintf(stderr, "  fEnabled: %s\n", fEnabled ? "TRUE" : "FALSE");
+	fprintf(stderr, "  fConnected: %s\n", fConnected.load() ? "TRUE" : "FALSE");
+	fprintf(stderr, "  fEnabled: %s\n", fEnabled.load() ? "TRUE" : "FALSE");
 	fprintf(stderr, "  Buffer group: %p\n", fBufferGroup);
 	fprintf(stderr, "=== Connect END (SUCCESS) ===\n\n");
 
 	// Copy id under lock, release outside.
-	BAutolock lock(fLock);
+	BAutolock lockSync(fLock);
 	sem_id sync = fFrameSync;
 	if (sync >= 0)
 		release_sem(sync);
 }
+
 
 void
 VideoProducer::Disconnect(const media_source &source,
@@ -1204,7 +1205,8 @@ VideoProducer::HandleStart(bigtime_t performance_time)
 {
 	/* Start producing frames, even if the output hasn't been connected yet. */
 	syslog(LOG_INFO, "Producer: HandleStart called! perf_time=%lld running=%d connected=%d enabled=%d device=%p\n",
-		performance_time, fRunning, fConnected, fEnabled, fCamDevice);
+		performance_time, (int)fRunning.load(), (int)fConnected.load(),
+		(int)fEnabled.load(), fCamDevice);
 
 	if (fRunning) {
 		syslog(LOG_INFO, "Producer: HandleStart - already running, return\n");
@@ -1293,7 +1295,8 @@ VideoProducer::HandleStart(bigtime_t performance_time)
 void
 VideoProducer::HandleStop(void)
 {
-	syslog(LOG_INFO, "Producer: HandleStop called, fRunning=%d\n", fRunning);
+	syslog(LOG_INFO, "Producer: HandleStop called, fRunning=%d\n",
+		(int)fRunning.load());
 
 	if (!fRunning) {
 		syslog(LOG_INFO, "Producer: HandleStop - not running, return\n");
@@ -1403,7 +1406,8 @@ VideoProducer::_UpdateStats()
 int32
 VideoProducer::FrameGenerator()
 {
-	syslog(LOG_INFO, "Producer: FrameGenerator STARTED! connected=%d enabled=%d\n", fConnected, fEnabled);
+	syslog(LOG_INFO, "Producer: FrameGenerator STARTED! connected=%d enabled=%d\n",
+		(int)fConnected.load(), (int)fEnabled.load());
 
 	bigtime_t wait_until = system_time();
 	int frameLog = 0;  // Log first 10 frames (reset each time thread starts)
@@ -1475,7 +1479,8 @@ VideoProducer::FrameGenerator()
 
 		if (!fRunning || !fEnabled) {
 			if (frameLog < 10) {
-				syslog(LOG_INFO, "Producer: Frame %u: not running/enabled (%d/%d)\n", fFrame, fRunning, fEnabled);
+				syslog(LOG_INFO, "Producer: Frame %u: not running/enabled (%d/%d)\n",
+					fFrame, (int)fRunning.load(), (int)fEnabled.load());
 				frameLog++;
 			}
 			continue;
@@ -1520,28 +1525,28 @@ VideoProducer::FrameGenerator()
 		}
 
 		/* Fill out the details about this buffer. */
-		media_header *h = buffer->Header();
-		h->type = B_MEDIA_RAW_VIDEO;
-		h->time_source = TimeSource()->ID();
-		h->size_used = frameSize;
+		media_header *hdr = buffer->Header();
+		hdr->type = B_MEDIA_RAW_VIDEO;
+		hdr->time_source = TimeSource()->ID();
+		hdr->size_used = frameSize;
 		/* For a buffer originating from a device, you might want to calculate
 		 * this based on the PerformanceTimeFor the time your buffer arrived at
 		 * the hardware (plus any applicable adjustments). */
 		/*
-		h->start_time = fPerformanceTimeBase +
+		hdr->start_time = fPerformanceTimeBase +
 						(bigtime_t)
 							((fFrame - fFrameBase) *
 							(1000000 / fConnectedFormat.field_rate));
 		*/
-		h->file_pos = 0;
-		h->orig_size = 0;
-		h->data_offset = 0;
-		h->u.raw_video.field_gamma = 1.0;
-		h->u.raw_video.field_sequence = fFrame;
-		h->u.raw_video.field_number = 0;
-		h->u.raw_video.pulldown_number = 0;
-		h->u.raw_video.first_active_line = 1;
-		h->u.raw_video.line_count = lineCount;
+		hdr->file_pos = 0;
+		hdr->orig_size = 0;
+		hdr->data_offset = 0;
+		hdr->u.raw_video.field_gamma = 1.0;
+		hdr->u.raw_video.field_sequence = fFrame;
+		hdr->u.raw_video.field_number = 0;
+		hdr->u.raw_video.pulldown_number = 0;
+		hdr->u.raw_video.first_active_line = 1;
+		hdr->u.raw_video.line_count = lineCount;
 
 		// This is where we fill the video buffer.
 
@@ -1592,7 +1597,7 @@ VideoProducer::FrameGenerator()
 		fStats[0].actual++;;
 		fStats[0].stamp = system_time();
 
-		//PRINTF(1, ("FrameGenerator: stamp %lld vs %lld\n", stamp, h->start_time));
+		//PRINTF(1, ("FrameGenerator: stamp %lld vs %lld\n", stamp, hdr->start_time));
 		// FIX: Use current performance time for live video
 		// CodyCam drops frames when start_time=0, interpreting it as "too late"
 		// Instead, calculate the proper performance time from the TimeSource
@@ -1604,12 +1609,12 @@ VideoProducer::FrameGenerator()
 				// lead time it needs. Stamping "now" (as before) meant the frame
 				// was already past its presentation time by the time it arrived
 				// downstream, so latency-honouring consumers dropped it as late.
-				h->start_time = ts->PerformanceTimeFor(system_time())
+				hdr->start_time = ts->PerformanceTimeFor(system_time())
 					+ EventLatency();
 			} else {
 				// Fallback: use fPerformanceTimeBase + elapsed time (+ lead).
 				bigtime_t elapsed = system_time() - fStartRealTime;
-				h->start_time = fPerformanceTimeBase + elapsed + EventLatency();
+				hdr->start_time = fPerformanceTimeBase + elapsed + EventLatency();
 			}
 		}
 		fProcessingLatency = system_time() - now;
