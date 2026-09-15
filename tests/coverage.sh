@@ -52,6 +52,7 @@
 #   FIX-39  single node per camera        static: one node of each kind
 #   FIX-40  recovery flag atomic          static: recovery flag is atomic
 #   FIX-41  node lookup NULL guard        static: skip before use
+#   FIX-42  no producer libc macros       static: hidden macros make call
 set -e
 cd "$(dirname "$0")"
 
@@ -153,6 +154,8 @@ check "FIX-40 recovery flag atomic" \
 	"grep -q 'Recovery flag is atomic' $SRC/addons/uvc/UVCCamDevice.h"
 check "FIX-41 node lookup NULL guard" \
 	"grep -q 'skip before use' $SRC/AddOn.cpp"
+check "FIX-42 no producer libc macros" \
+	"! grep -q 'define fopen(path' $SRC/Producer.cpp"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"

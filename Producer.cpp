@@ -36,24 +36,9 @@
 
 #define TOUCH(x) ((void)(x))
 
-/* PRODUCTION BUILD: Disable all debug output and file I/O for stability */
-/* CRITICAL: File I/O in USB/media threads causes BFS corruption and kernel panics */
-/* DEBUG: Temporarily disabled to trace connection issues */
-// #define PRODUCTION_BUILD 1
-
-#ifdef PRODUCTION_BUILD
-#define PRINTF(a,b) do {} while(0)
-#define TRACE(x...) do {} while(0)
-/* Disable all file I/O to prevent BFS corruption in USB threads */
-#undef fopen
-#define fopen(path, mode) ((FILE*)NULL)
-#undef fclose
-#define fclose(f) do {} while(0)
-#undef fflush
-#define fflush(f) do {} while(0)
-#undef fprintf
-#define fprintf(...) do {} while(0)
-#else
+// File dumps stay disabled by leaving the DEBUG flags undefined.
+// Do not redefine libc names here, hidden macros make call
+// sites lie about what they do.
 #define PRINTF(a,b) \
 		do { \
 			if (a < 2) { \
@@ -62,7 +47,6 @@
 			} \
 		} while (0)
 #define TRACE(x...) fprintf(stderr, x)
-#endif
 
 #include "Producer.h"
 
