@@ -21,7 +21,7 @@ Rules:
 | FIX-23 | Generator holds fLock across SendBuffer | Producer.cpp | Medium | done |
 | FIX-24 | UVC Flush touches state without lock | addons/uvc/UVCDeframer.cpp | Medium | done |
 | FIX-25 | CamDeframer pool/sem robustness | CamDeframer.cpp | Medium | done |
-| FIX-26 | fStats garbage on first update | Producer.cpp | Low | todo |
+| FIX-26 | fStats garbage on first update | Producer.cpp | Low | done |
 | FIX-27 | AddOn InitCheck NULL and CountFlavors error | AddOn.cpp | Low | todo |
 | FIX-28 | Backoff cap attempt to avoid long loop | addons/uvc/UVCSafety.cpp, CamDevice.cpp | Low | todo |
 | FIX-29 | Still capture NULL device guard | addons/uvc/UVCCamDevice.cpp | Medium | todo |

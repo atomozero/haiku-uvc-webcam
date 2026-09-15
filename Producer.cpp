@@ -107,12 +107,12 @@ VideoProducer::VideoProducer(
 	fConnected = false;
 	fEnabled = false;
 
-	// CRITICAL FIX: Initialize timing variables to avoid garbage values
-	// causing TimeSource overflow crashes in BMediaEventLooper
+	// Init timing and stats, garbage breaks first update.
 	fFrame = 0;
 	fFrameBase = 0;
-	fPerformanceTimeBase = 0;  // Will be set properly in HandleStart()
+	fPerformanceTimeBase = 0;
 	fStartRealTime = 0;
+	memset(&fStats, 0, sizeof(fStats));
 
 	fOutput.destination = media_destination::null;
 
@@ -1390,6 +1390,11 @@ VideoProducer::HandleSeek(bigtime_t performance_time)
 void
 VideoProducer::_UpdateStats()
 {
+	// Skip first update, no interval yet.
+	if (fStats[0].stamp == fStats[1].stamp) {
+		memcpy(&fStats[1], &fStats[0], sizeof(fStats[0]));
+		return;
+	}
 	float fps = (fStats[0].frames - fStats[1].frames) * 1000000LL
 				/ (double)(fStats[0].stamp - fStats[1].stamp);
 	float rfps = (fStats[0].actual - fStats[1].actual) * 1000000LL

@@ -36,6 +36,7 @@
 #   FIX-23  short generator lock      static: copy group under lock
 #   FIX-24  flush under lock          static: lock in UVC Flush
 #   FIX-25  deframer pool robustness  static: recycle + tag guards
+#   FIX-26  stats init                static: memset stats + skip equal stamp
 set -e
 cd "$(dirname "$0")"
 
@@ -105,6 +106,8 @@ check "FIX-25 recycle drop" \
 	"grep -q 'Recycle to keep pool warm' $SRC/CamDeframer.cpp"
 check "FIX-25 tag guards" \
 	"grep -q 'tags == NULL' $SRC/CamDeframer.cpp"
+check "FIX-26 stats init" \
+	"grep -q 'memset(&fStats' $SRC/Producer.cpp"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"
