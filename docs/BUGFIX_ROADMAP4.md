@@ -17,7 +17,7 @@ Rules:
 | FIX-30 | DeviceRemoved blocks on USB under roster lock | CamRoster.cpp | High | done |
 | FIX-31 | Bulk pump holds lock during retry + bad log | CamDevice.cpp | High | done |
 | FIX-32 | EHCI recovery clears endpoint under lock | addons/uvc/UVCCamDevice.cpp | High | done |
-| FIX-33 | Set param derefs device without NULL check | addons/uvc/UVCCamDevice.cpp | High | todo |
+| FIX-33 | Set param derefs device without NULL check | addons/uvc/UVCCamDevice.cpp | High | done |
 | FIX-34 | CamConfig raw size math and FPS NaN/INF | CamConfig.h | Medium | todo |
 | FIX-35 | Fill counters torn across threads | addons/uvc/UVCCamDevice.h,.cpp | Medium | todo |
 | FIX-36 | Audio volume/mute torn across threads | AudioProducer.h,.cpp | Medium | todo |

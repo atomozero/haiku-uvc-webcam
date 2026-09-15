@@ -43,6 +43,7 @@
 #   FIX-30  unplug probe outside lock static: find then probe then unlink
 #   FIX-31  bulk pump outside lock      static: copy then transfer outside
 #   FIX-32  EHCI cycle outside lock     static: snapshot then cycle outside
+#   FIX-33  set param NULL guard        static: fail closed when unplugged
 set -e
 cd "$(dirname "$0")"
 
@@ -126,6 +127,8 @@ check "FIX-31 bulk outside lock" \
 	"grep -q 'transfer outside' $SRC/CamDevice.cpp"
 check "FIX-32 EHCI cycle outside lock" \
 	"grep -q 'cycle outside' $SRC/addons/uvc/UVCCamDevice.cpp"
+check "FIX-33 set param NULL guard" \
+	"grep -q 'Fail closed when unplugged' $SRC/addons/uvc/UVCCamDevice.cpp"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"
