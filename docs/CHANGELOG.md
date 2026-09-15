@@ -3,6 +3,19 @@
 This file summarises notable changes per topic. For the exact commits,
 look up the IDs with `git log` — they are referenced in each entry.
 
+## Sept 2026 — RF-01..RF-05 phase 7 refactor batch
+
+Follow-up to FIX-45..51, see `docs/BUGFIX_ROADMAP7.md`.
+Structural cleanup, no behaviour change unless noted.
+Each item is one commit with static coverage guards.
+No full `make` here (needs Haiku host).
+
+- RF-01: drop-oldest helper, remove dead if0 blocks.
+- RF-02: remove dead deframer subclasses.
+- RF-03: route runtime logs to syslog, drop per-poll noise.
+- RF-04: split FillFrameBuffer into timeout, validate, convert.
+- RF-05: split UVCCamDevice.cpp into area translation units.
+
 ## Sept 2026 — FIX-45..FIX-51 phase 6 batch
 
 Follow-up to FIX-40..44, see `docs/BUGFIX_ROADMAP6.md`.
