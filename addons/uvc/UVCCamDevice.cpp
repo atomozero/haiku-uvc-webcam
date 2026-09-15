@@ -5459,161 +5459,89 @@ UVCCamDevice::_SetParameterValue(uint16 wValue, int8 setValue)
 
 // FIX BUG 6: Counters are now instance members (see header)
 
-status_t
-UVCCamDevice::FillFrameBuffer(BBuffer* buffer, bigtime_t* stamp)
+// FillFrameBuffer convert stage: pre-fill if needed, then
+// decompress MJPEG or dispatch the uncompressed converter.
+void
+UVCCamDevice::_ConvertFrame(BBuffer* buffer, size_t bufferSize, CamFrame* f,
+	int32 w, int32 h, frame_validation_result validation)
 {
-	atomic_add(&fFillFrameCount, 1);
+	if (buffer->SizeAvailable() >= bufferSize) {
+		unsigned char* dst = (unsigned char*)buffer->Data();
 
-	// Fast-fail on a stalled device: its endpoint only recovers on physical
-	// re-enumeration, so there is nothing to deliver and no point touching it.
-	if (IsStalled())
-		return B_DEVICE_NOT_FOUND;
+		// OPTIMIZATION: Only pre-fill buffer for incomplete/invalid frames
+		// For valid frames, MJPEG decompression or YUY2 conversion will
+		// overwrite the entire buffer, making pre-fill unnecessary.
+		// This saves ~300KB of memory writes per frame at 320x240.
+		bool needsPreFill = (validation != FRAME_VALID);
 
-	// Debug: verify fDeframer
-	static int32 sDeframerCheck = 0;
-	if (++sDeframerCheck <= 3) {
-		syslog(LOG_INFO, "FillFrameBuffer: fDeframer=%p this=%p\n",
-			(void*)fDeframer, (void*)this);
-	}
-
-	if (fDeframer == NULL) {
-		syslog(LOG_ERR, "FillFrameBuffer: fDeframer is NULL!\n");
-		return B_ERROR;
-	}
-
-	status_t err = fDeframer->WaitFrame(2000000);
-	if (err < B_OK) {
-		atomic_add(&fFillFrameTimeout, 1);
-
-		// Log only first 5 and every 50th to reduce spam during EHCI errors
-		int32 timeouts = atomic_get(&fFillFrameTimeout);
-		if (timeouts <= 5 || (timeouts % 50) == 0) {
-			syslog(LOG_WARNING, "UVCCamDevice::FillFrameBuffer: WaitFrame TIMEOUT #%d (err=%s)\n",
-				(int)timeouts, strerror(err));
+		if (needsPreFill) {
+			// Use fast memset for pre-fill (dark blue pattern)
+			// 0x40 gives a visible but not distracting background
+			memset(dst, 0x40, bufferSize);
 		}
 
-		// After 10 consecutive timeouts, attempt automatic recovery.
-		// This is typical of EHCI "host system error" on Intel controllers
-		// after sustained isochronous streaming. Cycle the streaming alternate
-		// (down to 0, back to streaming) to re-initialize the endpoint.
-		if (atomic_get(&fFillFrameTimeout) == 10
-			&& !fEHCIRecoveryInProgress.load()) {
-			fEHCIRecoveryInProgress.store(true);
-			syslog(LOG_WARNING, "UVCCamDevice: 10 consecutive frame timeouts - "
-				"attempting recovery via alternate cycle\n");
+		if (fIsMJPEG) {
+			// For MJPEG, validation already happened above.
+			// Partial MJPEG might still produce some valid data,
+			// so decompress even when invalid.
+			_DecompressMJPEGtoRGB32(dst,
+				(const unsigned char*)f->Buffer(), f->BufferLength(), w, h);
+		} else {
+			// Uncompressed payload: dispatch on the detected pixel format.
+			// UVC_FMT_UNKNOWN falls through to YUY2 for backwards compatibility
+			// with devices whose GUID is not (yet) recognized.
+			const unsigned char* srcData = (const unsigned char*)f->Buffer();
+			size_t actualSize = f->BufferLength();
+			size_t expectedSize = _UncompressedFrameSize(
+				fUncompressedPixelFormat, w, h);
 
-			// Snapshot under lock, cycle outside so the USB
-			// wait never blocks reader threads.
-			uint8 streamAlt = 0;
-			BUSBDevice* device = NULL;
-			uint32 streamingIndex = 0;
-			{
-				BAutolock lock(Locker());
-				if (lock.IsLocked() && fDevice != NULL) {
-					streamAlt = (uint8)fCurrentVideoAlternate;
-					device = fDevice;
-					streamingIndex = fStreamingIndex;
-					// Park endpoint before cycling, pump pauses
-					// instead of using a freed endpoint.
-					fIsoIn = NULL;
-					fCurrentVideoAlternate = 0;
-				}
+			if (actualSize < expectedSize) {
+				static int32 sIncomplete = 0;
+				if (++sIncomplete <= 20 || (sIncomplete % 100) == 0)
+					syslog(LOG_WARNING,
+						"FillFrameBuffer: Incomplete %s #%d: %zu/%zu bytes (%.1f%%)\n",
+						_UncompressedFormatName(fUncompressedPixelFormat),
+						(int)sIncomplete, actualSize, expectedSize,
+						100.0f * actualSize / expectedSize);
 			}
-			if (streamAlt > 0 && device != NULL) {
-				const BUSBConfiguration* cfg
-					= device->ActiveConfiguration();
-				if (cfg != NULL) {
-					BUSBInterface* iface = const_cast<BUSBInterface*>(
-						cfg->InterfaceAt(streamingIndex));
-					if (iface != NULL) {
-						// Bring the interface down to alt 0. Going N->0 is safe:
-						// only the 0->N direction trips Haiku's SetAlternate
-						// double-free.
-						iface->SetAlternate(0);
-					}
-				}
-				snooze(100000);
 
-				// Re-select the streaming alternate through the normal
-				// path. _SelectBestAlternate() applies the 0->N
-				// double-free workaround AND re-fetches fIsoIn /
-				// fIsoMaxPacketSize / fBuffer. A raw SetAlternate(streamAlt)
-				// here would skip the workaround and leave fIsoIn pointing
-				// at freed memory.
-				BAutolock relock(Locker());
-				if (relock.IsLocked() && fDevice != NULL) {
-					status_t rs = _SelectBestAlternate();
-					if (rs != B_OK) {
-						syslog(LOG_ERR, "UVCCamDevice: recovery re-select "
-							"failed: %s\n", strerror(rs));
-					} else {
-						syslog(LOG_INFO, "UVCCamDevice: recovery alt cycle "
-							"complete (%u -> 0 -> %u)\n", streamAlt,
-							fCurrentVideoAlternate);
-					}
-				}
+			switch (fUncompressedPixelFormat) {
+				case UVC_FMT_UYVY:
+					_ConvertUYVYtoRGB32(dst, srcData, actualSize, w, h);
+					break;
+				case UVC_FMT_NV12:
+					_ConvertNV12toRGB32(dst, (unsigned char*)srcData,
+						actualSize, w, h);
+					break;
+				case UVC_FMT_NV21:
+					_ConvertNV21toRGB32(dst, srcData, actualSize, w, h);
+					break;
+				case UVC_FMT_I420:
+					_ConvertI420toRGB32(dst, srcData, actualSize, w, h);
+					break;
+				case UVC_FMT_YV12:
+					_ConvertYV12toRGB32(dst, srcData, actualSize, w, h);
+					break;
+				case UVC_FMT_GREY:
+					_ConvertGREYtoRGB32(dst, srcData, actualSize, w, h);
+					break;
+				case UVC_FMT_YUY2:
+				case UVC_FMT_UNKNOWN:
+				default:
+					_ConvertYUY2toRGB32(dst, (unsigned char*)srcData,
+						actualSize, w, h);
+					break;
 			}
-			fEHCIRecoveryInProgress.store(false);
-		}
-
-		// If recovery didn't help by 30 timeouts, give up and stop the pump.
-		if (atomic_get(&fFillFrameTimeout) == 30) {
-			syslog(LOG_ERR, "UVCCamDevice: recovery failed - stopping transfer. "
-				"Please unplug and reconnect the camera.\n");
-			StopTransfer();
-		}
-
-		if (fUsingHighBandwidth)
-			_OnHighBandwidthFailure();
-
-		return err;
-	}
-
-	// Reset timeout counter on successful frame
-	if (atomic_get(&fFillFrameTimeout) > 0)
-		atomic_set(&fFillFrameTimeout, 0);
-
-	CamFrame* f;
-	err = fDeframer->GetFrame(&f, stamp);
-	if (err < B_OK)
-		return err;
-
-	atomic_add(&fFillFrameSuccess, 1);
-
-	int32 w = (int32)(VideoFrame().right - VideoFrame().left + 1);
-	int32 h = (int32)(VideoFrame().bottom - VideoFrame().top + 1);
-	size_t bufferSize = (size_t)w * h * 4;
-
-	// DEBUG: Log buffer size info to check for stride issues
-	static int32 sBufSizeLog = 0;
-	if (++sBufSizeLog <= 3) {
-		size_t available = buffer->SizeAvailable();
-		size_t expectedStride = (size_t)w * 4;
-		size_t actualStride = (h > 1) ? (available / h) : expectedStride;
-		syslog(LOG_INFO, "Buffer info: available=%zu needed=%zu w=%d h=%d expectedStride=%zu actualStride=%zu\n",
-			available, bufferSize, (int)w, (int)h, expectedStride, actualStride);
-		if (actualStride != expectedStride) {
-			syslog(LOG_WARNING, "Buffer STRIDE MISMATCH! expected=%zu actual=%zu diff=%d\n",
-				expectedStride, actualStride, (int)(actualStride - expectedStride));
 		}
 	}
+}
 
-	/* Task 6: Check if buffer is large enough for current resolution */
-	if (buffer->SizeAvailable() < bufferSize) {
-		static int32 sBufferTooSmall = 0;
-		if (++sBufferTooSmall <= 5 || (sBufferTooSmall % 100) == 0) {
-			syslog(LOG_WARNING, "FillFrameBuffer: Buffer too small #%d: need %zu, have %zu (%dx%d)\n",
-				(int)sBufferTooSmall, bufferSize, buffer->SizeAvailable(), (int)w, (int)h);
-			syslog(LOG_WARNING, "FillFrameBuffer: Resolution may have changed - restart stream for new buffers\n");
-		}
-		// Recycle frame back to pool instead of deleting
-		if (fDeframer != NULL)
-			fDeframer->RecycleFrame(f);
-		else
-			delete f;
-		return B_ERROR;
-	}
 
+// FillFrameBuffer validation stage: check frame, track sizes,
+// update stats and request fallback when the stream degrades.
+frame_validation_result
+UVCCamDevice::_ValidateFrame(CamFrame* f, int32 w, int32 h)
+{
 	// Feature 1: Frame Validation
 	fValidationStats.frames_validated++;
 	frame_validation_result validation;
@@ -5750,75 +5678,175 @@ UVCCamDevice::FillFrameBuffer(BBuffer* buffer, bigtime_t* stamp)
 		fConsecutiveBadFrames = 0;  // Reset to allow retry
 	}
 
-	if (buffer->SizeAvailable() >= bufferSize) {
-		unsigned char* dst = (unsigned char*)buffer->Data();
+	return validation;
+}
 
-		// OPTIMIZATION: Only pre-fill buffer for incomplete/invalid frames
-		// For valid frames, MJPEG decompression or YUY2 conversion will
-		// overwrite the entire buffer, making pre-fill unnecessary.
-		// This saves ~300KB of memory writes per frame at 320x240.
-		bool needsPreFill = (validation != FRAME_VALID);
 
-		if (needsPreFill) {
-			// Use fast memset for pre-fill (dark blue pattern)
-			// 0x40 gives a visible but not distracting background
-			memset(dst, 0x40, bufferSize);
+// FillFrameBuffer timeout path: log, recover, give up.
+status_t
+UVCCamDevice::_HandleFillTimeout(status_t err)
+{
+	atomic_add(&fFillFrameTimeout, 1);
+
+	// Log only first 5 and every 50th to reduce spam during EHCI errors
+	int32 timeouts = atomic_get(&fFillFrameTimeout);
+	if (timeouts <= 5 || (timeouts % 50) == 0) {
+		syslog(LOG_WARNING, "UVCCamDevice::FillFrameBuffer: WaitFrame TIMEOUT #%d (err=%s)\n",
+			(int)timeouts, strerror(err));
+	}
+
+	// After 10 consecutive timeouts, attempt automatic recovery.
+	// This is typical of EHCI "host system error" on Intel controllers
+	// after sustained isochronous streaming. Cycle the streaming alternate
+	// (down to 0, back to streaming) to re-initialize the endpoint.
+	if (atomic_get(&fFillFrameTimeout) == 10
+		&& !fEHCIRecoveryInProgress.load()) {
+		fEHCIRecoveryInProgress.store(true);
+		syslog(LOG_WARNING, "UVCCamDevice: 10 consecutive frame timeouts - "
+			"attempting recovery via alternate cycle\n");
+
+		// Snapshot under lock, cycle outside so the USB
+		// wait never blocks reader threads.
+		uint8 streamAlt = 0;
+		BUSBDevice* device = NULL;
+		uint32 streamingIndex = 0;
+		{
+			BAutolock lock(Locker());
+			if (lock.IsLocked() && fDevice != NULL) {
+				streamAlt = (uint8)fCurrentVideoAlternate;
+				device = fDevice;
+				streamingIndex = fStreamingIndex;
+				// Park endpoint before cycling, pump pauses
+				// instead of using a freed endpoint.
+				fIsoIn = NULL;
+				fCurrentVideoAlternate = 0;
+			}
 		}
-
-		if (fIsMJPEG) {
-			// For MJPEG, validation already happened above.
-			// Partial MJPEG might still produce some valid data,
-			// so decompress even when invalid.
-			_DecompressMJPEGtoRGB32(dst,
-				(const unsigned char*)f->Buffer(), f->BufferLength(), w, h);
-		} else {
-			// Uncompressed payload: dispatch on the detected pixel format.
-			// UVC_FMT_UNKNOWN falls through to YUY2 for backwards compatibility
-			// with devices whose GUID is not (yet) recognized.
-			const unsigned char* srcData = (const unsigned char*)f->Buffer();
-			size_t actualSize = f->BufferLength();
-			size_t expectedSize = _UncompressedFrameSize(
-				fUncompressedPixelFormat, w, h);
-
-			if (actualSize < expectedSize) {
-				static int32 sIncomplete = 0;
-				if (++sIncomplete <= 20 || (sIncomplete % 100) == 0)
-					syslog(LOG_WARNING,
-						"FillFrameBuffer: Incomplete %s #%d: %zu/%zu bytes (%.1f%%)\n",
-						_UncompressedFormatName(fUncompressedPixelFormat),
-						(int)sIncomplete, actualSize, expectedSize,
-						100.0f * actualSize / expectedSize);
+		if (streamAlt > 0 && device != NULL) {
+			const BUSBConfiguration* cfg
+				= device->ActiveConfiguration();
+			if (cfg != NULL) {
+				BUSBInterface* iface = const_cast<BUSBInterface*>(
+					cfg->InterfaceAt(streamingIndex));
+				if (iface != NULL) {
+					// Bring the interface down to alt 0. Going N->0 is safe:
+					// only the 0->N direction trips Haiku's SetAlternate
+					// double-free.
+					iface->SetAlternate(0);
+				}
 			}
+			snooze(100000);
 
-			switch (fUncompressedPixelFormat) {
-				case UVC_FMT_UYVY:
-					_ConvertUYVYtoRGB32(dst, srcData, actualSize, w, h);
-					break;
-				case UVC_FMT_NV12:
-					_ConvertNV12toRGB32(dst, (unsigned char*)srcData,
-						actualSize, w, h);
-					break;
-				case UVC_FMT_NV21:
-					_ConvertNV21toRGB32(dst, srcData, actualSize, w, h);
-					break;
-				case UVC_FMT_I420:
-					_ConvertI420toRGB32(dst, srcData, actualSize, w, h);
-					break;
-				case UVC_FMT_YV12:
-					_ConvertYV12toRGB32(dst, srcData, actualSize, w, h);
-					break;
-				case UVC_FMT_GREY:
-					_ConvertGREYtoRGB32(dst, srcData, actualSize, w, h);
-					break;
-				case UVC_FMT_YUY2:
-				case UVC_FMT_UNKNOWN:
-				default:
-					_ConvertYUY2toRGB32(dst, (unsigned char*)srcData,
-						actualSize, w, h);
-					break;
+			// Re-select the streaming alternate through the normal
+			// path. _SelectBestAlternate() applies the 0->N
+			// double-free workaround AND re-fetches fIsoIn /
+			// fIsoMaxPacketSize / fBuffer. A raw SetAlternate(streamAlt)
+			// here would skip the workaround and leave fIsoIn pointing
+			// at freed memory.
+			BAutolock relock(Locker());
+			if (relock.IsLocked() && fDevice != NULL) {
+				status_t rs = _SelectBestAlternate();
+				if (rs != B_OK) {
+					syslog(LOG_ERR, "UVCCamDevice: recovery re-select "
+						"failed: %s\n", strerror(rs));
+				} else {
+					syslog(LOG_INFO, "UVCCamDevice: recovery alt cycle "
+						"complete (%u -> 0 -> %u)\n", streamAlt,
+						fCurrentVideoAlternate);
+				}
 			}
+		}
+		fEHCIRecoveryInProgress.store(false);
+	}
+
+	// If recovery didn't help by 30 timeouts, give up and stop the pump.
+	if (atomic_get(&fFillFrameTimeout) == 30) {
+		syslog(LOG_ERR, "UVCCamDevice: recovery failed - stopping transfer. "
+			"Please unplug and reconnect the camera.\n");
+		StopTransfer();
+	}
+
+	if (fUsingHighBandwidth)
+		_OnHighBandwidthFailure();
+
+	return err;
+}
+
+
+status_t
+UVCCamDevice::FillFrameBuffer(BBuffer* buffer, bigtime_t* stamp)
+{
+	atomic_add(&fFillFrameCount, 1);
+
+	// Fast-fail on a stalled device: its endpoint only recovers on physical
+	// re-enumeration, so there is nothing to deliver and no point touching it.
+	if (IsStalled())
+		return B_DEVICE_NOT_FOUND;
+
+	// Debug: verify fDeframer
+	static int32 sDeframerCheck = 0;
+	if (++sDeframerCheck <= 3) {
+		syslog(LOG_INFO, "FillFrameBuffer: fDeframer=%p this=%p\n",
+			(void*)fDeframer, (void*)this);
+	}
+
+	if (fDeframer == NULL) {
+		syslog(LOG_ERR, "FillFrameBuffer: fDeframer is NULL!\n");
+		return B_ERROR;
+	}
+
+	status_t err = fDeframer->WaitFrame(2000000);
+	if (err < B_OK)
+		return _HandleFillTimeout(err);
+
+	// Reset timeout counter on successful frame
+	if (atomic_get(&fFillFrameTimeout) > 0)
+		atomic_set(&fFillFrameTimeout, 0);
+
+	CamFrame* f;
+	err = fDeframer->GetFrame(&f, stamp);
+	if (err < B_OK)
+		return err;
+
+	atomic_add(&fFillFrameSuccess, 1);
+
+	int32 w = (int32)(VideoFrame().right - VideoFrame().left + 1);
+	int32 h = (int32)(VideoFrame().bottom - VideoFrame().top + 1);
+	size_t bufferSize = (size_t)w * h * 4;
+
+	// DEBUG: Log buffer size info to check for stride issues
+	static int32 sBufSizeLog = 0;
+	if (++sBufSizeLog <= 3) {
+		size_t available = buffer->SizeAvailable();
+		size_t expectedStride = (size_t)w * 4;
+		size_t actualStride = (h > 1) ? (available / h) : expectedStride;
+		syslog(LOG_INFO, "Buffer info: available=%zu needed=%zu w=%d h=%d expectedStride=%zu actualStride=%zu\n",
+			available, bufferSize, (int)w, (int)h, expectedStride, actualStride);
+		if (actualStride != expectedStride) {
+			syslog(LOG_WARNING, "Buffer STRIDE MISMATCH! expected=%zu actual=%zu diff=%d\n",
+				expectedStride, actualStride, (int)(actualStride - expectedStride));
 		}
 	}
+
+	/* Task 6: Check if buffer is large enough for current resolution */
+	if (buffer->SizeAvailable() < bufferSize) {
+		static int32 sBufferTooSmall = 0;
+		if (++sBufferTooSmall <= 5 || (sBufferTooSmall % 100) == 0) {
+			syslog(LOG_WARNING, "FillFrameBuffer: Buffer too small #%d: need %zu, have %zu (%dx%d)\n",
+				(int)sBufferTooSmall, bufferSize, buffer->SizeAvailable(), (int)w, (int)h);
+			syslog(LOG_WARNING, "FillFrameBuffer: Resolution may have changed - restart stream for new buffers\n");
+		}
+		// Recycle frame back to pool instead of deleting
+		if (fDeframer != NULL)
+			fDeframer->RecycleFrame(f);
+		else
+			delete f;
+		return B_ERROR;
+	}
+
+	frame_validation_result validation = _ValidateFrame(f, w, h);
+
+	_ConvertFrame(buffer, bufferSize, f, w, h, validation);
 
 	// Recycle frame back to pool for reuse (reduces allocations)
 	if (fDeframer != NULL)

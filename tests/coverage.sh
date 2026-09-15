@@ -65,6 +65,7 @@
 #   RF-01   drop-oldest helper              static: drop oldest helper
 #   RF-02   dead deframers removed          static: gone from tree
 #   RF-03   runtime logs to syslog          static: no printf runtime logs
+#   RF-04   fill stages split               static: fill stages split
 set -e
 cd "$(dirname "$0")"
 
@@ -192,6 +193,8 @@ check "RF-02 dead deframers removed" \
 	"! test -e $SRC/CamBufferingDeframer.cpp"
 check "RF-03 runtime logs to syslog" \
 	"! grep -q 'printf(\"UVCCamDevice' $SRC/addons/uvc/UVCCamDevice.cpp"
+check "RF-04 fill stages split" \
+	"grep -q 'FillFrameBuffer stages, split' $SRC/addons/uvc/UVCCamDevice.h"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"

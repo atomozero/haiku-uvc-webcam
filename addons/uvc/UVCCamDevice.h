@@ -357,6 +357,14 @@ public:
 									{ return (int32)fResolutionParameterID; }
 	virtual status_t			FillFrameBuffer(BBuffer *buffer,
 									bigtime_t *stamp = NULL);
+			// FillFrameBuffer stages, split for readability.
+			status_t			_HandleFillTimeout(status_t err);
+			frame_validation_result	_ValidateFrame(CamFrame* f,
+									int32 w, int32 h);
+			void				_ConvertFrame(BBuffer* buffer,
+									size_t bufferSize, CamFrame* f,
+									int32 w, int32 h,
+									frame_validation_result validation);
 
 	// P3 Fase B: enumerate and switch between VideoStreaming interfaces.
 	// NumStreams() returns the count of VS interfaces detected during

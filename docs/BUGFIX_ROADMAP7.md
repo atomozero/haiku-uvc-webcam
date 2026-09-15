@@ -18,7 +18,7 @@ Rules:
 | RF-01 | Drop-oldest helper, remove dead #if 0 blocks | UVCDeframer.h,.cpp, UVCCamDevice.cpp, CamDevice.cpp | done |
 | RF-02 | Dead deframer subclasses out of the build | Makefile, CamBufferingDeframer.*, CamStreamingDeframer.* | done |
 | RF-03 | printf toward syslog with throttle | addons/uvc/UVCCamDevice.cpp | done |
-| RF-04 | Split FillFrameBuffer into helpers | addons/uvc/UVCCamDevice.h,.cpp | todo |
+| RF-04 | Split FillFrameBuffer into helpers | addons/uvc/UVCCamDevice.h,.cpp | done |
 | RF-05 | Split UVCCamDevice.cpp by area | addons/uvc/* | todo |
 
 ## Coverage map
