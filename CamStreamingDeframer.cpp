@@ -34,6 +34,8 @@ CamStreamingDeframer::~CamStreamingDeframer()
 ssize_t
 CamStreamingDeframer::Write(const void *buffer, size_t size)
 {
+	// Serialise with Flush, lock is recursive.
+	BAutolock writeLock(fLocker);
 	int i = -1;
 	int j;
 	int end = size;

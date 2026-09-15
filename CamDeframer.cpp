@@ -181,6 +181,8 @@ CamDeframer::DropFrame()
 	if (!f)
 		return ENOENT;
 	delete f;
+	// Consume one permit for the removed frame.
+	acquire_sem_etc(fFrameSem, 1, B_RELATIVE_TIMEOUT, (bigtime_t)0);
 	return B_OK;
 }
 
@@ -202,9 +204,12 @@ CamDeframer::Flush()
 		fCurrentFrame->SetSize(0);
 	}
 
-	// Reset semaphore by acquiring any pending counts
-	while (acquire_sem_etc(fFrameSem, 1, B_RELATIVE_TIMEOUT, 0) == B_OK)
-		;
+	// Reset semaphore with a bounded drain, an open loop can spin
+	// forever if the pump releases while we drain.
+	for (int32 i = 0; i < 64; i++) {
+		if (acquire_sem_etc(fFrameSem, 1, B_RELATIVE_TIMEOUT, 0) != B_OK)
+			break;
+	}
 
 	fState = ST_SYNC;
 	return B_OK;

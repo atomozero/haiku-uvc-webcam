@@ -36,6 +36,8 @@ CamBufferingDeframer::~CamBufferingDeframer()
 ssize_t
 CamBufferingDeframer::Write(const void *buffer, size_t size)
 {
+	// Serialise with Flush, same lock is recursive so nested takes are safe.
+	BAutolock writeLock(fLocker);
 	uint8 *b;
 	int l;
 	int i, s, e;
