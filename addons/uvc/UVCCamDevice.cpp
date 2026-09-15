@@ -4377,8 +4377,13 @@ UVCCamDevice::_ShouldUseHighBandwidth()
 	// Only enable high-bandwidth if EXPLICITLY requested by user
 	const char* forceHighBW = getenv("WEBCAM_FORCE_HIGH_BANDWIDTH");
 	if (forceHighBW != NULL && (strcmp(forceHighBW, "1") == 0 || strcmp(forceHighBW, "yes") == 0)) {
-		syslog(LOG_WARNING, "UVCCamDevice: High-bandwidth FORCED via WEBCAM_FORCE_HIGH_BANDWIDTH\n");
-		syslog(LOG_WARNING, "UVCCamDevice: This may cause 'Bandwidth error' on Haiku XHCI!\n");
+		// Called on every alternate scan — announce once per process.
+		static bool sForcedAnnounced = false;
+		if (!sForcedAnnounced) {
+			sForcedAnnounced = true;
+			syslog(LOG_WARNING, "UVCCamDevice: High-bandwidth FORCED via WEBCAM_FORCE_HIGH_BANDWIDTH\n");
+			syslog(LOG_WARNING, "UVCCamDevice: This may cause 'Bandwidth error' on Haiku XHCI!\n");
+		}
 		return true;
 	}
 
