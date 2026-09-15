@@ -3,6 +3,24 @@
 This file summarises notable changes per topic. For the exact commits,
 look up the IDs with `git log` — they are referenced in each entry.
 
+## Sept 2026 — FIX-19..FIX-29 phase 3 batch
+
+Follow-up to FIX-11..18, see `docs/BUGFIX_ROADMAP3.md`.
+Each fix is one commit with static coverage guards.
+No full `make` here (needs Haiku host).
+
+- FIX-19: null-safe resolution select with 64-bit diff.
+- FIX-20: allow many audio mics, counter stats only.
+- FIX-21: free reconfig sem even on wedged timeout.
+- FIX-22: copy frame sync id under lock.
+- FIX-23: shorten generator lock to pointer copy.
+- FIX-24: clear UVC flush state under lock.
+- FIX-25: harden deframer pool and tag checks.
+- FIX-26: init stats and skip first update.
+- FIX-27: guard addon init and flavor count.
+- FIX-28: cap backoff steps to 32.
+- FIX-29: guard still trigger against unplug.
+
 ## Sept 2026 — FIX-11..FIX-18 phase 2 batch
 
 Follow-up to FIX-01..10, see `docs/BUGFIX_ROADMAP2.md`.
