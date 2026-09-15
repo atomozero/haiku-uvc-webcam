@@ -379,6 +379,10 @@ class CamDevice {
 	virtual bool		SupportsIsochronous();
 	virtual status_t	StartTransfer();
 	virtual status_t	StopTransfer();
+	// FIX-T1: explicit locked variant for callers that already hold
+	// fLocker (Producer::HandleStop). Keeps lock ownership explicit
+	// instead of probing BLocker::IsLocked().
+	virtual status_t	StopTransferLocked();
 	virtual bool		TransferEnabled() const { return atomic_get((int32*)&fTransferEnabled) != 0; };
 
 	// "Stalled" means the data pump got wedged in an uninterruptible kernel
@@ -440,7 +444,9 @@ class CamDevice {
 
 	// Safe resolution change (via worker thread to avoid kernel panic)
 			status_t	RequestResolutionChange(uint32 width, uint32 height);
-			bool		HasPendingReconfigRequest() const;
+			// FIX: locked read — the writer holds fReconfigLock and the
+			// flag is polled from pump/fallback paths (TOCTOU otherwise).
+			bool		HasPendingReconfigRequest();
 			void		CancelPendingReconfigRequest();
 
 	// High-bandwidth auto-detection callbacks (for UVC devices)
@@ -566,8 +572,10 @@ static	int32			sInstanceCounter;		// Global counter for unique IDs
 	BMediaNode*		fAudioNode;
 
 		// PHASE 3/4: USB packet statistics for error tracking
-		uint32			fPacketSuccessCount;
-		uint32			fPacketErrorCount;
+		// FIX: pump-written, logger-read. int32 + atomic ops so the
+		// loss-rate math cannot see torn values.
+		int32			fPacketSuccessCount;
+		int32			fPacketErrorCount;
 		bigtime_t		fLastStatsReport;
 		bigtime_t		fTransferStartTime;
 
@@ -575,7 +583,8 @@ static	int32			sInstanceCounter;		// Global counter for unique IDs
 		static const float	kPacketLossThreshold;	// Threshold for resolution fallback (5%)
 		static const bigtime_t	kStatsWindowSize;	// Window for stats calculation (5s)
 		static const uint32	kMinPacketsForStats;	// Min packets before calculating rate
-		uint32			fConsecutiveHighLossEvents;	// Track sustained high loss
+		// FIX: see packet counters above — atomic access only.
+		int32			fConsecutiveHighLossEvents;	// Track sustained high loss
 
 		// PHASE 8: Error histogram
 		usb_error_histogram	fErrorHistogram;
@@ -612,6 +621,8 @@ static	int32			sInstanceCounter;		// Global counter for unique IDs
 		volatile bool	fReconfigThreadRunning;
 		reconfig_request	fReconfigRequest;
 		BLocker			fReconfigLock;
+
+		status_t		_StopTransferInternal(bool callerHoldsLock);
 };
 
 // the addon itself, that instanciate

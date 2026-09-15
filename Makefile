@@ -57,6 +57,7 @@ SOURCES = \
 	addons/uvc/UVCDeframer.cpp \
 	addons/uvc/UVCQuirks.cpp \
 	addons/uvc/UVCDescriptors.cpp \
+	addons/uvc/UVCSafety.cpp \
 	addons/NW80xCamDevice.cpp
 
 OBJECTS = $(SOURCES:.cpp=.o)
@@ -76,10 +77,10 @@ clean:
 	rm -rf dist pkgroot haiku-uvc-webcam-$(ARCH_SUFFIX).zip
 	rm -f aukey_webcam_v4-*.hpkg
 
-# Standalone unit + fuzz tests for the pure modules (UVCQuirks / UVCDescriptors).
-# They have no libbe / Haiku-only dependencies (the headers fall back to
-# <stdint.h> off Haiku), so this target also runs on a plain Linux CI runner
-# — see .github/workflows/tests.yml.
+# Standalone unit + fuzz tests for the pure modules (UVCQuirks /
+# UVCDescriptors / UVCSafety). They have no libbe / Haiku-only dependencies
+# (the headers fall back to <stdint.h> off Haiku), so this target also runs
+# on a plain Linux CI runner — see .github/workflows/tests.yml.
 TEST_CXX ?= g++
 TEST_FLAGS = -O2 -Wall -I addons/uvc
 
@@ -90,11 +91,18 @@ test:
 	$(TEST_CXX) $(TEST_FLAGS) -o tests/test_descriptors \
 		tests/test_descriptors.cpp addons/uvc/UVCDescriptors.cpp
 	./tests/test_descriptors
+	$(TEST_CXX) $(TEST_FLAGS) -o tests/test_safety \
+		tests/test_safety.cpp addons/uvc/UVCSafety.cpp \
+		addons/uvc/UVCDescriptors.cpp
+	./tests/test_safety
 	$(TEST_CXX) $(TEST_FLAGS) -o tests/fuzz_descriptors \
 		tests/fuzz_descriptors.cpp addons/uvc/UVCDescriptors.cpp
 	./tests/fuzz_descriptors
 
-.PHONY: all clean install dist-zip test hpkg
+coverage:
+	sh tests/coverage.sh
+
+.PHONY: all clean install dist-zip test coverage hpkg
 
 # Build a Haiku package (.hpkg) from the compiled add-on. The package layout
 # mirrors the install location (add-ons/media/), and the metadata is kept in

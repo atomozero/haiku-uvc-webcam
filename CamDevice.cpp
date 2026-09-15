@@ -195,8 +195,14 @@ CamDevice::CamDevice(CamDeviceAddon &_addon, BUSBDevice* _device)
 	// USB 2.0 High-Speed isochronous: up to 3072 bytes/packet * 8 transactions/microframe
 	// With 32 packet descriptors: 32 * 3072 = 98,304 bytes minimum
 	// Using 128KB (32 pages) for safety margin
+	// FIX: fail closed on OOM instead of leaving a NULL fBuffer for the
+	// pump thread to dereference.
 	fBufferLen = 32*B_PAGE_SIZE;
 	fBuffer = (uint8 *)malloc(fBufferLen);
+	if (fBuffer == NULL) {
+		fBufferLen = 0;
+		fInitStatus = B_NO_MEMORY;
+	}
 }
 
 
@@ -207,11 +213,17 @@ CamDevice::~CamDevice()
 
 	// Ensure transfers are stopped before cleanup
 	// (Unplugged() should have been called, but be safe)
+	// FIX-T5: bounded join. wait_for_thread() would hang forever on a pump
+	// wedged in an uninterruptible kernel USB wait; abandon and stall instead.
 	if (atomic_get(&fTransferEnabled) != 0) {
 		atomic_set(&fTransferEnabled, 0);
 		if (fPumpThread >= 0) {
 			status_t result;
-			wait_for_thread(fPumpThread, &result);
+			status_t waitErr = wait_for_thread_etc(fPumpThread,
+				B_RELATIVE_TIMEOUT, 3000000, &result);
+			if (waitErr == B_TIMED_OUT)
+				MarkStalled();
+			fPumpThread = -1;
 		}
 	}
 
@@ -262,12 +274,21 @@ CamDevice::QuitVideoNode()
 		media_node node = fVideoNode->Node();
 		syslog(LOG_INFO, "CamDevice: Stopping and releasing video node %d\n",
 			(int)node.node);
-		// Invalidate the VideoProducer's back-pointer to us BEFORE stopping.
-		// This must happen first because the Media Kit event loop may still
-		// deliver messages during and after StopNode.
+		// FIX-C1: make sure the frame generator is not inside FillFrameBuffer
+		// before the back-pointer is cleared and the device deleted.
+		// HandleStop (via synchronous StopNode below) already joins it;
+		// this extra bounded join closes the load-then-use race where the
+		// generator copied fCamDevice just before SetCamDevice(NULL).
 		VideoProducer* vp = dynamic_cast<VideoProducer*>(fVideoNode);
-		if (vp != NULL)
+		if (vp != NULL) {
+			status_t joinErr = vp->JoinFrameGenerator(2000000);
+			if (joinErr == B_TIMED_OUT) {
+				syslog(LOG_ERR, "CamDevice: video generator wedged on "
+					"quit — marking device stalled\n");
+				MarkStalled();
+			}
 			vp->SetCamDevice(NULL);
+		}
 
 		roster->StopNode(node, 0, true);	// synchronous stop
 
@@ -313,6 +334,12 @@ CamDevice::QuitAudioNode()
 void
 CamDevice::Unplugged()
 {
+	// FIX-C4: the reconfig worker drives Stop/StartTransfer on fDevice/fIsoIn.
+	// Stop it and drop any pending request first so it cannot run a
+	// SetAlternate on a dead device while the nodes are torn down below.
+	StopReconfigThread();
+	CancelPendingReconfigRequest();
+
 	// PHASE 2: Proper cleanup on device disconnect
 	// Stop any running transfers first
 	if (atomic_get(&fTransferEnabled) != 0) {
@@ -402,6 +429,11 @@ CamDevice::StartTransfer()
 {
 	status_t err = B_OK;
 	PRINT((CH "()" CT));
+	// FIX-T2: the enabled check and the spawn must be atomic. Two concurrent
+	// starters (HandleStart vs. the reconfig restart) could otherwise both
+	// pass the check and leak the first pump thread. fLocker is recursive
+	// so nesting with the pump's per-iteration lock is safe.
+	BAutolock startLock(fLocker);
 	if (atomic_get(&fTransferEnabled))
 		return EALREADY;
 	// Refuse to start on a device whose previous pump thread wedged: the USB
@@ -412,6 +444,8 @@ CamDevice::StartTransfer()
 			"reconnect the camera\n");
 		return B_DEVICE_NOT_FOUND;
 	}
+	if (fBuffer == NULL || fBufferLen == 0)
+		return B_NO_MEMORY;
 	// Use URGENT_DISPLAY_PRIORITY (120) for timely USB isochronous transfers
 	// Lower priority causes scheduling delays that lead to missed USB frames
 	fPumpThread = spawn_thread(_DataPumpThread, "USB Webcam Data Pump",
@@ -420,8 +454,13 @@ CamDevice::StartTransfer()
 		return fPumpThread;
 	if (fSensor)
 		err = fSensor->StartTransfer();
-	if (err < B_OK)
+	if (err < B_OK) {
+		// FIX: the pump thread was already spawned suspended; kill it so we
+		// do not leak a dangling thread id on sensor failure.
+		kill_thread(fPumpThread);
+		fPumpThread = -1;
 		return err;
+	}
 	atomic_set(&fTransferEnabled, 1);
 	resume_thread(fPumpThread);
 	PRINT((CH ": transfer enabled" CT));
@@ -432,14 +471,34 @@ CamDevice::StartTransfer()
 status_t
 CamDevice::StopTransfer()
 {
+	// Entry for callers that do NOT hold fLocker (reconfig path, roster).
+	return _StopTransferInternal(false);
+}
+
+
+status_t
+CamDevice::StopTransferLocked()
+{
+	// Entry for callers that already hold fLocker (Producer::HandleStop).
+	// The boolean makes the ownership explicit instead of probing
+	// BLocker::IsLocked(), which reports global state and could unlock a
+	// lock owned by the pump thread (FIX-T1).
+	return _StopTransferInternal(true);
+}
+
+
+status_t
+CamDevice::_StopTransferInternal(bool callerHoldsLock)
+{
 	status_t err = B_OK;
 	PRINT((CH "()" CT));
 	if (!atomic_get(&fTransferEnabled))
 		return EALREADY;
+	status_t sensorErr = B_OK;
 	if (fSensor)
-		err = fSensor->StopTransfer();
-	if (err < B_OK)
-		return err;
+		sensorErr = fSensor->StopTransfer();
+	// FIX: always stop the pump even when the sensor reports failure,
+	// otherwise the pump keeps driving a half-stopped pipeline.
 	// Use atomic operation to safely signal thread to stop
 	atomic_set(&fTransferEnabled, 0);
 
@@ -449,20 +508,16 @@ CamDevice::StopTransfer()
 	// watchdog) rather than block teardown forever or kill it — killing a
 	// thread stuck mid-transfer would race a use-after-free on its stack. Mark
 	// the device stalled so it refuses reuse until physically re-enumerated.
-	// The pump thread itself might Lock(), so release fLocker while joining.
-	// But not every caller holds it: HandleStop() does, the reconfig path
-	// (_HandleResolutionChange) does not. Unconditionally unlocking there would
-	// release a lock we don't own and corrupt it — so only unlock if this
-	// thread actually holds it, and re-lock to match on the way out.
-	const bool hadLock = fLocker.IsLocked();
-	if (hadLock)
+	// The lock is released across the join only when this thread actually
+	// owns it (callerHoldsLock); the pump needs fLocker to make progress.
+	if (callerHoldsLock)
 		fLocker.Unlock();
 	status_t threadResult;
 	status_t waitErr = (fPumpThread >= 0)
 		? wait_for_thread_etc(fPumpThread, B_RELATIVE_TIMEOUT, 3000000,
 			&threadResult)
 		: B_OK;
-	if (hadLock)
+	if (callerHoldsLock)
 		fLocker.Lock();
 	if (waitErr == B_TIMED_OUT) {
 		syslog(LOG_ERR, "CamDevice: data pump wedged on stop — abandoning "
@@ -474,7 +529,7 @@ CamDevice::StopTransfer()
 	// Log error statistics summary on stream stop
 	LogErrorStatistics();
 
-	return B_OK;
+	return sensorErr < B_OK ? sensorErr : B_OK;
 }
 
 
@@ -583,25 +638,27 @@ CamDevice::ValidateEndOfFrameTag(const uint8 *tag, size_t taglen,
 void
 CamDevice::RecordPacketSuccess()
 {
-	fPacketSuccessCount++;
+	atomic_add(&fPacketSuccessCount, 1);
 }
 
 
 void
 CamDevice::RecordPacketError()
 {
-	fPacketErrorCount++;
+	atomic_add(&fPacketErrorCount, 1);
 }
 
 
 float
 CamDevice::GetPacketLossRate() const
 {
-	uint32 total = fPacketSuccessCount + fPacketErrorCount;
-	if (total < kMinPacketsForStats)
+	int32 success = atomic_get((int32*)&fPacketSuccessCount);
+	int32 errors = atomic_get((int32*)&fPacketErrorCount);
+	int32 total = success + errors;
+	if (total < (int32)kMinPacketsForStats)
 		return 0.0f;	// Not enough data yet
 
-	return (float)fPacketErrorCount / (float)total;
+	return (float)errors / (float)total;
 }
 
 
@@ -615,24 +672,26 @@ CamDevice::ShouldReduceResolution()
 		return false;
 
 	// Check if we have enough data
-	uint32 total = fPacketSuccessCount + fPacketErrorCount;
-	if (total < kMinPacketsForStats)
+	int32 success = atomic_get(&fPacketSuccessCount);
+	int32 errors = atomic_get(&fPacketErrorCount);
+	int32 total = success + errors;
+	if (total < (int32)kMinPacketsForStats)
 		return false;
 
 	// Check if loss rate exceeds threshold
 	float lossRate = GetPacketLossRate();
 	if (lossRate > kPacketLossThreshold) {
-		fConsecutiveHighLossEvents++;
+		int32 events = atomic_add(&fConsecutiveHighLossEvents, 1) + 1;
 
 		// Only trigger fallback after sustained high loss (3+ consecutive checks)
-		if (fConsecutiveHighLossEvents >= 3) {
+		if (events >= 3) {
 			syslog(LOG_WARNING, "CamDevice: High packet loss detected (%.1f%%), "
 				"suggesting resolution reduction\n", lossRate * 100.0f);
 			return true;
 		}
 	} else {
 		// Reset counter if loss is acceptable
-		fConsecutiveHighLossEvents = 0;
+		atomic_set(&fConsecutiveHighLossEvents, 0);
 	}
 
 	return false;
@@ -652,9 +711,9 @@ CamDevice::ReduceResolution()
 void
 CamDevice::ResetPacketStatistics()
 {
-	fPacketSuccessCount = 0;
-	fPacketErrorCount = 0;
-	fConsecutiveHighLossEvents = 0;
+	atomic_set(&fPacketSuccessCount, 0);
+	atomic_set(&fPacketErrorCount, 0);
+	atomic_set(&fConsecutiveHighLossEvents, 0);
 	fLastStatsReport = system_time();
 	fTransferStartTime = system_time();
 }
@@ -1086,8 +1145,8 @@ CamDevice::DataPumpThread()
 			packetDescriptors[i].request_length = packetSize;
 
 		// Statistics tracking
-		fPacketSuccessCount = 0;
-		fPacketErrorCount = 0;
+		atomic_set(&fPacketSuccessCount, 0);
+		atomic_set(&fPacketErrorCount, 0);
 		fLastStatsReport = system_time();
 		fTransferStartTime = system_time();
 
@@ -1279,7 +1338,7 @@ CamDevice::DataPumpThread()
 
 					// PHASE 3: Check if this packet succeeded
 					if (packetDescriptors[i].status != B_OK) {
-						fPacketErrorCount++;
+						atomic_add(&fPacketErrorCount, 1);
 						// Skip failed packets - data is invalid
 						continue;
 					}
@@ -1290,16 +1349,18 @@ CamDevice::DataPumpThread()
 					// Bounds check
 					if (actual_length > 0 && packetOffset + actual_length <= fBufferLen) {
 						fDataInput->Write(&fBuffer[packetOffset], actual_length);
-						fPacketSuccessCount++;
+						atomic_add(&fPacketSuccessCount, 1);
 					}
 				}
 
 				// Periodic statistics reporting (every 30 seconds)
 				bigtime_t now = system_time();
 				if (now - fLastStatsReport > 30000000) {  // 30 seconds
-					uint32 totalPackets = fPacketSuccessCount + fPacketErrorCount;
+					int32 success = atomic_get(&fPacketSuccessCount);
+					int32 errors = atomic_get(&fPacketErrorCount);
+					int32 totalPackets = success + errors;
 					float lossPercent = totalPackets > 0
-						? (100.0f * fPacketErrorCount / totalPackets)
+						? (100.0f * errors / totalPackets)
 						: 0.0f;
 
 					// Calculate throughput
@@ -1307,8 +1368,8 @@ CamDevice::DataPumpThread()
 					float elapsedSec = elapsed / 1000000.0f;
 					float packetsPerSec = elapsedSec > 0 ? totalPackets / elapsedSec : 0;
 
-					syslog(LOG_INFO, "USB Stats: success=%u errors=%u loss=%.1f%% rate=%.0f pkt/s\n",
-						fPacketSuccessCount, fPacketErrorCount, lossPercent, packetsPerSec);
+					syslog(LOG_INFO, "USB Stats: success=%d errors=%d loss=%.1f%% rate=%.0f pkt/s\n",
+						success, errors, lossPercent, packetsPerSec);
 
 					// Warn if packet loss is high (>5% is concerning for video)
 					if (lossPercent > 5.0f) {
@@ -1553,19 +1614,24 @@ CamDevice::ClassifyUSBError(ssize_t error)
 bigtime_t
 CamDevice::CalculateBackoffDelay(uint32 attempt, const usb_retry_config& config)
 {
-	// Exponential backoff: delay = initial * (multiplier ^ attempt)
-	// Capped at max_delay
-	bigtime_t delay = config.initial_delay;
-
-	for (uint32 i = 0; i < attempt; i++) {
-		delay = (bigtime_t)(delay * config.backoff_multiplier);
-		if (delay > config.max_delay) {
-			delay = config.max_delay;
-			break;
-		}
+	// FIX-B4: compute in double precision with pre-cast clamping so a huge
+	// max_retries / multiplier cannot push the float to INF and trigger a
+	// float->int64 cast UB. Invalid configs fail closed with max_delay.
+	double delay = (double)config.initial_delay;
+	if (!(config.initial_delay > 0 && config.max_delay > 0)
+		|| !(config.backoff_multiplier >= 1.0f
+			&& config.backoff_multiplier <= 10.0f)
+		|| config.initial_delay > config.max_delay) {
+		return config.max_delay > 0 ? config.max_delay : 0;
 	}
-
-	return delay;
+	for (uint32 i = 0; i < attempt; i++) {
+		delay *= (double)config.backoff_multiplier;
+		if (delay >= (double)config.max_delay)
+			return config.max_delay;
+	}
+	if (delay > (double)config.max_delay)
+		return config.max_delay;
+	return (bigtime_t)delay;
 }
 
 
@@ -1593,6 +1659,12 @@ CamDevice::ControlTransferWithRetry(uint8 requestType, uint8 request,
 		// Don't retry on disconnect or certain fatal errors
 		if (errorType == USB_ERROR_DISCONNECTED) {
 			syslog(LOG_ERR, "USB: Device disconnected, aborting transfer\n");
+			return result;
+		}
+		// FIX: programming / resource errors are not transient USB noise.
+		// Retrying them only burns the snooze delays, so fail fast.
+		if (result == B_BAD_VALUE || result == B_NO_MEMORY
+			|| result == B_NO_INIT || result == B_BAD_ADDRESS) {
 			return result;
 		}
 
@@ -1635,6 +1707,11 @@ CamDevice::BulkTransferWithRetry(const BUSBEndpoint* endpoint, void* data,
 		// Don't retry on disconnect
 		if (errorType == USB_ERROR_DISCONNECTED) {
 			syslog(LOG_ERR, "USB: Device disconnected, aborting bulk transfer\n");
+			return result;
+		}
+		// FIX: fail fast on programming / resource errors (see control path).
+		if (result == B_BAD_VALUE || result == B_NO_MEMORY
+			|| result == B_NO_INIT || result == B_BAD_ADDRESS) {
 			return result;
 		}
 
@@ -2146,8 +2223,9 @@ CamDevice::RequestResolutionChange(uint32 width, uint32 height)
 
 
 bool
-CamDevice::HasPendingReconfigRequest() const
+CamDevice::HasPendingReconfigRequest()
 {
+	BAutolock lock(fReconfigLock);
 	return fReconfigRequest.pending;
 }
 

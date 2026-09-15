@@ -243,7 +243,10 @@ class RingBufferIndex {
 public:
 	RingBufferIndex(uint32 capacity)
 		:
-		fCapacity(capacity),
+		// FIX-M8: capacity 0 would make every % fCapacity a SIGFPE.
+		// Normalise to 1 so the structure stays usable even when a
+		// descriptor-derived size collapses to zero.
+		fCapacity(capacity == 0 ? 1 : capacity),
 		fHead(0),
 		fTail(0)
 	{

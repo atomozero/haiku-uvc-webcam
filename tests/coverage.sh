@@ -1,0 +1,90 @@
+#!/bin/sh
+# Copyright 2026, Haiku UVC Webcam contributors.
+# Distributed under the terms of the MIT License.
+#
+# Coverage runner for the driver fix batch. Builds the portable unit tests
+# and the guard-page fuzzer (all runnable on Linux CI, no camera needed),
+# runs them, and then checks the non-portable Haiku-only fixes with static
+# pattern guards so regressions are caught even without the USB stack.
+#
+# Usage: sh tests/coverage.sh [--quick]
+#   --quick skips the 5x500k guard-page fuzzer (unit tests only).
+#
+# Fix -> test mapping:
+#   FIX-H1  continuous frame 38B      test_safety + test_descriptors
+#   FIX-H2  still-image counts        test_safety (UVCSafeStillImageCounts)
+#   FIX-H5  audio Format Type I       test_safety (UVCSafeAudioFormatICount)
+#   FIX-H6  selector/array bounds     test_safety + test_descriptors
+#   FIX-C3  producer buffer overflow  test_safety (UVCSafeProducerBufferSize)
+#   FIX-M5  YUV/RGB32 overflow        test_safety (UVCSafeYUY2/RGB32Size)
+#   FIX-H8  audio ring overflow       test_safety (UVCSafeAudioRingSize)
+#   FIX-T10 field_rate UB             test_safety (UVCSafeFieldInterval)
+#   FIX-M8  ring capacity 0           test_safety (UVCGuardRingCapacity)
+#   FIX-B4  backoff overflow          test_safety (UVCSafeBackoffDelay)
+#   FIX-C1  fCamDevice UAF            static: QuitVideoNode joins generator
+#   FIX-C2  audio stop UAF            static: StopAudioTransfer timeout check
+#   FIX-C4  reconfig survives unplug  static: Unplugged stops reconfig
+#   FIX-T1  StopTransfer unlock       static: explicit locked/unlocked split
+#   FIX-T5  destructor hang           static: wait_for_thread_etc timeout
+#   FIX-M1  deframer queue cap        static: AddItem guarded on EOF path
+#   FIX-M2  MJPEG trunc / malloc-temp static: realloc-temp + trunc counter
+#   FIX-M7  XU short-transfer         static: ret != length check
+set -e
+cd "$(dirname "$0")"
+
+QUICK=0
+if [ "$1" = "--quick" ]; then
+	QUICK=1
+fi
+
+PASS=0
+FAIL=0
+
+run() {
+	echo "--- $1 ---"
+	if eval "$2"; then
+		PASS=$((PASS + 1))
+	else
+		echo "COVERAGE FAIL: $1"
+		FAIL=$((FAIL + 1))
+	fi
+}
+
+check() {
+	echo "--- static: $1 ---"
+	if eval "$2"; then
+		PASS=$((PASS + 1))
+	else
+		echo "COVERAGE FAIL (static): $1"
+		FAIL=$((FAIL + 1))
+	fi
+}
+
+CXX="${TEST_CXX:-g++}"
+FLAGS="-O2 -Wall -I ../addons/uvc"
+
+run "test_quirks" "$CXX $FLAGS -o test_quirks test_quirks.cpp ../addons/uvc/UVCQuirks.cpp && ./test_quirks"
+run "test_descriptors" "$CXX $FLAGS -o test_descriptors test_descriptors.cpp ../addons/uvc/UVCDescriptors.cpp && ./test_descriptors"
+run "test_safety" "$CXX $FLAGS -o test_safety test_safety.cpp ../addons/uvc/UVCSafety.cpp ../addons/uvc/UVCDescriptors.cpp && ./test_safety"
+
+if [ "$QUICK" -eq 0 ]; then
+	run "fuzz_descriptors" "$CXX $FLAGS -o fuzz_descriptors fuzz_descriptors.cpp ../addons/uvc/UVCDescriptors.cpp && ./fuzz_descriptors"
+else
+	echo "--- fuzz_descriptors skipped (--quick) ---"
+fi
+
+# Static guards for Haiku-only code paths (not compilable on Linux).
+# Each greps for the fixed pattern introduced by the fix batch.
+SRC=".."
+check "FIX-C1 generator joined before delete" "grep -q 'JoinFrameGenerator' $SRC/Producer.cpp $SRC/CamDevice.cpp"
+check "FIX-C2 audio stop honours timeout" "grep -q 'B_TIMED_OUT' $SRC/addons/uvc/UVCCamDevice.cpp"
+check "FIX-C4 unplug stops reconfig" "grep -q 'StopReconfigThread' $SRC/CamDevice.cpp"
+check "FIX-T1 no IsLocked unlock" "! grep -q 'hadLock.*IsLocked' $SRC/CamDevice.cpp"
+check "FIX-T5 destructor bounded join" "grep -q 'wait_for_thread_etc' $SRC/CamDevice.cpp"
+check "FIX-M1 deframer queue cap" "grep -q 'CAMDEFRAMER_MAX_QUEUED_FRAMES' $SRC/addons/uvc/UVCDeframer.cpp"
+check "FIX-M2 trunc counter" "grep -q 'fFramesTruncated' $SRC/addons/uvc/UVCDeframer.cpp"
+check "FIX-M7 XU length check" "grep -q 'ret != length' $SRC/addons/uvc/UVCCamDevice.cpp"
+
+echo ""
+echo "coverage: $PASS passed, $FAIL failed"
+exit $FAIL

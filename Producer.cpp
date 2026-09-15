@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <malloc.h>
 #include <math.h>
+#include <new>
 #include <stdio.h>
 #include <string.h>
 #include <sys/uio.h>
@@ -830,8 +831,19 @@ VideoProducer::Connect(status_t error, const media_source &source,
 	SetEventLatency(latency + NODE_LATENCY);
 
 	uint32 *buffer, *p, f = 3;
-	p = buffer = (uint32 *)malloc(4 * fConnectedFormat.display.line_count *
-			fConnectedFormat.display.line_width);
+	// FIX-C3: 4*w*h in 64 bit with zero rejection. The 32-bit product
+	// below wrapped for hostile dimensions and heap-overflowed the y/x loop.
+	size_t previewSize = (size_t)fConnectedFormat.display.line_width
+		* (size_t)fConnectedFormat.display.line_count * 4;
+	if (previewSize == 0
+		|| fConnectedFormat.display.line_width == 0
+		|| fConnectedFormat.display.line_count == 0
+		|| fConnectedFormat.display.line_width > 8192
+		|| fConnectedFormat.display.line_count > 8192) {
+		PRINTF(0, ("Connect: invalid dimensions\n"));
+		return;
+	}
+	p = buffer = (uint32 *)malloc(previewSize);
 	if (!buffer) {
 		PRINTF(0, ("Connect: Out of memory\n"));
 		return;
@@ -844,11 +856,18 @@ VideoProducer::Connect(status_t error, const media_source &source,
 	free(buffer);
 
 	/* Create the buffer group */
-	size_t bufferSize = 4 * fConnectedFormat.display.line_width *
-			fConnectedFormat.display.line_count;
+	// FIX-C3: same overflow discipline as above; new(nothrow) so OOM
+	// cannot NULL-deref on InitCheck.
+	size_t bufferSize = (size_t)4 * (size_t)fConnectedFormat.display.line_width *
+			(size_t)fConnectedFormat.display.line_count;
+	if (bufferSize == 0 || bufferSize > 64u * 1024 * 1024) {
+		fprintf(stderr, "ERROR: Connect refuses insane buffer size %zu\n",
+			bufferSize);
+		return;
+	}
 	fprintf(stderr, "Creating buffer group: size=%zu count=8\n", bufferSize);
-	fBufferGroup = new BBufferGroup(bufferSize, 8);
-	if (fBufferGroup->InitCheck() < B_OK) {
+	fBufferGroup = new (std::nothrow) BBufferGroup(bufferSize, 8);
+	if (fBufferGroup == NULL || fBufferGroup->InitCheck() < B_OK) {
 	fprintf(stderr, "ERROR: BufferGroup InitCheck failed: %s\n",
 					strerror(fBufferGroup->InitCheck()));
 		delete fBufferGroup;
@@ -1102,23 +1121,42 @@ VideoProducer::SetParameterValue(
 					 * We need new buffers sized for the new resolution.
 					 */
 					if (fConnected && fBufferGroup != NULL) {
-						size_t newBufferSize = 4 * newWidth * newHeight;
-						syslog(LOG_INFO, "Producer: Recreating buffer group for new size %zu bytes\n",
-							newBufferSize);
-
-						/* Delete old buffer group */
-						delete fBufferGroup;
-						fBufferGroup = NULL;
-
-						/* Create new buffer group with proper size */
-						fBufferGroup = new BBufferGroup(newBufferSize, 8);
-						if (fBufferGroup->InitCheck() < B_OK) {
-							syslog(LOG_ERR, "Producer: Failed to recreate buffer group: %s\n",
-								strerror(fBufferGroup->InitCheck()));
-							delete fBufferGroup;
-							fBufferGroup = NULL;
+						// FIX: same 4*w*h overflow discipline as Connect().
+						// newWidth/Height come from the negotiated format and
+						// must be bounded before the multiply.
+						if (newWidth == 0 || newHeight == 0
+							|| newWidth > 8192 || newHeight > 8192) {
+							syslog(LOG_ERR, "Producer: refusing insane "
+								"resolution %ux%u\n", newWidth, newHeight);
 						} else {
-							syslog(LOG_INFO, "Producer: Buffer group recreated successfully\n");
+							size_t newBufferSize = (size_t)4 * (size_t)newWidth
+								* (size_t)newHeight;
+							syslog(LOG_INFO, "Producer: Recreating buffer group for new size %zu bytes\n",
+								newBufferSize);
+							if (newBufferSize == 0
+								|| newBufferSize > 64u * 1024 * 1024) {
+								syslog(LOG_ERR, "Producer: refusing insane "
+									"buffer size %zu\n", newBufferSize);
+							} else {
+								/* Delete old buffer group */
+								delete fBufferGroup;
+								fBufferGroup = NULL;
+
+								/* Create new buffer group with proper size */
+								fBufferGroup = new (std::nothrow) BBufferGroup(
+									newBufferSize, 8);
+								if (fBufferGroup == NULL
+									|| fBufferGroup->InitCheck() < B_OK) {
+									syslog(LOG_ERR, "Producer: Failed to recreate buffer group: %s\n",
+										fBufferGroup != NULL
+											? strerror(fBufferGroup->InitCheck())
+											: "out of memory");
+									delete fBufferGroup;
+									fBufferGroup = NULL;
+								} else {
+									syslog(LOG_INFO, "Producer: Buffer group recreated successfully\n");
+								}
+							}
 						}
 					}
 				}
@@ -1159,6 +1197,14 @@ VideoProducer::HandleStart(bigtime_t performance_time)
 		return;
 	}
 
+	// FIX-T10: refuse to start on a stalled device instead of spinning a
+	// generator that fast-fails FillFrameBuffer forever.
+	if (fCamDevice->IsStalled()) {
+		syslog(LOG_ERR, "Producer: HandleStart - device stalled, "
+			"reconnect the camera\n");
+		return;
+	}
+
 	fFrame = 0;
 	fFrameBase = 0;
 	// Store the performance time when we start - this is used as base for buffer timestamps
@@ -1169,6 +1215,7 @@ VideoProducer::HandleStart(bigtime_t performance_time)
 	fFrameSync = create_sem(0, "frame synchronization");
 	if (fFrameSync < B_OK) {
 		syslog(LOG_ERR, "Producer: HandleStart - create_sem failed: %d\n", fFrameSync);
+		fFrameSync = -1;	// FIX: keep the stale-id guard exact on error path
 		return;
 	}
 	syslog(LOG_INFO, "Producer: HandleStart - sem created: %d\n", fFrameSync);
@@ -1183,6 +1230,8 @@ VideoProducer::HandleStart(bigtime_t performance_time)
 		syslog(LOG_ERR, "Producer: HandleStart - spawn_thread failed: %d\n", fThread);
 		fRunning = false;
 		delete_sem(fFrameSync);
+		fFrameSync = -1;	// FIX: do not leave a deleted id for the guards
+		fThread = -1;
 		return;
 	}
 	syslog(LOG_INFO, "Producer: HandleStart - thread spawned: %d\n", fThread);
@@ -1191,14 +1240,26 @@ VideoProducer::HandleStart(bigtime_t performance_time)
 		syslog(LOG_ERR, "Producer: HandleStart - resume_thread failed\n");
 		fRunning = false;
 		kill_thread(fThread);
+		fThread = -1;
 		delete_sem(fFrameSync);
+		fFrameSync = -1;
 		return;
 	}
 	syslog(LOG_INFO, "Producer: HandleStart - thread resumed\n");
 
 	{
 		BAutolock lock(fCamDevice->Locker());
-		fCamDevice->StartTransfer();
+		// FIX-T10: honour the stalled refusal instead of leaving fRunning
+		// true on a dead endpoint (busy-loop of fast-failed buffers).
+		if (fCamDevice->StartTransfer() < B_OK) {
+			syslog(LOG_ERR, "Producer: HandleStart - StartTransfer refused\n");
+			fRunning = false;
+			kill_thread(fThread);
+			fThread = -1;
+			delete_sem(fFrameSync);
+			fFrameSync = -1;
+			return;
+		}
 	}
 	syslog(LOG_INFO, "Producer: HandleStart COMPLETE! fRunning=true\n");
 }
@@ -1241,10 +1302,14 @@ VideoProducer::HandleStop(void)
 	} else {
 		syslog(LOG_INFO, "Producer: HandleStop - thread exited cleanly\n");
 	}
+	// FIX-T8: the handle is no longer valid after the wait, whether the
+	// thread exited or was abandoned. Reset it so a later HandleStart
+	// cannot spawn a second generator over the orphan.
+	fThread = -1;
 
 	if (fCamDevice) {
 		BAutolock lock(fCamDevice->Locker());
-		fCamDevice->StopTransfer();
+		fCamDevice->StopTransferLocked();
 	}
 
 	syslog(LOG_INFO, "Producer: HandleStop COMPLETE\n");
@@ -1343,9 +1408,16 @@ VideoProducer::FrameGenerator()
 			break;
 		}
 
-		bigtime_t frameDuration = (bigtime_t)(1000000 / fConnectedFormat.field_rate);
-		if (frameDuration <= 0)
-			frameDuration = 33333;	// ~30 fps fallback if field_rate is 0/garbage
+		bigtime_t frameDuration = 33333;	// ~30 fps default
+		// FIX-T10: field_rate 0/NaN/INF previously cast INF to int64 (UB)
+		// before the <= 0 fallback could run. Validate first.
+		if (fConnectedFormat.field_rate > 1.0f
+			&& fConnectedFormat.field_rate < 1000.0f) {
+			frameDuration = (bigtime_t)(1000000.0f
+				/ fConnectedFormat.field_rate);
+			if (frameDuration < 1000 || frameDuration > 1000000)
+				frameDuration = 33333;
+		}
 
 		// Advance the pacing deadline by exactly one frame instead of
 		// "now + frameDuration". The latter resets the schedule every iteration,
@@ -1386,10 +1458,20 @@ VideoProducer::FrameGenerator()
 			continue;
 		}
 
-		/* Fetch a buffer from the buffer group */
-		BBuffer *buffer = fBufferGroup->RequestBuffer(
-						4 * fConnectedFormat.display.line_width *
-						fConnectedFormat.display.line_count, 0LL);
+		/* Fetch a buffer from the buffer group. FIX: compute the frame size
+		 * once in 64 bit with bounds so a hostile negotiated format cannot
+		 * wrap RequestBuffer/size_used and overflow the buffer below. */
+		size_t frameSize = 0;
+		{
+			uint32 w = fConnectedFormat.display.line_width;
+			uint32 h = fConnectedFormat.display.line_count;
+			if (w == 0 || h == 0 || w > 8192 || h > 8192)
+				continue;
+			frameSize = (size_t)4 * (size_t)w * (size_t)h;
+			if (frameSize == 0 || frameSize > 64u * 1024 * 1024)
+				continue;
+		}
+		BBuffer *buffer = fBufferGroup->RequestBuffer(frameSize, 0LL);
 		if (!buffer) {
 			if (frameLog < 10) {
 				syslog(LOG_WARNING, "Producer: Frame %u: RequestBuffer failed\n", fFrame);
@@ -1402,8 +1484,7 @@ VideoProducer::FrameGenerator()
 		media_header *h = buffer->Header();
 		h->type = B_MEDIA_RAW_VIDEO;
 		h->time_source = TimeSource()->ID();
-		h->size_used = 4 * fConnectedFormat.display.line_width *
-						fConnectedFormat.display.line_count;
+		h->size_used = frameSize;
 		/* For a buffer originating from a device, you might want to calculate
 		 * this based on the PerformanceTimeFor the time your buffer arrived at
 		 * the hardware (plus any applicable adjustments). */
@@ -1520,4 +1601,18 @@ int32
 VideoProducer::_frame_generator_(void *data)
 {
 	return ((VideoProducer *)data)->FrameGenerator();
+}
+
+
+status_t
+VideoProducer::JoinFrameGenerator(bigtime_t timeout)
+{
+	if (fThread < B_OK)
+		return B_OK;
+	status_t threadStatus;
+	status_t err = wait_for_thread_etc(fThread, B_RELATIVE_TIMEOUT,
+		timeout, &threadStatus);
+	if (err == B_OK)
+		fThread = -1;
+	return err;
 }

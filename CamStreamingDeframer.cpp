@@ -58,6 +58,15 @@ CamStreamingDeframer::Write(const void *buffer, size_t size)
 	fMinFrameSize = fDevice->MinRawFrameSize();
 	fMaxFrameSize = fDevice->MaxRawFrameSize();
 
+	// FIX: cap the residual accumulator like the buffering deframer so a
+	// garbage stream cannot OOM the addon.
+	static const size_t kMaxInputBytes = 8u * 1024 * 1024;
+	if (fInputBuff.BufferLength() > kMaxInputBytes) {
+		fInputBuff.Seek(0LL, SEEK_SET);
+		fInputBuff.SetSize(0);
+		fState = ST_SYNC;
+	}
+
 	if (fInputBuff.Position()) {
 		// residual data ? append to it
 		fInputBuff.Write(buffer, size);
@@ -92,7 +101,17 @@ CamStreamingDeframer::Write(const void *buffer, size_t size)
 		if (j >= 0) {
 			PRINT((CH ": SOF[%d] at offset %d" CT, which, i));
 			//PRINT((CH ": SOF: ... %02x %02x %02x %02x %02x %02x" CT, buf[i+6], buf[i+7], buf[i+8], buf[i+9], buf[i+10], buf[i+11]));
-			int start = i + fSkipSOFTags;
+			// FIX: fSkipSOFTags comes from tag registration; a misconfigured
+			// skip past the residual bytes made bufsize negative below and
+			// turned the later Write(buf, end) into a huge size_t.
+			int start = i + (int)fSkipSOFTags;
+			if (start >= bufsize) {
+				fInputBuff.Seek(0LL, SEEK_SET);
+				fInputBuff.SetSize(0);
+				if (bufsize > 0)
+					fInputBuff.Write(buf, bufsize);
+				return size;
+			}
 			buf += start;
 			bufsize -= start;
 			end = bufsize;
@@ -182,6 +201,11 @@ CamStreamingDeframer::Write(const void *buffer, size_t size)
 			fCurrentFrame->Seek(0LL, SEEK_SET);
 			if (discard) {
 				delete fCurrentFrame;
+			} else if (fFrames.CountItems() >= MAXFRAMEBUF) {
+				// FIX: the detach path previously ignored the queue cap
+				// checked at alloc time; drop here instead of growing
+				// without bound when the consumer stalls mid-frame.
+				RecycleFrame(fCurrentFrame);
 			} else {
 				fFrames.AddItem(fCurrentFrame);
 				release_sem(fFrameSem);
@@ -210,4 +234,16 @@ CamStreamingDeframer::Write(const void *buffer, size_t size)
 		fInputBuff.Write(m.Buffer(), bufsize - end);
 	fInputBuff.SetSize(bufsize - end);
 	return size;
+}
+
+
+status_t
+CamStreamingDeframer::Flush()
+{
+	// FIX: see CamBufferingDeframer::Flush.
+	status_t err = CamDeframer::Flush();
+	fInputBuff.Seek(0LL, SEEK_SET);
+	fInputBuff.SetSize(0);
+	fState = ST_SYNC;
+	return err;
 }

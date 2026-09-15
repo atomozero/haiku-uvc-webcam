@@ -14,6 +14,7 @@ virtual 	~CamBufferingDeframer();
 					// BPositionIO interface
 					// write from usb transfers
 virtual ssize_t		Write(const void *buffer, size_t size);
+virtual status_t	Flush();
 size_t				DiscardFromInput(size_t size);
 
 private:

@@ -739,7 +739,9 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 				meta->mjpeg_count = mjpegCount;
 				meta->uncompressed_count = uncompCount;
 				meta->frame_based_count = frameBasedCount;
-				fVSStreams.AddItem(meta);
+				// FIX: AddItem can fail on OOM; do not leak meta.
+				if (!fVSStreams.AddItem(meta))
+					delete meta;
 			}
 
 			syslog(LOG_INFO, "UVCCamDevice: VS scan cfg=%u intf=%u "
@@ -964,7 +966,10 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 
 			fMJPEGFormatIndex = 2;  // Actual camera MJPEG format index
 			for (size_t i = 0; i < sizeof(mjpegFrames)/sizeof(mjpegFrames[0]); i++) {
-				usb_video_frame_descriptor* desc = new usb_video_frame_descriptor;
+				usb_video_frame_descriptor* desc
+					= new (std::nothrow) usb_video_frame_descriptor;
+				if (desc == NULL)
+					continue;
 				memset(desc, 0, sizeof(*desc));
 				desc->frame_index = i + 1;
 				desc->capabilities = 0;
@@ -976,8 +981,13 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 				desc->default_frame_interval = mjpegFrames[i].default_interval;
 				desc->frame_interval_type = 1;  // Discrete
 				desc->discrete_frame_intervals[0] = mjpegFrames[i].min_interval;
-				fMJPEGFrames.AddItem(desc);
-				syslog(LOG_INFO, "UVCCamDevice: Added MJPEG %ux%u\n", desc->width, desc->height);
+				// FIX: AddItem fails on OOM; do not leak desc.
+				if (!fMJPEGFrames.AddItem(desc))
+					delete desc;
+				else {
+					syslog(LOG_INFO, "UVCCamDevice: Added MJPEG %ux%u\n",
+						desc->width, desc->height);
+				}
 			}
 
 			// YUY2/Uncompressed frames - ORDER MUST MATCH USB DESCRIPTOR ORDER!
@@ -994,7 +1004,10 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 
 			fUncompressedFormatIndex = 1;  // Actual camera YUY2 format index
 			for (size_t i = 0; i < sizeof(yuy2Frames)/sizeof(yuy2Frames[0]); i++) {
-				usb_video_frame_descriptor* desc = new usb_video_frame_descriptor;
+				usb_video_frame_descriptor* desc
+					= new (std::nothrow) usb_video_frame_descriptor;
+				if (desc == NULL)
+					continue;
 				memset(desc, 0, sizeof(*desc));
 				desc->frame_index = i + 1;
 				desc->capabilities = 0;
@@ -1006,8 +1019,13 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 				desc->default_frame_interval = yuy2Frames[i].default_interval;
 				desc->frame_interval_type = 1;
 				desc->discrete_frame_intervals[0] = yuy2Frames[i].min_interval;
-				fUncompressedFrames.AddItem(desc);
-				syslog(LOG_INFO, "UVCCamDevice: Added YUY2 %ux%u\n", desc->width, desc->height);
+				// FIX: AddItem fails on OOM; do not leak desc.
+				if (!fUncompressedFrames.AddItem(desc))
+					delete desc;
+				else {
+					syslog(LOG_INFO, "UVCCamDevice: Added YUY2 %ux%u\n",
+						desc->width, desc->height);
+				}
 			}
 
 			syslog(LOG_INFO, "UVCCamDevice: Hardcoded %d MJPEG + %d YUY2 frames\n",
@@ -1038,7 +1056,10 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 
 			fMJPEGFormatIndex = 1;  // MJPEG format index from descriptor
 			for (size_t i = 0; i < sizeof(mjpegFrames)/sizeof(mjpegFrames[0]); i++) {
-				usb_video_frame_descriptor* desc = new usb_video_frame_descriptor;
+				usb_video_frame_descriptor* desc
+					= new (std::nothrow) usb_video_frame_descriptor;
+				if (desc == NULL)
+					continue;
 				memset(desc, 0, sizeof(*desc));
 				desc->frame_index = i + 1;
 				desc->capabilities = 0;
@@ -1068,7 +1089,10 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 
 			fUncompressedFormatIndex = 2;  // YUY2 format index from descriptor
 			for (size_t i = 0; i < sizeof(yuy2Frames)/sizeof(yuy2Frames[0]); i++) {
-				usb_video_frame_descriptor* desc = new usb_video_frame_descriptor;
+				usb_video_frame_descriptor* desc
+					= new (std::nothrow) usb_video_frame_descriptor;
+				if (desc == NULL)
+					continue;
 				memset(desc, 0, sizeof(*desc));
 				desc->frame_index = i + 1;
 				desc->capabilities = 0;
@@ -1080,8 +1104,13 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 				desc->default_frame_interval = yuy2Frames[i].default_interval;
 				desc->frame_interval_type = 1;
 				desc->discrete_frame_intervals[0] = yuy2Frames[i].min_interval;
-				fUncompressedFrames.AddItem(desc);
-				syslog(LOG_INFO, "UVCCamDevice: Added YUY2 %ux%u\n", desc->width, desc->height);
+				// FIX: AddItem fails on OOM; do not leak desc.
+				if (!fUncompressedFrames.AddItem(desc))
+					delete desc;
+				else {
+					syslog(LOG_INFO, "UVCCamDevice: Added YUY2 %ux%u\n",
+						desc->width, desc->height);
+				}
 			}
 
 			syslog(LOG_INFO, "UVCCamDevice: Hardcoded %d MJPEG + %d YUY2 frames for Microdia 0x6720\n",
@@ -1528,19 +1557,32 @@ UVCCamDevice::_ParseVideoStreaming(const usbvc_class_descriptor* _descriptor,
 				// the descriptor can only hold kIntervalsInCopy intervals.
 				// Clamp the stored count so every downstream
 				// `i < frame_interval_type` loop over this copy stays in bounds.
+				// FIX-H1: copy only bLength bytes (zero-padded) instead of
+				// sizeof(*descriptor) so a short-but-valid descriptor (e.g.
+				// 30B, 1 interval) cannot over-read the kit blob.
 				const uint8 kIntervalsInCopy = (uint8)(
 					sizeof(usb_video_frame_descriptor::continuous)
 						/ sizeof(uint32));
-				usb_video_frame_descriptor* copy =
-					new usb_video_frame_descriptor(*descriptor);
+				usb_video_frame_descriptor* copy
+					= new (std::nothrow) usb_video_frame_descriptor;
+				if (copy == NULL)
+					break;
+				memset(copy, 0, sizeof(*copy));
+				size_t copyLen = descriptor->length;
+				if (copyLen > sizeof(*copy))
+					copyLen = sizeof(*copy);
+				memcpy(copy, descriptor, copyLen);
 				if (copy->frame_interval_type > kIntervalsInCopy)
 					copy->frame_interval_type = kIntervalsInCopy;
 
+				bool added = false;
 				if (_descriptor->descriptorSubtype
 						== USB_VIDEO_VS_FRAME_UNCOMPRESSED)
-					fUncompressedFrames.AddItem(copy);
+					added = fUncompressedFrames.AddItem(copy);
 				else
-					fMJPEGFrames.AddItem(copy);
+					added = fMJPEGFrames.AddItem(copy);
+				if (!added)
+					delete copy;
 			}
 			printf("\tbFrameIdx=%d,stillsupported=%s,"
 				"fixedframerate=%s\n", descriptor->frame_index,
@@ -1646,7 +1688,7 @@ UVCCamDevice::_ParseVideoStreaming(const usbvc_class_descriptor* _descriptor,
 		{
 			const usb_video_still_image_frame_descriptor* descriptor
 				= (const usb_video_still_image_frame_descriptor*)_descriptor;
-			_ParseStillImageFrame(descriptor);
+			_ParseStillImageFrame(descriptor, len);
 			break;
 		}
 		case USB_VIDEO_VS_FORMAT_MJPEG:
@@ -1753,7 +1795,9 @@ UVCCamDevice::_ParseVideoStreaming(const usbvc_class_descriptor* _descriptor,
 				entry->default_frame_interval
 					= descriptor->default_frame_interval;
 				entry->bytes_per_line = descriptor->bytes_per_line;
-				fFrameBasedFrames.AddItem(entry);
+				// FIX: AddItem fails on OOM; do not leak entry.
+				if (!fFrameBasedFrames.AddItem(entry))
+					delete entry;
 			}
 			break;
 		}
@@ -1798,6 +1842,14 @@ UVCCamDevice::_ParseVideoControl(const usbvc_class_descriptor* _descriptor,
 					fHeaderDescriptor->version & 0xff);
 				break;
 			}
+			// FIX-H3: len is the device-controlled bLength. A truncated
+			// header (or numInterfaces beyond len) over-read the heap in
+			// the loop below. Reject before malloc/memcpy.
+			if (len < 12)
+				break;
+			uint8 numIf = _descriptor[11];
+			if ((size_t)numIf > len - 12)
+				break;
 			fHeaderDescriptor = (usbvc_interface_header_descriptor*)malloc(len);
 			if (fHeaderDescriptor == NULL)
 				break;
@@ -1814,6 +1866,10 @@ UVCCamDevice::_ParseVideoControl(const usbvc_class_descriptor* _descriptor,
 		}
 		case USB_VIDEO_VC_INPUT_TERMINAL:
 		{
+			// FIX-H4: an 8-byte non-camera terminal with a spoofed
+			// terminalType read the 15-byte camera layout out of bounds.
+			if (len < 8)
+				break;
 			const usbvc_input_terminal_descriptor* descriptor
 				= (const usbvc_input_terminal_descriptor*)_descriptor;
 			printf("VC_INPUT_TERMINAL:\tid=%d,type=%04x,associated terminal="
@@ -1822,8 +1878,13 @@ UVCCamDevice::_ParseVideoControl(const usbvc_class_descriptor* _descriptor,
 			printf("\tDesc: %s\n",
 				fDevice->DecodeStringDescriptor(descriptor->terminal));
 			if (descriptor->terminalType == USB_VIDEO_CAMERA_IN) {
+				// FIX-H4: the camera layout needs 15 bytes + controls.
+				if (len < 15)
+					break;
 				const usb_video_camera_terminal_descriptor* desc
 					= (const usb_video_camera_terminal_descriptor*)descriptor;
+				if ((size_t)desc->control_size > len - 15)
+					break;
 				printf("\tObjectiveFocalLength Min/Max %d/%d\n",
 					desc->objective_focal_length_min,
 					desc->objective_focal_length_max);
@@ -1873,6 +1934,9 @@ UVCCamDevice::_ParseVideoControl(const usbvc_class_descriptor* _descriptor,
 		}
 		case USB_VIDEO_VC_OUTPUT_TERMINAL:
 		{
+			// FIX-H8: truncated 2-byte blob over-read terminal fields.
+			if (len < 9)
+				break;
 			const usb_video_output_terminal_descriptor* descriptor
 				= (const usb_video_output_terminal_descriptor*)_descriptor;
 			printf("VC_OUTPUT_TERMINAL:\tid=%d,type=%04x,associated terminal="
@@ -1885,8 +1949,14 @@ UVCCamDevice::_ParseVideoControl(const usbvc_class_descriptor* _descriptor,
 		}
 		case USB_VIDEO_VC_SELECTOR_UNIT:
 		{
+			// FIX-H6: num_input_pins is device-controlled; bound the
+			// source_id walk and the Selector() index to bLength.
+			if (len < 6)
+				break;
 			const usb_video_selector_unit_descriptor* descriptor
 				= (const usb_video_selector_unit_descriptor*)_descriptor;
+			if ((size_t)descriptor->num_input_pins > len - 6)
+				break;
 			printf("VC_SELECTOR_UNIT:\tid=%d,#pins=%d\n",
 				descriptor->unit_id, descriptor->num_input_pins);
 			printf("\t");
@@ -1899,8 +1969,17 @@ UVCCamDevice::_ParseVideoControl(const usbvc_class_descriptor* _descriptor,
 		}
 		case USB_VIDEO_VC_PROCESSING_UNIT:
 		{
+			// FIX-H7: controls[] and Processing()/VideoStandards() index
+			// past bLength when control_size lies. Require the full
+			// 8 + control_size + 2 tail before touching any of them.
+			if (len < 8)
+				break;
 			const usb_video_processing_unit_descriptor* descriptor
 				= (const usb_video_processing_unit_descriptor*)_descriptor;
+			if ((size_t)descriptor->control_size > len - 8
+				|| len < (size_t)8 + descriptor->control_size + 2) {
+				break;
+			}
 			fControlRequestIndex = fControlIndex + (descriptor->unit_id << 8);
 			fProcessingUnitID = descriptor->unit_id;
 			{
@@ -2000,6 +2079,9 @@ UVCCamDevice::_ParseAudioControl(const usb_audio_class_descriptor* _descriptor,
 
 		case USB_AUDIO_AC_INPUT_TERMINAL:
 		{
+			// FIX-H8: truncated blob over-read terminal fields.
+			if (len < 12)
+				break;
 			const usb_audio_input_terminal_descriptor* descriptor
 				= (const usb_audio_input_terminal_descriptor*)_descriptor;
 			fAudioTerminalID = descriptor->terminalID;
@@ -2012,6 +2094,9 @@ UVCCamDevice::_ParseAudioControl(const usb_audio_class_descriptor* _descriptor,
 
 		case USB_AUDIO_AC_FEATURE_UNIT:
 		{
+			// FIX-H8: unitID sits at offset 5; reject short blobs.
+			if (len < 7)
+				break;
 			const usb_audio_feature_unit_descriptor* descriptor
 				= (const usb_audio_feature_unit_descriptor*)_descriptor;
 			fAudioFeatureUnitID = descriptor->unitID;
@@ -2034,8 +2119,20 @@ UVCCamDevice::_ParseAudioStreaming(const usb_audio_class_descriptor* _descriptor
 
 		case USB_AUDIO_AS_FORMAT_TYPE:
 		{
+			// FIX-H5: sampleFreqType is device-controlled (up to 255
+			// frequencies = 765 bytes). Bound every 3-byte read to the
+			// readable bytes instead of walking off the scratch buffer.
+			if (len < 8)
+				break;
 			const usb_audio_format_type_i_descriptor* descriptor
 				= (const usb_audio_format_type_i_descriptor*)_descriptor;
+			if (descriptor->sampleFreqType == 0) {
+				if (len < 14)
+					break;
+			} else if (len < (size_t)8
+				+ (size_t)descriptor->sampleFreqType * 3) {
+				break;
+			}
 			if (descriptor->formatType == USB_AUDIO_FORMAT_TYPE_I) {
 				fAudioChannels = descriptor->numChannels;
 				fAudioSubFrameSize = descriptor->subFrameSize;
@@ -3141,6 +3238,10 @@ UVCCamDevice::_SelectBestAlternate()
 		return B_ERROR;
 
 	const BUSBConfiguration* config = fDevice->ActiveConfiguration();
+	// FIX: ActiveConfiguration() can be NULL after a failed SetConfiguration
+	// or mid-teardown; dereferencing it crashed Init on exotic devices.
+	if (config == NULL)
+		return B_NO_INIT;
 	const BUSBInterface* streaming = config->InterfaceAt(fStreamingIndex);
 	if (streaming == NULL)
 		return B_BAD_INDEX;
@@ -3441,10 +3542,14 @@ UVCCamDevice::_SelectBestAlternate()
 	uint32 requiredBufferSize = fIsoMaxPacketSize * kInitialPackets;
 
 	if (requiredBufferSize != fBufferLen || fBuffer == NULL) {
-		free(fBuffer);
-		fBuffer = (uint8*)malloc(requiredBufferSize);
-		if (fBuffer == NULL)
+		// FIX: allocate on a temporary so OOM keeps the old buffer valid
+		// instead of leaving fBuffer NULL with a stale fBufferLen for the
+		// pump to dereference.
+		uint8* newBuffer = (uint8*)malloc(requiredBufferSize);
+		if (newBuffer == NULL)
 			return B_NO_MEMORY;
+		free(fBuffer);
+		fBuffer = newBuffer;
 		fBufferLen = requiredBufferSize;
 	}
 
@@ -3621,10 +3726,14 @@ UVCCamDevice::StartAudioTransfer()
 	// Allocate ring buffer sized for ~2 seconds of audio.
 	// Scale with actual sample rate and channel count to avoid
 	// underruns at high rates or wasted memory at low rates.
-	fAudioRingSize = fAudioSampleRate * fAudioChannels * 2 * 2;
-	if (fAudioRingSize < 16384)
-		fAudioRingSize = 16384;
-	if (fAudioRingSize > 262144)
+	// FIX-H8: 32-bit product wrapped for hostile descriptor rates; compute
+	// in 64 bit and clamp so a wrap cannot under-allocate the ring.
+	uint64 ringSize64 = (uint64)fAudioSampleRate * (uint64)fAudioChannels
+		* 2 * 2;
+	fAudioRingSize = 16384;
+	if (ringSize64 >= 16384 && ringSize64 <= 262144)
+		fAudioRingSize = (size_t)ringSize64;
+	else if (ringSize64 > 262144)
 		fAudioRingSize = 262144;
 	fAudioRingBuffer = (uint8*)malloc(fAudioRingSize);
 	if (!fAudioRingBuffer) {
@@ -3691,11 +3800,23 @@ UVCCamDevice::StopAudioTransfer()
 	if (fAudioRingSem >= 0)
 		release_sem(fAudioRingSem);
 
-	// Wait for thread to exit
+	// Wait for thread to exit. FIX-C2: honour the timeout. A pump wedged
+	// in an uninterruptible kernel IsochronousTransfer still touches
+	// fAudioBuffer/fAudioRingBuffer/fAudioRingSem after this point, so on
+	// B_TIMED_OUT abandon the thread (leak sem + buffers like the video
+	// path) and stall the device instead of freeing its working set.
 	if (fAudioPumpThread >= 0) {
 		status_t threadStatus;
-		wait_for_thread_etc(fAudioPumpThread, B_RELATIVE_TIMEOUT, 5000000, &threadStatus);
+		status_t waitErr = wait_for_thread_etc(fAudioPumpThread,
+			B_RELATIVE_TIMEOUT, 5000000, &threadStatus);
 		fAudioPumpThread = -1;
+		if (waitErr == B_TIMED_OUT) {
+			syslog(LOG_ERR, "UVCCamDevice::StopAudioTransfer: audio pump "
+				"wedged — abandoning thread and marking device stalled\n");
+			MarkStalled();
+			_SelectAudioIdleAlternate();
+			return B_TIMED_OUT;
+		}
 	}
 
 	// Now safe to delete the semaphore
@@ -3923,9 +4044,16 @@ UVCCamDevice::_SelectAudioAlternate()
 
 	// Allocate audio buffer for isochronous transfers
 	// Free previous buffer if re-entering after a restart
-	free(fAudioBuffer);
+	// FIX-H8: MaxPacketSize comes from the descriptor; 0 would malloc(0)
+	// and a huge value would overflow the 32-bit product.
 	const uint32 kAudioPackets = 16;
-	fAudioBufferLen = fAudioMaxPacketSize * kAudioPackets;
+	if (fAudioMaxPacketSize == 0)
+		return B_BAD_VALUE;
+	uint64 audioLen64 = (uint64)fAudioMaxPacketSize * kAudioPackets;
+	if (audioLen64 == 0 || audioLen64 > 4u * 1024 * 1024)
+		return B_BAD_VALUE;
+	free(fAudioBuffer);
+	fAudioBufferLen = (size_t)audioLen64;
 	fAudioBuffer = (uint8*)malloc(fAudioBufferLen);
 	if (fAudioBuffer == NULL) {
 		syslog(LOG_ERR, "UVCCamDevice: Failed to allocate %u bytes for "
@@ -5825,6 +5953,14 @@ UVCCamDevice::_ConvertNV12toRGB32(unsigned char* dst, const unsigned char* src,
 	if (!dst || !src || width <= 0 || height <= 0)
 		return;
 
+	// FIX: NV12 chroma is subsampled 2x2, so odd dimensions have no well
+	// defined layout and the col+1 read below would walk off the UV row.
+	// UVC devices always advertise even sizes; fail closed otherwise.
+	if ((width & 1) || (height & 1)) {
+		memset(dst, 0, (size_t)width * height * 4);
+		return;
+	}
+
 	// Ensure lookup tables are initialized
 	if (!gYuvRgbTables.initialized) {
 		gYuvRgbTables.Initialize();
@@ -5836,7 +5972,8 @@ UVCCamDevice::_ConvertNV12toRGB32(unsigned char* dst, const unsigned char* src,
 		syslog(LOG_WARNING, "NV12 conversion: srcSize %zu < expected %zu\n",
 			srcSize, expectedSize);
 		// Fill with black and return
-		memset(dst, 0, width * height * 4);
+		// FIX-M5: 32-bit product wrapped for hostile dimensions.
+		memset(dst, 0, (size_t)width * height * 4);
 		return;
 	}
 
@@ -5971,6 +6108,11 @@ UVCCamDevice::_ConvertNV21toRGB32(unsigned char* dst, const unsigned char* src,
 	// stores V before U (V0 U0 V1 U1 ...).
 	if (!dst || !src || width <= 0 || height <= 0)
 		return;
+	// FIX: see NV12 — odd dimensions have no defined 4:2:0 layout.
+	if ((width & 1) || (height & 1)) {
+		memset(dst, 0, (size_t)width * height * 4);
+		return;
+	}
 	if (!gYuvRgbTables.initialized)
 		gYuvRgbTables.Initialize();
 
@@ -6032,6 +6174,16 @@ UVCCamDevice::_ConvertPlanar420toRGB32(unsigned char* dst,
 {
 	// Shared planar 4:2:0 conversion. Caller computes plane pointers per
 	// format (I420 vs YV12 swap U and V); chroma planes are width/2 wide.
+	// FIX: odd dimensions under-allocate the chroma planes (ySize/4
+	// truncation) and make col/2 walk off; fail closed like NV12/NV21.
+	if (dst == NULL || yPlane == NULL || uPlane == NULL || vPlane == NULL
+		|| width <= 0 || height <= 0 || (width & 1) || (height & 1)) {
+		if (dst != NULL && width > 0 && height > 0
+			&& width <= 8192 && height <= 8192) {
+			memset(dst, 0, (size_t)width * height * 4);
+		}
+		return;
+	}
 	if (!gYuvRgbTables.initialized)
 		gYuvRgbTables.Initialize();
 
@@ -6316,6 +6468,11 @@ UVCCamDevice::SelectStream(int32 idx)
 		(int)idx, (unsigned)fStreamingIndex,
 		(unsigned)target->interface_index);
 
+	// FIX: keep the old stream alive until the new one proves parseable.
+	// The previous code reset the format lists and switched fStreamingIndex
+	// before the reparse, so a failure left empty lists + a new index.
+	uint32 oldStreamingIndex = fStreamingIndex;
+	int32 oldActiveIdx = fActiveStreamIdx;
 	_ResetStreamFormatState();
 	fStreamingIndex = target->interface_index;
 	fIsoIn = NULL;
@@ -6323,10 +6480,20 @@ UVCCamDevice::SelectStream(int32 idx)
 	fCurrentVideoAlternate = 0;
 
 	status_t err = _ReparseVSInterface(target->interface_index);
-	if (err != B_OK) {
-		syslog(LOG_ERR, "UVCCamDevice: SelectStream(%d): reparse failed: %s\n",
-			(int)idx, strerror(err));
-		return err;
+	if (err != B_OK
+		|| (fUncompressedFrames.CountItems() == 0
+			&& fMJPEGFrames.CountItems() == 0)) {
+		syslog(LOG_ERR, "UVCCamDevice: SelectStream(%d): reparse failed: %s — "
+			"restoring stream %d\n",
+			(int)idx, strerror(err), (int)oldActiveIdx);
+		_ResetStreamFormatState();
+		fStreamingIndex = oldStreamingIndex;
+		fIsoIn = NULL;
+		fIsoMaxPacketSize = 0;
+		fCurrentVideoAlternate = 0;
+		_ReparseVSInterface(oldStreamingIndex);
+		_BuildSortedResolutionList();
+		return err != B_OK ? err : B_ERROR;
 	}
 
 	fActiveStreamIdx = idx;
@@ -6376,7 +6543,8 @@ UVCCamDevice::_DecompressMJPEGtoRGB32(unsigned char* dst,
 {
 	fMjpegAttempts++;
 
-	if (!fJpegDecompressor || !dst || !src || srcSize == 0 || width <= 0 || height <= 0)
+	// FIX: a 1-byte frame reached jpegStart[1] out of bounds below.
+	if (!fJpegDecompressor || !dst || !src || srcSize < 2 || width <= 0 || height <= 0)
 		return;
 
 	// Find JPEG SOI marker (0xFF 0xD8) - UVC may have header before JPEG data
@@ -6559,7 +6727,11 @@ bool
 UVCCamDevice::_FindJpegMarker(const uint8* data, size_t size,
 	uint8 marker, size_t* position)
 {
-	for (size_t i = 0; i < size - 1; i++) {
+	// FIX: size == 0 made size - 1 wrap to SIZE_MAX and walk off the buffer.
+	// (Currently dead code — no callers — but safe for future reuse.)
+	if (data == NULL || size < 2)
+		return false;
+	for (size_t i = 0; i + 1 < size; i++) {
 		if (data[i] == 0xFF && data[i + 1] == marker) {
 			if (position)
 				*position = i;
@@ -6574,8 +6746,13 @@ void
 UVCCamDevice::_CacheValidFrame(const uint8* data, size_t size,
 	int32 width, int32 height)
 {
-	// Reallocate if size changed
-	if (fLastValidFrame == NULL || fLastValidFrameSize < size) {
+	// Reallocate if size changed. FIX: shrink when the stream drops to a
+	// much smaller resolution so a 1080p session does not pin megabytes
+	// after switching to QVGA. Cap the cache at 8MB either way.
+	if (size > 8u * 1024 * 1024)
+		return;
+	if (fLastValidFrame == NULL || fLastValidFrameSize < size
+		|| (fLastValidFrameSize > 1024 * 1024 && size < fLastValidFrameSize / 4)) {
 		delete[] fLastValidFrame;
 		fLastValidFrame = new(std::nothrow) uint8[size];
 		if (fLastValidFrame == NULL) {
@@ -6650,6 +6827,10 @@ UVCCamDevice::_ProbeControlRange(uint16 selector, camera_control_info* info)
 	if (info == NULL || fProcessingUnitID == 0) {
 		return B_BAD_VALUE;
 	}
+	// FIX: Unplugged() clears fDevice on another thread; five ControlTransfers
+	// below dereferenced it unchecked.
+	if (fDevice == NULL)
+		return B_NO_INIT;
 
 	ssize_t result;
 	int16 value;
@@ -7087,7 +7268,10 @@ UVCCamDevice::_ParseExtensionUnit(
 	}
 
 	// Create extension unit info structure
-	extension_unit_info* xu = new extension_unit_info;
+	// FIX: nothrow + AddItem check so OOM cannot NULL-deref or leak.
+	extension_unit_info* xu = new (std::nothrow) extension_unit_info;
+	if (xu == NULL)
+		return;
 	memset(xu, 0, sizeof(extension_unit_info));
 
 	// Copy basic info (all from the validated, bounds-checked view)
@@ -7116,7 +7300,10 @@ UVCCamDevice::_ParseExtensionUnit(
 	xu->capabilities = _GetXUCapabilities(xu->vendor);
 
 	// Store the extension unit
-	fExtensionUnits.AddItem(xu);
+	if (!fExtensionUnits.AddItem(xu)) {
+		delete xu;
+		return;
+	}
 	fHasExtensionUnits = true;
 
 	// Log the extension unit
@@ -7249,7 +7436,10 @@ UVCCamDevice::_XUSetCur(uint8 unitId, uint8 selector,
 		length,
 		(void*)data);
 
-	return (ret >= 0) ? B_OK : B_ERROR;
+	// FIX-M7: ControlTransfer returns bytes transferred. A short transfer
+	// (the C920 XU babble case) previously passed as success with a
+	// half-written control.
+	return (ret != length) ? B_IO_ERROR : B_OK;
 }
 
 
@@ -7268,7 +7458,7 @@ UVCCamDevice::_XUGetCur(uint8 unitId, uint8 selector,
 		length,
 		data);
 
-	return (ret >= 0) ? B_OK : B_ERROR;
+	return (ret != length) ? B_IO_ERROR : B_OK;
 }
 
 
@@ -7287,7 +7477,7 @@ UVCCamDevice::_XUGetMin(uint8 unitId, uint8 selector,
 		length,
 		data);
 
-	return (ret >= 0) ? B_OK : B_ERROR;
+	return (ret != length) ? B_IO_ERROR : B_OK;
 }
 
 
@@ -7306,7 +7496,7 @@ UVCCamDevice::_XUGetMax(uint8 unitId, uint8 selector,
 		length,
 		data);
 
-	return (ret >= 0) ? B_OK : B_ERROR;
+	return (ret != length) ? B_IO_ERROR : B_OK;
 }
 
 
@@ -7324,7 +7514,7 @@ UVCCamDevice::_XUGetInfo(uint8 unitId, uint8 selector, uint8* info)
 		1,
 		info);
 
-	return (ret >= 0) ? B_OK : B_ERROR;
+	return (ret != 1) ? B_IO_ERROR : B_OK;
 }
 
 
@@ -7350,6 +7540,10 @@ UVCCamDevice::_XUGetLen(uint8 unitId, uint8 selector, uint16* length)
 
 	if (ret < 0)
 		return B_ERROR;
+	// FIX-M7: a 1-byte short read previously passed as success and left
+	// lenData[1] stale from the zero-init (wrong length, then babble).
+	if (ret != 2)
+		return B_IO_ERROR;
 
 	*length = (uint16)lenData[0] | ((uint16)lenData[1] << 8);
 	return B_OK;
@@ -7371,6 +7565,8 @@ UVCCamDevice::_FindXU(extension_unit_vendor vendor)
 status_t
 UVCCamDevice::_SonixAsicRead(uint16 addr, uint8* value)
 {
+	if (value == NULL)
+		return B_BAD_VALUE;
 	extension_unit_info* xu = _FindXU(XU_VENDOR_SONIX);
 	if (xu == NULL)
 		return B_NOT_SUPPORTED;
@@ -7420,24 +7616,43 @@ UVCCamDevice::_SonixAsicWrite(uint16 addr, uint8 value)
 
 void
 UVCCamDevice::_ParseStillImageFrame(
-	const usb_video_still_image_frame_descriptor* descriptor)
+	const usb_video_still_image_frame_descriptor* descriptor, size_t len)
 {
+	// FIX-H2: num_image_size_patterns / compressions are device-controlled.
+	// Clamp both to what bLength (and the readable bytes) can hold instead
+	// of reading up to 16 patterns + compressions out of bounds.
+	if (len < 6 || descriptor->length < 6)
+		return;
+	size_t avail = len < descriptor->length ? len : descriptor->length;
 	// Store still image endpoint
 	fStillImageInfo.endpoint_address = descriptor->endpoint_address;
 
+	uint8 advertisedSizes = descriptor->num_image_size_patterns;
+	size_t maxSizes = (avail - 6) / 4;
+	if ((size_t)advertisedSizes > maxSizes)
+		advertisedSizes = (uint8)maxSizes;
 	// Store still image sizes
-	fStillImageInfo.num_sizes = (descriptor->num_image_size_patterns < 16)
-		? descriptor->num_image_size_patterns : 16;
+	fStillImageInfo.num_sizes = (advertisedSizes < 16)
+		? advertisedSizes : 16;
 	for (uint8 i = 0; i < fStillImageInfo.num_sizes; i++) {
 		fStillImageInfo.sizes[i].width = descriptor->_pattern_size[i].width;
 		fStillImageInfo.sizes[i].height = descriptor->_pattern_size[i].height;
 	}
 
+	// Compression section starts after the size patterns actually present.
+	size_t compOff = (size_t)6 + (size_t)advertisedSizes * 4;
+	uint8 advertisedComps = 0;
+	if (compOff < avail)
+		advertisedComps = ((const uint8*)descriptor)[compOff];
+	size_t maxComps = (compOff + 1 <= avail) ? avail - compOff - 1 : 0;
+	if ((size_t)advertisedComps > maxComps)
+		advertisedComps = (uint8)maxComps;
 	// Store compression patterns
-	fStillImageInfo.num_compressions = (descriptor->NumCompressionPatterns() < 8)
-		? descriptor->NumCompressionPatterns() : 8;
+	fStillImageInfo.num_compressions = (advertisedComps < 8)
+		? advertisedComps : 8;
+	const uint8* rawBytes = (const uint8*)descriptor;
 	for (uint8 i = 0; i < fStillImageInfo.num_compressions; i++) {
-		fStillImageInfo.compressions[i] = descriptor->CompressionPatterns()[i];
+		fStillImageInfo.compressions[i] = rawBytes[compOff + 1 + i];
 	}
 
 	// Mark still capture as available

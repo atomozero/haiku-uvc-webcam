@@ -15,6 +15,8 @@
 #include <media/MediaNode.h>
 #include <support/Locker.h>
 
+#include <atomic>
+
 class CamDevice;
 
 
@@ -225,9 +227,10 @@ static	int32				_audio_generator_(void *data);
 		media_raw_audio_format	fConnectedFormat;
 
 		// State flags
-		bool				fRunning;
-		bool				fConnected;
-		bool				fEnabled;
+		// FIX: see Producer.h — atomic for the looper/generator race.
+		std::atomic<bool>	fRunning;
+		std::atomic<bool>	fConnected;
+		std::atomic<bool>	fEnabled;
 
 		// Audio parameters
 		enum {

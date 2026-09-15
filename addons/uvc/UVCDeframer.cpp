@@ -30,6 +30,7 @@ UVCDeframer::UVCDeframer(CamDevice* device)
 	fQueueOverflows(0),
 	fPacketsThisFrame(0),
 	fTotalBytesThisFrame(0),
+	fFramesTruncated(0),
 	fLastDiagReport(0)
 {
 	// Start with a small buffer; resized dynamically in SetExpectedFrameSize()
@@ -82,15 +83,18 @@ UVCDeframer::SetExpectedFrameSize(size_t size)
 	// Resize buffer to fit the frame with some headroom for MJPEG variability.
 	// For YUY2 (size > 0): exact frame size + 10% margin.
 	// For MJPEG (size == 0): keep current buffer (MJPEG frames are variable size).
+	// FIX-M2: allocate on a temporary so a failed malloc keeps the old
+	// buffer instead of leaving fFixedBuffer NULL with a stale size.
 	size_t needed = (size > 0) ? size + size / 10 : 256 * 1024;
 	if (needed > fFixedBufferSize) {
-		free(fFixedBuffer);
-		fFixedBufferSize = needed;
-		fFixedBuffer = (uint8*)malloc(fFixedBufferSize);
-		if (fFixedBuffer == NULL) {
+		uint8* newBuffer = (uint8*)malloc(needed);
+		if (newBuffer == NULL) {
 			syslog(LOG_ERR, "UVCDeframer: Failed to allocate %zu byte buffer!\n",
-				fFixedBufferSize);
-			fFixedBufferSize = 0;
+				needed);
+		} else {
+			free(fFixedBuffer);
+			fFixedBuffer = newBuffer;
+			fFixedBufferSize = needed;
 		}
 	}
 	fFixedBufferPos = 0;
@@ -298,6 +302,18 @@ UVCDeframer::Write(const void* buffer, size_t size)
 		if (fFixedBufferPos + bytesToWrite <= fFixedBufferSize) {
 			memcpy(fFixedBuffer + fFixedBufferPos, &buf[buf[0]], bytesToWrite);
 			fFixedBufferPos += bytesToWrite;
+		} else {
+			// FIX-M2: the 256KB MJPEG window can be smaller than a 1080p
+			// frame when no large YUY2 setup grew the buffer first. Count
+			// the truncation instead of dropping silently so the
+			// NO_EOI / decompression failures below are diagnosable.
+			fFramesTruncated++;
+			if (fFramesTruncated <= 5 || (fFramesTruncated % 100) == 0) {
+				syslog(LOG_WARNING, "UVCDeframer: Truncated %zu payload bytes "
+					"(buffer %zu, #%d) — MJPEG frame larger than window\n",
+					bytesToWrite, fFixedBufferSize,
+					(int)fFramesTruncated);
+			}
 		}
 	}
 
@@ -392,10 +408,29 @@ UVCDeframer::Write(const void* buffer, size_t size)
 		frameComplete = true;
 	}
 
-	// Complete frame - add to queue
+	// Complete frame - add to queue. FIX-M1: the EOF path previously grew
+	// fFrames without bound when the consumer stalled; apply the same
+	// CAMDEFRAMER_MAX_QUEUED_FRAMES drop-oldest discipline as the other
+	// two completion paths so a paused consumer cannot OOM the addon.
 	if (frameComplete) {
 		fFrameCount++;
 		fFramesCompleted++;
+
+		BAutolock queueLock(fLocker);
+		if (!queueLock.IsLocked())
+			return B_ERROR;
+
+		if (fFrames.CountItems() >= CAMDEFRAMER_MAX_QUEUED_FRAMES) {
+			CamFrame* stale = (CamFrame*)fFrames.RemoveItem((int32)0);
+			if (stale != NULL)
+				RecycleFrame(stale);
+			fQueueOverflows++;
+			if (fQueueOverflows <= 10 || (fQueueOverflows % 100) == 0) {
+				syslog(LOG_WARNING, "UVCDeframer: Queue full (%d) on EOF path, "
+					"dropped oldest (total drops=%d)\n",
+					CAMDEFRAMER_MAX_QUEUED_FRAMES, (int)fQueueOverflows);
+			}
+		}
 
 		// Read frame data from fixed buffer (used for both YUY2 and MJPEG)
 		const uint8* frameData = fFixedBuffer;
@@ -410,12 +445,14 @@ UVCDeframer::Write(const void* buffer, size_t size)
 					100.0f * frameSize / fExpectedFrameSize);
 		}
 
-		if (frameData != NULL && frameSize > 0)
+		if (frameData != NULL && frameSize > 0 && fCurrentFrame != NULL)
 			fCurrentFrame->Write(frameData, frameSize);
 
-		fFrames.AddItem(fCurrentFrame);
-		release_sem(fFrameSem);
-		fCurrentFrame = NULL;
+		if (fCurrentFrame != NULL) {
+			fFrames.AddItem(fCurrentFrame);
+			release_sem(fFrameSem);
+			fCurrentFrame = NULL;
+		}
 
 		// Reset for next frame
 		fInputBuffer.Seek(0, SEEK_SET);

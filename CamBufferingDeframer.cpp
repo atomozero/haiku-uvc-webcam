@@ -43,6 +43,13 @@ CamBufferingDeframer::Write(const void *buffer, size_t size)
 	fMinFrameSize = fDevice->MinRawFrameSize();
 	fMaxFrameSize = fDevice->MaxRawFrameSize();
 	IB.Write(buffer, size);
+	// FIX: cap the input accumulator so a garbage stream without SOF/EOF
+	// cannot grow the BMallocIO without bound and OOM the addon.
+	static const size_t kMaxInputBytes = 8u * 1024 * 1024;
+	if (IB.BufferLength() > kMaxInputBytes) {
+		DiscardFromInput(IB.BufferLength() / 2);
+		return size;
+	}
 	b = (uint8 *)IB.Buffer();
 	l = IB.BufferLength();
 
@@ -75,7 +82,7 @@ CamBufferingDeframer::Write(const void *buffer, size_t size)
 
 		for (e = s + fSkipSOFTags + fMinFrameSize;
 			 ((e <= (int)(s + fSkipSOFTags + fMaxFrameSize)) &&
-			  (e < l) && ((i = 0*FindEOF(b + e, l - e, &which)) > -1));
+			  (e < l) && ((i = FindEOF(b + e, l - e, &which)) > -1));
 			 e++) {
 			e += i;
 
@@ -93,8 +100,17 @@ CamBufferingDeframer::Write(const void *buffer, size_t size)
 			// fill it
 			fCurrentFrame->Write(b + s, e - s);
 
-			// queue it
+			// queue it. FIX: guard the detach path with the same
+			// MAXFRAMEBUF discipline as the alloc path so a stalled
+			// consumer cannot grow fFrames without bound here either.
 			BAutolock f(fLocker);
+			if (fFrames.CountItems() >= MAXFRAMEBUF) {
+				PRINT((CH ": queue full, dropping detached frame" CT));
+				RecycleFrame(fCurrentFrame);
+				fCurrentFrame = NULL;
+				DiscardFromInput(e + fSkipEOFTags);
+				return size;
+			}
 			PRINT((CH ": Detaching a frame (%" B_PRIuSIZE " bytes, "
 				"%d to %d / %d)" CT, (size_t)fCurrentFrame->Position(),
 				s, e, l));
@@ -131,4 +147,19 @@ CamBufferingDeframer::DiscardFromInput(size_t size)
 	IB.SetSize(0);
 	fInputBuffIndex = next;
 	return size;
+}
+
+
+status_t
+CamBufferingDeframer::Flush()
+{
+	// FIX: the base Flush() cleared queued frames but left stale bytes from
+	// the old resolution in the input accumulators.
+	status_t err = CamDeframer::Flush();
+	for (int i = 0; i < 2; i++) {
+		fInputBuffs[i].Seek(0LL, SEEK_SET);
+		fInputBuffs[i].SetSize(0);
+	}
+	fInputBuffIndex = 0;
+	return err;
 }

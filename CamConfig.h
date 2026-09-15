@@ -213,17 +213,20 @@ static const uint8 kUVCHeaderFull			= 12;		// 2 + 4 + 6
 // =============================================================================
 
 // Calculate YUY2 frame size from dimensions
+// FIX-M5: promote to size_t before multiplying so hostile dimensions wrap
+// in 64 bit instead of 32 bit (which would under-allocate downstream).
 inline size_t
 CalculateYUY2Size(uint32 width, uint32 height)
 {
-	return width * height * kBytesPerPixelYUY2;
+	return (size_t)width * (size_t)height * kBytesPerPixelYUY2;
 }
 
 // Calculate RGB32 frame size from dimensions
+// FIX-M5: see above.
 inline size_t
 CalculateRGB32Size(uint32 width, uint32 height)
 {
-	return width * height * kBytesPerPixelRGB32;
+	return (size_t)width * (size_t)height * kBytesPerPixelRGB32;
 }
 
 // Calculate expected frame interval from FPS

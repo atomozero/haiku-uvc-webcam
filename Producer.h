@@ -14,6 +14,8 @@
 #include <support/Locker.h>
 #include <support/String.h>
 
+#include <atomic>
+
 class CamDevice;
 class BParameter;
 class BTextParameter;
@@ -29,6 +31,11 @@ virtual					~VideoProducer();
 
 virtual	status_t		InitCheck() const { return fInitStatus; }
 		void			SetCamDevice(CamDevice* dev) { fCamDevice = dev; }
+		// FIX-C1: bounded join of the frame generator so the roster can
+		// make sure no FillFrameBuffer is in flight before the CamDevice
+		// is deleted on hot-unplug. Returns B_TIMED_OUT when the thread
+		// was abandoned (device is then expected to be stalled/leaked).
+		status_t		JoinFrameGenerator(bigtime_t timeout = 2000000);
 
 
 /* BMediaNode */
@@ -139,9 +146,12 @@ static	int32				_frame_generator_(void *data);
 		bigtime_t			fProcessingLatency;
 		media_output		fOutput;
 		media_raw_video_format	fConnectedFormat;
-		bool				fRunning;
-		bool				fConnected;
-		bool				fEnabled;
+		// FIX: event-looper thread writes, generator thread reads.
+		// Plain bool was a data race; atomic keeps Start/Stop vs.
+		// FrameGenerator race-free without changing call sites.
+		std::atomic<bool>	fRunning;
+		std::atomic<bool>	fConnected;
+		std::atomic<bool>	fEnabled;
 
 		enum {
 			 P_COLOR,

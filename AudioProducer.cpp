@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <malloc.h>
 #include <math.h>
+#include <new>
 #include <stdio.h>
 #include <string.h>
 #include <syslog.h>
@@ -459,8 +460,14 @@ AudioProducer::SetBufferGroup(const media_source &for_source,
 			size_t bufSize = fConnectedFormat.buffer_size;
 			if (bufSize == 0)
 				bufSize = AUDIO_BUFFER_SIZE_DEFAULT;
-			fBufferGroup = new BBufferGroup(bufSize, AUDIO_BUFFER_COUNT);
-			if (fBufferGroup->InitCheck() != B_OK) {
+			// FIX: bound descriptor-driven size; nothrow so OOM cannot
+			// NULL-deref on InitCheck.
+			if (bufSize > 4u * 1024 * 1024)
+				return B_NO_MEMORY;
+			fBufferGroup = new (std::nothrow) BBufferGroup(bufSize,
+				AUDIO_BUFFER_COUNT);
+			if (fBufferGroup == NULL
+				|| fBufferGroup->InitCheck() != B_OK) {
 				delete fBufferGroup;
 				fBufferGroup = NULL;
 				return B_NO_MEMORY;
@@ -552,23 +559,40 @@ AudioProducer::Connect(status_t error, const media_source &source,
 	FindLatencyFor(fOutput.destination, &latency, &tsID);
 	SetEventLatency(latency + 1000);
 
-	// Calculate buffer duration
+	// Calculate buffer duration. FIX: guard the divisions — a zero
+	// channel/sample size or frame_rate previously divided by zero.
 	size_t sampleSize = fConnectedFormat.format
 		& media_raw_audio_format::B_AUDIO_SIZE_MASK;
 	size_t channelCount = fConnectedFormat.channel_count;
+	if (sampleSize == 0 || channelCount == 0)
+		return;
 	size_t frameSize = sampleSize * channelCount;
+	if (frameSize == 0
+		|| fConnectedFormat.buffer_size % frameSize != 0
+		|| fConnectedFormat.buffer_size == 0)
+		return;
 	size_t framesPerBuffer = fConnectedFormat.buffer_size / frameSize;
 	if (framesPerBuffer == 0)
 		framesPerBuffer = 1;
+	if (!(fConnectedFormat.frame_rate > 1.0f
+		&& fConnectedFormat.frame_rate < 1000000.0f)) {
+		return;
+	}
 	fProcessingLatency = (bigtime_t)(framesPerBuffer * 1000000LL
 		/ (bigtime_t)fConnectedFormat.frame_rate);
 
 	// Create buffer group
 	syslog(LOG_INFO, "AudioProducer: Creating BufferGroup size=%u count=%d\n",
 		(unsigned)fConnectedFormat.buffer_size, AUDIO_BUFFER_COUNT);
-	fBufferGroup = new BBufferGroup(fConnectedFormat.buffer_size,
+	if (fConnectedFormat.buffer_size == 0
+		|| fConnectedFormat.buffer_size > 4u * 1024 * 1024) {
+		syslog(LOG_ERR, "AudioProducer: refusing insane buffer size %u\n",
+			(unsigned)fConnectedFormat.buffer_size);
+		return;
+	}
+	fBufferGroup = new (std::nothrow) BBufferGroup(fConnectedFormat.buffer_size,
 		AUDIO_BUFFER_COUNT);
-	if (fBufferGroup->InitCheck() < B_OK) {
+	if (fBufferGroup == NULL || fBufferGroup->InitCheck() < B_OK) {
 		syslog(LOG_ERR, "AudioProducer: BufferGroup InitCheck failed "
 			"(size=%u, err=%s)\n",
 			(unsigned)fConnectedFormat.buffer_size,
@@ -765,6 +789,7 @@ AudioProducer::HandleStart(bigtime_t performance_time)
 	fFrameSync = create_sem(0, "audio frame sync");
 	if (fFrameSync < B_OK) {
 		syslog(LOG_ERR, "AudioProducer: HandleStart - create_sem failed\n");
+		fFrameSync = -1;
 		return;
 	}
 
@@ -776,6 +801,7 @@ AudioProducer::HandleStart(bigtime_t performance_time)
 			syslog(LOG_ERR, "AudioProducer: Failed to start audio transfer: %s\n",
 				strerror(err));
 			delete_sem(fFrameSync);
+			fFrameSync = -1;
 			return;
 		}
 
@@ -808,9 +834,11 @@ AudioProducer::HandleStart(bigtime_t performance_time)
 	if (fThread < B_OK) {
 		syslog(LOG_ERR, "AudioProducer: HandleStart - spawn_thread failed\n");
 		fRunning = false;
+		fThread = -1;
 		if (uvcDev)
 			uvcDev->StopAudioTransfer();
 		delete_sem(fFrameSync);
+		fFrameSync = -1;
 		return;
 	}
 
@@ -818,9 +846,11 @@ AudioProducer::HandleStart(bigtime_t performance_time)
 		syslog(LOG_ERR, "AudioProducer: HandleStart - resume_thread failed\n");
 		fRunning = false;
 		kill_thread(fThread);
+		fThread = -1;
 		if (uvcDev)
 			uvcDev->StopAudioTransfer();
 		delete_sem(fFrameSync);
+		fFrameSync = -1;
 		return;
 	}
 
@@ -849,6 +879,9 @@ AudioProducer::HandleStop(void)
 		if (fCamDevice != NULL)
 			fCamDevice->MarkStalled();
 	}
+	// FIX-T8: invalidate the handle either way so a later Start cannot
+	// spawn a second generator over the orphan.
+	fThread = -1;
 
 	// Stop USB audio transfer on device
 	if (fCamDevice != NULL) {

@@ -6,17 +6,22 @@ USB camera, kernel patches, or even the rest of the driver compiled.
 
 | File | What it exercises |
 |---|---|
+| `test_quirks.cpp` | Quirk resolution (portable, CI) |
+| `test_descriptors.cpp` | Bounds-safe descriptor validators + real captures |
+| `test_safety.cpp` | Overflow-safe helpers (FIX-C3/M5/H8/T10/M8/B4) + FIX-H1/H2/H5/H6 |
+| `fuzz_descriptors.cpp` | Guard-page fuzzer (5 validators x 500k) |
 | `test_deframer.cpp` | Deframer statistics counters and rate-limited logging |
 | `test_deframer_fix.cpp` | Frame boundary detection via EOF and FID toggle |
 | `test_memory_management.cpp` | CamFrame pool reuse, BMallocIO lifecycle |
 | `test_video_conversion.cpp` | YUV→RGB lookup tables (correctness and speed) |
+| `coverage.sh` | Runs all portable tests + static guards for Haiku-only fixes |
 
 ## Build & run
 
 ```sh
-cd tests
-g++ -O2 -o test_<name> test_<name>.cpp -lbe
-./test_<name>
+make test          # quirks + descriptors + safety + fuzzer
+sh tests/coverage.sh --quick   # same without the fuzzer
+sh tests/coverage.sh           # full, with fuzzer
 ```
 
 Each test prints PASS/FAIL summaries; non-zero exit means at least one

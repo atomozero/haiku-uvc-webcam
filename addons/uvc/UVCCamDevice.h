@@ -14,6 +14,8 @@
 #include <usb/USB_video.h>
 #include <turbojpeg.h>
 
+#include <atomic>
+
 class BString;
 
 
@@ -529,7 +531,8 @@ private:
 
 	// Still image capture methods
 			void				_ParseStillImageFrame(
-									const usb_video_still_image_frame_descriptor* descriptor);
+									const usb_video_still_image_frame_descriptor* descriptor,
+									size_t len);
 			void				_LogStillImageCapabilities();
 			const char*			_GetStillCaptureMethodName(still_capture_method method);
 	public:
@@ -672,7 +675,9 @@ private:
 			BList				fAudioAlternates;
 
 			// Audio transfer state
-			bool				fAudioTransferRunning;
+			// FIX: read by AudioPumpThread, written by start/stop.
+			// Atomic so the loop cannot see a torn value mid-teardown.
+			std::atomic<bool>	fAudioTransferRunning;
 			thread_id			fAudioPumpThread;
 			uint8*				fAudioBuffer;
 			size_t				fAudioBufferLen;

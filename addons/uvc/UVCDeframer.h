@@ -74,6 +74,9 @@ private:
 	int32						fQueueOverflows;
 	int32						fPacketsThisFrame;
 	size_t						fTotalBytesThisFrame;  // Total payload bytes (including truncated)
+	// FIX-M2: payload bytes dropped because fFixedBuffer was full.
+	// Surfaced in syslog with the same throttling as the other counters.
+	int32						fFramesTruncated;
 	bigtime_t					fLastDiagReport;
 };
 

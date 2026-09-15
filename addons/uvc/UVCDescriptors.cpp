@@ -131,9 +131,15 @@ UVCCheckFrameDescriptor(const uint8* bytes, size_t avail)
 	const uint8 ftype = UVCDescByte(bytes, avail, kOffFrameIntervalType);
 
 	// Discrete intervals (4 bytes each) sit after the fixed header, bounded by
-	// the descriptor's own (already validated) bLength.
+	// the descriptor's own (already validated) bLength. A continuous
+	// descriptor (ftype == 0) carries min/max/step (12 bytes), so it needs
+	// at least 38 bytes; accepting a 26-byte bLength here would let callers
+	// copy or print the 12 continuous bytes out of bounds (FIX-H1).
 	const uint32 maxIntervals =
 		(uint32)(bLength - kUVCFrameDescFixedLen) / (uint32)sizeof(uint32);
+
+	if (ftype == 0 && (size_t)bLength < 38)
+		return r;
 
 	if (width == 0 || height == 0
 		|| width > kMaxReasonableDim || height > kMaxReasonableDim
