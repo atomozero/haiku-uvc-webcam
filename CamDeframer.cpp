@@ -39,7 +39,8 @@ CamDeframer::CamDeframer(CamDevice *device)
 
 CamDeframer::~CamDeframer()
 {
-	delete_sem(fFrameSem);
+	// Pump must be stopped before this runs, frames and sem
+	// are still shared with it until the device joins the pump.
 	BAutolock l(fLocker);
 
 	// Delete current frame
@@ -66,6 +67,11 @@ CamDeframer::~CamDeframer()
 		syslog(LOG_INFO, "CamDeframer: Pool stats - hits=%d misses=%d (%.1f%% reuse)\n",
 			(int)fPoolHits, (int)fPoolMisses, hitRate);
 	}
+
+	// Delete sem last and invalidate it, a late pump release
+	// then fails closed instead of hitting a recycled sem id.
+	delete_sem(fFrameSem);
+	fFrameSem = -1;
 }
 
 
@@ -162,12 +168,16 @@ status_t
 CamDeframer::GetFrame(CamFrame **frame, bigtime_t *stamp)
 {
 	PRINT((CH "()" CT));
+	if (frame == NULL)
+		return B_BAD_VALUE;
 	BAutolock l(fLocker);
 	CamFrame *f = (CamFrame *)fFrames.RemoveItem((int32)0);
 	if (!f)
 		return ENOENT;
 	*frame = f;
-	*stamp = f->Stamp();
+	// Stamp is optional, FillFrameBuffer forwards NULL.
+	if (stamp != NULL)
+		*stamp = f->Stamp();
 	return B_OK;
 }
 

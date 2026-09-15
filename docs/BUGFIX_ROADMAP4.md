@@ -21,7 +21,7 @@ Rules:
 | FIX-34 | CamConfig raw size math and FPS NaN/INF | CamConfig.h | Medium | done |
 | FIX-35 | Fill counters torn across threads | addons/uvc/UVCCamDevice.h,.cpp | Medium | done |
 | FIX-36 | Audio volume/mute torn across threads | AudioProducer.h,.cpp | Medium | done |
-| FIX-37 | Deframer read/dtor needs stopped pump | CamDeframer.cpp | Medium | todo |
+| FIX-37 | Deframer read/dtor needs stopped pump | CamDeframer.cpp | Medium | done |
 | FIX-38 | fopen macro hides call sites | CamDevice.cpp | Low | todo |
 | FIX-39 | Unlimited nodes need explicit guard | AddOn.cpp | Low | todo |
 

@@ -47,6 +47,7 @@
 #   FIX-34  config size and FPS guard     static: range test and 64-bit size
 #   FIX-35  fill counters atomic          static: fill counters are atomic
 #   FIX-36  audio params atomic           static: keep them atomic
+#   FIX-37  deframer teardown order       static: pump must be stopped
 set -e
 cd "$(dirname "$0")"
 
@@ -138,6 +139,8 @@ check "FIX-35 fill counters atomic" \
 	"grep -q 'Fill counters are atomic' $SRC/addons/uvc/UVCCamDevice.h"
 check "FIX-36 audio params atomic" \
 	"grep -q 'keep them atomic' $SRC/AudioProducer.h"
+check "FIX-37 deframer teardown order" \
+	"grep -q 'Pump must be stopped' $SRC/CamDeframer.cpp"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"
