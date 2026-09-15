@@ -44,6 +44,7 @@
 #   FIX-31  bulk pump outside lock      static: copy then transfer outside
 #   FIX-32  EHCI cycle outside lock     static: snapshot then cycle outside
 #   FIX-33  set param NULL guard        static: fail closed when unplugged
+#   FIX-34  config size and FPS guard     static: range test and 64-bit size
 set -e
 cd "$(dirname "$0")"
 
@@ -129,6 +130,8 @@ check "FIX-32 EHCI cycle outside lock" \
 	"grep -q 'cycle outside' $SRC/addons/uvc/UVCCamDevice.cpp"
 check "FIX-33 set param NULL guard" \
 	"grep -q 'Fail closed when unplugged' $SRC/addons/uvc/UVCCamDevice.cpp"
+check "FIX-34 config size and FPS guard" \
+	"grep -q 'falls back to the default interval' $SRC/CamConfig.h"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"

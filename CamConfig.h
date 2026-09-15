@@ -121,8 +121,12 @@ struct Resolution {
 	uint32 width;
 	uint32 height;
 
-	size_t YUY2Size() const { return width * height * kBytesPerPixelYUY2; }
-	size_t RGB32Size() const { return width * height * kBytesPerPixelRGB32; }
+	// FIX: promote to size_t before multiplying so hostile
+	// dimensions wrap in 64 bit instead of 32 bit (FIX-M5).
+	size_t YUY2Size() const
+		{ return (size_t)width * (size_t)height * kBytesPerPixelYUY2; }
+	size_t RGB32Size() const
+		{ return (size_t)width * (size_t)height * kBytesPerPixelRGB32; }
 };
 
 static const Resolution kResolution160x120	= { 160, 120 };
@@ -230,12 +234,17 @@ CalculateRGB32Size(uint32 width, uint32 height)
 }
 
 // Calculate expected frame interval from FPS
+// FIX: reject NaN, zero, negative and huge rates. NaN fails
+// the range test and falls back to the default interval.
 inline bigtime_t
 FPSToInterval(float fps)
 {
-	if (fps <= 0.0f)
+	if (!(fps >= 1.0f && fps <= 1000.0f))
 		return kDefaultFrameInterval;
-	return (bigtime_t)(1000000.0f / fps);
+	bigtime_t interval = (bigtime_t)(1000000.0f / fps);
+	if (interval <= 0)
+		return kDefaultFrameInterval;
+	return interval;
 }
 
 // Calculate FPS from frame interval
