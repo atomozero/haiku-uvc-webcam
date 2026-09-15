@@ -58,6 +58,7 @@
 #   FIX-45  packet counters atomic read   static: read with atomics
 #   FIX-46  batched packet accounting       static: publish once per transfer
 #   FIX-47  hoisted row bounds check        static: last full row once
+#   FIX-48  pool byte cap                   static: byte cap for the pool
 set -e
 cd "$(dirname "$0")"
 
@@ -171,6 +172,8 @@ check "FIX-46 batched packet accounting" \
 	"grep -q 'Publish once per transfer' $SRC/CamDevice.cpp"
 check "FIX-47 hoisted row bounds check" \
 	"grep -q 'last full row once' $SRC/addons/uvc/UVCCamDevice.cpp"
+check "FIX-48 pool byte cap" \
+	"grep -q 'Byte cap for the pool' $SRC/CamDeframer.cpp"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"

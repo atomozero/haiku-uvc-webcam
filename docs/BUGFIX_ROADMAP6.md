@@ -17,7 +17,7 @@ Rules:
 | FIX-45 | Packet counters read without atomics in FillFrameBuffer | addons/uvc/UVCCamDevice.cpp | High | done |
 | FIX-46 | Per-packet atomics in pump, batch per transfer | CamDevice.cpp | Medium | done |
 | FIX-47 | YUY2 row check hoist and 32-bit pad fill | addons/uvc/UVCCamDevice.cpp, UVCDeframer.cpp | Low | done |
-| FIX-48 | Adaptive deframer pool and queue byte cap | CamDeframer.cpp,.h | Medium | todo |
+| FIX-48 | Adaptive deframer pool and queue byte cap | CamDeframer.cpp,.h | Medium | done |
 | FIX-49 | Probe size hint fast-path | addons/uvc/UVCCamDevice.h,.cpp | Medium | todo |
 | FIX-50 | Dead frame-repeat cache copies every frame | addons/uvc/UVCCamDevice.h,.cpp | Medium | todo |
 | FIX-51 | Zero-copy frame accumulation into CamFrame | addons/uvc/UVCDeframer.h,.cpp | High | todo |

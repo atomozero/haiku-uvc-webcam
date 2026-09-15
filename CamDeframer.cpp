@@ -333,8 +333,21 @@ CamDeframer::RecycleFrame(CamFrame* frame)
 
 	BAutolock l(fLocker);
 
+	// Byte cap for the pool, huge frames would otherwise pin
+	// tens of megabytes while pooled. Small frames keep the
+	// full count cap, large ones keep fewer entries.
+	static const size_t kMaxPoolBytes = 16u * 1024 * 1024;
+	size_t frameBytes = frame->BufferLength();
+	if (frameBytes == 0)
+		frameBytes = 1;
+	size_t maxPooled = kMaxPoolBytes / frameBytes;
+	if (maxPooled < 1)
+		maxPooled = 1;
+	if (maxPooled > CAMDEFRAMER_FRAME_POOL_SIZE)
+		maxPooled = CAMDEFRAMER_FRAME_POOL_SIZE;
+
 	// Add to pool if not full, otherwise delete
-	if (fFramePool.CountItems() < CAMDEFRAMER_FRAME_POOL_SIZE) {
+	if (fFramePool.CountItems() < (int32)maxPooled) {
 		// Reset and add to pool
 		frame->Seek(0, SEEK_SET);
 		frame->SetSize(0);
