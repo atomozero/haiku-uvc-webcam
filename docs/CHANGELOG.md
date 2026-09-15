@@ -3,6 +3,20 @@
 This file summarises notable changes per topic. For the exact commits,
 look up the IDs with `git log` — they are referenced in each entry.
 
+## Sept 2026 — FIX-11..FIX-18 phase 2 batch
+
+Follow-up to FIX-01..10, see `docs/BUGFIX_ROADMAP2.md`.
+Each fix is one commit with `sh tests/coverage.sh --quick` green.
+
+- FIX-11: param get NULL and size checks for video and audio.
+- FIX-12: bound FID queue path with drop-oldest, no OOM on stall.
+- FIX-13: locked device copy in params, leak if transfer still runs.
+- FIX-14: kill outside device lock, leak group if stalled.
+- FIX-15: atomic reconfig flag, bounded join, keep USB ptrs if stalled.
+- FIX-16: serialise audio start stop, recheck ring before copy.
+- FIX-17: serialise deframer write, bound sem drain, drop permit.
+- FIX-18: cap stream IDs, per-instance audio state, safe helpers.
+
 ## Sept 2026 — FIX-01..FIX-10 audit batch
 
 Deep bug audit follow-up, see `docs/BUGFIX_ROADMAP.md`.
