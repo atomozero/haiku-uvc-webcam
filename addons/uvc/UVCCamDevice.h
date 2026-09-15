@@ -606,7 +606,7 @@ private:
 			uint8				fDefaultUncompressedFrameIndex;
 			uint32				fMaxVideoFrameSize;
 			uint32				fMaxPayloadTransferSize;
-			size_t				fProbeCommitSize;		// Working probe/commit size (26, 34, or 48 bytes)
+			size_t				fProbeCommitSize;		// Working probe size, tried first
 
 			BList				fUncompressedFrames;
 			BList				fMJPEGFrames;

@@ -2925,8 +2925,18 @@ UVCCamDevice::_ProbeCommitFormat()
 				got, queriedLen);
 		}
 	}
-	if (length == 0)
+	if (length == 0) {
 		length = uvcVersion > 0x100 ? 34 : 26;
+		// Fast-path: a previous negotiation already found a working
+		// size on this device, try that last good size first.
+		if (fProbeCommitSize >= 22
+			&& fProbeCommitSize <= sizeof(probeBuf.raw)
+			&& fProbeCommitSize != length) {
+			syslog(LOG_INFO, "UVC Probe: trying last good size %zu first\n",
+				fProbeCommitSize);
+			length = fProbeCommitSize;
+		}
+	}
 
 	// P20: query GET_MIN/GET_MAX/GET_DEF on the probe control before SET_CUR.
 	// Strict camera firmwares (Imaging Source, HiSense, some industrial)
