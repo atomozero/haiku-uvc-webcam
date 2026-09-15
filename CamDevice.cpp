@@ -1353,26 +1353,34 @@ CamDevice::DataPumpThread()
 						numPacketDescriptors > 7 ? packetDescriptors[7].actual_length : -1);
 				}
 
-				for (int i = 0; i < numPacketDescriptors; i++) {
-					// Calculate offset matching kernel's layout (i * DataLength/packet_count)
-					size_t packetOffset = i * slotSize;
+			// Batch packet accounting locally, publish once.
+			int32 packetSuccess = 0;
+			int32 packetErrors = 0;
+			for (int i = 0; i < numPacketDescriptors; i++) {
+				// Calculate offset matching kernel's layout (i * DataLength/packet_count)
+				size_t packetOffset = i * slotSize;
 
-					// PHASE 3: Check if this packet succeeded
-					if (packetDescriptors[i].status != B_OK) {
-						atomic_add(&fPacketErrorCount, 1);
-						// Skip failed packets - data is invalid
-						continue;
-					}
-
-					// Direct access to struct member (no copy)
-					int actual_length = packetDescriptors[i].actual_length;
-
-					// Bounds check
-					if (actual_length > 0 && packetOffset + actual_length <= fBufferLen) {
-						fDataInput->Write(&fBuffer[packetOffset], actual_length);
-						atomic_add(&fPacketSuccessCount, 1);
-					}
+				// PHASE 3: Check if this packet succeeded
+				if (packetDescriptors[i].status != B_OK) {
+					packetErrors++;
+					// Skip failed packets - data is invalid
+					continue;
 				}
+
+				// Direct access to struct member (no copy)
+				int actual_length = packetDescriptors[i].actual_length;
+
+				// Bounds check
+				if (actual_length > 0 && packetOffset + actual_length <= fBufferLen) {
+					fDataInput->Write(&fBuffer[packetOffset], actual_length);
+					packetSuccess++;
+				}
+			}
+			// Publish once per transfer, not per packet.
+			if (packetSuccess > 0)
+				atomic_add(&fPacketSuccessCount, packetSuccess);
+			if (packetErrors > 0)
+				atomic_add(&fPacketErrorCount, packetErrors);
 
 				// Periodic statistics reporting (every 30 seconds)
 				bigtime_t now = system_time();

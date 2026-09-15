@@ -56,6 +56,7 @@
 #   FIX-43  no orphan tests               static: simulation tests deleted
 #   FIX-44  english comments only         static: allow larger resolutions
 #   FIX-45  packet counters atomic read   static: read with atomics
+#   FIX-46  batched packet accounting       static: publish once per transfer
 set -e
 cd "$(dirname "$0")"
 
@@ -165,6 +166,8 @@ check "FIX-44 english comments only" \
 	"grep -q 'allow larger resolutions' $SRC/Producer.cpp"
 check "FIX-45 packet counters atomic read" \
 	"grep -q 'Read with atomics' $SRC/addons/uvc/UVCCamDevice.cpp"
+check "FIX-46 batched packet accounting" \
+	"grep -q 'Publish once per transfer' $SRC/CamDevice.cpp"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"
