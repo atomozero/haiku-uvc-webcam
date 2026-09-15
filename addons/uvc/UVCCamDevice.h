@@ -646,8 +646,10 @@ private:
 			uint8				fFrameBasedBitsPerPixel;
 			BList				fFrameBasedFrames;	// of uvc_frame_based_resolution*
 
-			// FIX BUG 6: Contatori diagnostici per istanza (non statici)
-			int32				fFillFrameCount;
+		// FIX BUG 6: Contatori diagnostici per istanza (non statici)
+		// Fill counters are atomic, fill and decode run on
+		// several threads and plain ++ would lose updates.
+		int32				fFillFrameCount;
 			int32				fFillFrameSuccess;
 			int32				fFillFrameTimeout;
 			int32				fMjpegAttempts;

@@ -19,7 +19,7 @@ Rules:
 | FIX-32 | EHCI recovery clears endpoint under lock | addons/uvc/UVCCamDevice.cpp | High | done |
 | FIX-33 | Set param derefs device without NULL check | addons/uvc/UVCCamDevice.cpp | High | done |
 | FIX-34 | CamConfig raw size math and FPS NaN/INF | CamConfig.h | Medium | done |
-| FIX-35 | Fill counters torn across threads | addons/uvc/UVCCamDevice.h,.cpp | Medium | todo |
+| FIX-35 | Fill counters torn across threads | addons/uvc/UVCCamDevice.h,.cpp | Medium | done |
 | FIX-36 | Audio volume/mute torn across threads | AudioProducer.h,.cpp | Medium | todo |
 | FIX-37 | Deframer read/dtor needs stopped pump | CamDeframer.cpp | Medium | todo |
 | FIX-38 | fopen macro hides call sites | CamDevice.cpp | Low | todo |

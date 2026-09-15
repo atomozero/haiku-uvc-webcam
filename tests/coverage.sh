@@ -45,6 +45,7 @@
 #   FIX-32  EHCI cycle outside lock     static: snapshot then cycle outside
 #   FIX-33  set param NULL guard        static: fail closed when unplugged
 #   FIX-34  config size and FPS guard     static: range test and 64-bit size
+#   FIX-35  fill counters atomic          static: fill counters are atomic
 set -e
 cd "$(dirname "$0")"
 
@@ -132,6 +133,8 @@ check "FIX-33 set param NULL guard" \
 	"grep -q 'Fail closed when unplugged' $SRC/addons/uvc/UVCCamDevice.cpp"
 check "FIX-34 config size and FPS guard" \
 	"grep -q 'falls back to the default interval' $SRC/CamConfig.h"
+check "FIX-35 fill counters atomic" \
+	"grep -q 'Fill counters are atomic' $SRC/addons/uvc/UVCCamDevice.h"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"

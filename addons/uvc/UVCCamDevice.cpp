@@ -5463,7 +5463,7 @@ UVCCamDevice::_SetParameterValue(uint16 wValue, int8 setValue)
 status_t
 UVCCamDevice::FillFrameBuffer(BBuffer* buffer, bigtime_t* stamp)
 {
-	fFillFrameCount++;
+	atomic_add(&fFillFrameCount, 1);
 
 	// Fast-fail on a stalled device: its endpoint only recovers on physical
 	// re-enumeration, so there is nothing to deliver and no point touching it.
@@ -5484,19 +5484,20 @@ UVCCamDevice::FillFrameBuffer(BBuffer* buffer, bigtime_t* stamp)
 
 	status_t err = fDeframer->WaitFrame(2000000);
 	if (err < B_OK) {
-		fFillFrameTimeout++;
+		atomic_add(&fFillFrameTimeout, 1);
 
 		// Log only first 5 and every 50th to reduce spam during EHCI errors
-		if (fFillFrameTimeout <= 5 || (fFillFrameTimeout % 50) == 0) {
+		int32 timeouts = atomic_get(&fFillFrameTimeout);
+		if (timeouts <= 5 || (timeouts % 50) == 0) {
 			syslog(LOG_WARNING, "UVCCamDevice::FillFrameBuffer: WaitFrame TIMEOUT #%d (err=%s)\n",
-				(int)fFillFrameTimeout, strerror(err));
+				(int)timeouts, strerror(err));
 		}
 
 		// After 10 consecutive timeouts, attempt automatic recovery.
 		// This is typical of EHCI "host system error" on Intel controllers
 		// after sustained isochronous streaming. Cycle the streaming alternate
 		// (down to 0, back to streaming) to re-initialize the endpoint.
-		if (fFillFrameTimeout == 10 && !fEHCIRecoveryInProgress) {
+		if (atomic_get(&fFillFrameTimeout) == 10 && !fEHCIRecoveryInProgress) {
 			fEHCIRecoveryInProgress = true;
 			syslog(LOG_WARNING, "UVCCamDevice: 10 consecutive frame timeouts - "
 				"attempting recovery via alternate cycle\n");
@@ -5556,7 +5557,7 @@ UVCCamDevice::FillFrameBuffer(BBuffer* buffer, bigtime_t* stamp)
 		}
 
 		// If recovery didn't help by 30 timeouts, give up and stop the pump.
-		if (fFillFrameTimeout == 30) {
+		if (atomic_get(&fFillFrameTimeout) == 30) {
 			syslog(LOG_ERR, "UVCCamDevice: recovery failed - stopping transfer. "
 				"Please unplug and reconnect the camera.\n");
 			StopTransfer();
@@ -5569,15 +5570,15 @@ UVCCamDevice::FillFrameBuffer(BBuffer* buffer, bigtime_t* stamp)
 	}
 
 	// Reset timeout counter on successful frame
-	if (fFillFrameTimeout > 0)
-		fFillFrameTimeout = 0;
+	if (atomic_get(&fFillFrameTimeout) > 0)
+		atomic_set(&fFillFrameTimeout, 0);
 
 	CamFrame* f;
 	err = fDeframer->GetFrame(&f, stamp);
 	if (err < B_OK)
 		return err;
 
-	fFillFrameSuccess++;
+	atomic_add(&fFillFrameSuccess, 1);
 
 	int32 w = (int32)(VideoFrame().right - VideoFrame().left + 1);
 	int32 h = (int32)(VideoFrame().bottom - VideoFrame().top + 1);
@@ -6654,7 +6655,7 @@ UVCCamDevice::_DecompressMJPEGtoRGB32(unsigned char* dst,
                                        size_t srcSize,
                                        int32 width, int32 height)
 {
-	fMjpegAttempts++;
+	atomic_add(&fMjpegAttempts, 1);
 
 	// FIX: a 1-byte frame reached jpegStart[1] out of bounds below.
 	if (!fJpegDecompressor || !dst || !src || srcSize < 2 || width <= 0 || height <= 0)
@@ -6678,11 +6679,12 @@ UVCCamDevice::_DecompressMJPEGtoRGB32(unsigned char* dst,
 
 	// Verify we found JPEG data
 	if (jpegStart[0] != 0xFF || jpegStart[1] != 0xD8) {
-		fMjpegNoSOI++;
+		atomic_add(&fMjpegNoSOI, 1);
 		// Log first few failures and then periodically
-		if (fMjpegNoSOI <= 5 || (fMjpegNoSOI % 100) == 0) {
+		int32 noSOI = atomic_get(&fMjpegNoSOI);
+		if (noSOI <= 5 || (noSOI % 100) == 0) {
 			syslog(LOG_WARNING, "MJPEG: No SOI marker #%d, srcSize=%zu, first bytes=[%02x %02x %02x %02x]\n",
-				(int)fMjpegNoSOI, srcSize,
+				(int)noSOI, srcSize,
 				srcSize > 0 ? src[0] : 0, srcSize > 1 ? src[1] : 0,
 				srcSize > 2 ? src[2] : 0, srcSize > 3 ? src[3] : 0);
 		}
@@ -6696,10 +6698,11 @@ UVCCamDevice::_DecompressMJPEGtoRGB32(unsigned char* dst,
 		&jpegWidth, &jpegHeight, &jpegSubsamp, &jpegColorspace);
 
 	if (headerResult != 0) {
-		fMjpegDecompressErrors++;
-		if (fMjpegDecompressErrors <= 5 || (fMjpegDecompressErrors % 100) == 0) {
+		atomic_add(&fMjpegDecompressErrors, 1);
+		int32 headerErrors = atomic_get(&fMjpegDecompressErrors);
+		if (headerErrors <= 5 || (headerErrors % 100) == 0) {
 			syslog(LOG_WARNING, "MJPEG: Header decode failed #%d: %s\n",
-				(int)fMjpegDecompressErrors, tjGetErrorStr2(fJpegDecompressor));
+				(int)headerErrors, tjGetErrorStr2(fJpegDecompressor));
 		}
 		return;
 	}
@@ -6760,7 +6763,7 @@ UVCCamDevice::_DecompressMJPEGtoRGB32(unsigned char* dst,
 	              TJFLAG_FASTDCT | TJFLAG_NOREALLOC);
 
 	if (result == 0) {
-		fMjpegSuccess++;
+		atomic_add(&fMjpegSuccess, 1);
 
 		/* Clear resolution transition state on first successful frame */
 		if (fResolutionTransitionStart > 0) {
@@ -6771,16 +6774,19 @@ UVCCamDevice::_DecompressMJPEGtoRGB32(unsigned char* dst,
 		}
 
 		/* Log periodic success stats at high resolutions */
-		if (width >= 1280 && (fMjpegSuccess % 300) == 0) {
+		int32 decoded = atomic_get(&fMjpegSuccess);
+		if (width >= 1280 && (decoded % 300) == 0) {
 			syslog(LOG_INFO, "MJPEG %dx%d: %d frames decoded (errors: %d, no SOI: %d)\n",
-				(int)width, (int)height, (int)fMjpegSuccess,
-				(int)fMjpegDecompressErrors, (int)fMjpegNoSOI);
+				(int)width, (int)height, (int)decoded,
+				(int)atomic_get(&fMjpegDecompressErrors),
+				(int)atomic_get(&fMjpegNoSOI));
 		}
 	} else {
-		fMjpegDecompressErrors++;
-		if (fMjpegDecompressErrors <= 5 || (fMjpegDecompressErrors % 100) == 0) {
+		atomic_add(&fMjpegDecompressErrors, 1);
+		int32 decodeErrors = atomic_get(&fMjpegDecompressErrors);
+		if (decodeErrors <= 5 || (decodeErrors % 100) == 0) {
 			syslog(LOG_WARNING, "MJPEG: Decompress failed #%d at %dx%d: %s (src=%zu bytes)\n",
-				(int)fMjpegDecompressErrors, (int)width, (int)height,
+				(int)decodeErrors, (int)width, (int)height,
 				tjGetErrorStr2(fJpegDecompressor), jpegSize);
 		}
 	}
