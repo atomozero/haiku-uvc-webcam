@@ -53,6 +53,7 @@
 #   FIX-40  recovery flag atomic          static: recovery flag is atomic
 #   FIX-41  node lookup NULL guard        static: skip before use
 #   FIX-42  no producer libc macros       static: hidden macros make call
+#   FIX-43  no orphan tests               static: simulation tests deleted
 set -e
 cd "$(dirname "$0")"
 
@@ -156,6 +157,8 @@ check "FIX-41 node lookup NULL guard" \
 	"grep -q 'skip before use' $SRC/AddOn.cpp"
 check "FIX-42 no producer libc macros" \
 	"! grep -q 'define fopen(path' $SRC/Producer.cpp"
+check "FIX-43 no orphan tests" \
+	"! test -e $SRC/tests/test_deframer.cpp"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"

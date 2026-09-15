@@ -10,10 +10,6 @@ USB camera, kernel patches, or even the rest of the driver compiled.
 | `test_descriptors.cpp` | Bounds-safe descriptor validators + real captures |
 | `test_safety.cpp` | Overflow-safe helpers (FIX-C3/M5/H8/T10/M8/B4) + FIX-H1/H2/H5/H6 |
 | `fuzz_descriptors.cpp` | Guard-page fuzzer (5 validators x 500k) |
-| `test_deframer.cpp` | Deframer statistics counters and rate-limited logging |
-| `test_deframer_fix.cpp` | Frame boundary detection via EOF and FID toggle |
-| `test_memory_management.cpp` | CamFrame pool reuse, BMallocIO lifecycle |
-| `test_video_conversion.cpp` | YUV→RGB lookup tables (correctness and speed) |
 | `coverage.sh` | Runs all portable tests + static guards for Haiku-only fixes |
 
 ## Build & run
@@ -41,6 +37,13 @@ Up until June 2026 `tests/` also held two other kinds of files:
   dumps or hardware — `analyze_*`, `convert_*`, `find_*`,
   `verify_alignment`, `visualize_yuv`, `uvc_benchmark`. They have been
   moved to `tools/` next to their siblings.
+
+- **Haiku-only simulation tests** (`test_deframer`,
+  `test_deframer_fix`, `test_memory_management`,
+  `test_video_conversion`). They needed `-lbe`, were never wired
+  into `make test` or `coverage.sh`, and replicated stale logic
+  (e.g. queue depth 8 vs the current 16). Deleted in phase 5;
+  git history still has them if anyone needs to revive one.
 
 ## Adding a new test
 
