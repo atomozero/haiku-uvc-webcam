@@ -479,9 +479,6 @@ private:
 									size_t size, int32 width, int32 height);
 			bool				_FindJpegMarker(const uint8* data, size_t size,
 									uint8 marker, size_t* position);
-			void				_CacheValidFrame(const uint8* data, size_t size,
-									int32 width, int32 height);
-			bool				_UseLastValidFrame(uint8* dst, size_t dstSize);
 			void				_ReportValidationStats();
 
 	// Camera control methods (Feature 2)
@@ -726,12 +723,7 @@ private:
 
 			// Frame validation state (Feature 1)
 			frame_validation_stats	fValidationStats;
-			uint8*				fLastValidFrame;
-			size_t				fLastValidFrameSize;
-			int32				fLastValidWidth;
-			int32				fLastValidHeight;
 			uint32				fConsecutiveBadFrames;
-			bool				fFrameRepeatEnabled;
 
 			// Processing Unit controls (Feature 2)
 			BList				fProcessingControls;	// List of camera_control_info*

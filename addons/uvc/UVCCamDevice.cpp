@@ -563,12 +563,7 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 	fSelectedFrameInterval(333333),  // Default 30fps (10000000/30)
 	fAudioRingSem(-1),
 	// Frame validation state (Feature 1)
-	fLastValidFrame(NULL),
-	fLastValidFrameSize(0),
-	fLastValidWidth(0),
-	fLastValidHeight(0),
 	fConsecutiveBadFrames(0),
-	fFrameRepeatEnabled(true),
 	// Processing Unit controls (Feature 2)
 	fProcessingUnitID(0),
 	fControlsInitialized(false),
@@ -1364,12 +1359,6 @@ UVCCamDevice::~UVCCamDevice()
 		delete (uvc_vs_stream*)fVSStreams.ItemAt(i);
 	}
 	fVSStreams.MakeEmpty();
-
-	// Cleanup frame validation cache (Feature 1)
-	if (fLastValidFrame) {
-		delete[] fLastValidFrame;
-		fLastValidFrame = NULL;
-	}
 
 	// Cleanup processing controls (Feature 2)
 	for (int32 i = 0; i < fProcessingControls.CountItems(); i++) {
@@ -5694,6 +5683,7 @@ UVCCamDevice::FillFrameBuffer(BBuffer* buffer, bigtime_t* stamp)
 	switch (validation) {
 		case FRAME_VALID:
 			fValidationStats.frames_valid++;
+			fValidationStats.last_valid_frame_time = system_time();
 			fConsecutiveBadFrames = 0;
 			break;
 		case FRAME_INCOMPLETE:
@@ -5776,16 +5766,11 @@ UVCCamDevice::FillFrameBuffer(BBuffer* buffer, bigtime_t* stamp)
 		}
 
 		if (fIsMJPEG) {
-			// For MJPEG, validation already happened above
-			// If invalid and frame repeat enabled, we still try to decompress
-			// as partial MJPEG might produce some valid data
+			// For MJPEG, validation already happened above.
+			// Partial MJPEG might still produce some valid data,
+			// so decompress even when invalid.
 			_DecompressMJPEGtoRGB32(dst,
 				(const unsigned char*)f->Buffer(), f->BufferLength(), w, h);
-
-			// Cache valid frames for potential frame repeat
-			if (validation == FRAME_VALID) {
-				_CacheValidFrame((const uint8*)f->Buffer(), f->BufferLength(), w, h);
-			}
 		} else {
 			// Uncompressed payload: dispatch on the detected pixel format.
 			// UVC_FMT_UNKNOWN falls through to YUY2 for backwards compatibility
@@ -5832,9 +5817,6 @@ UVCCamDevice::FillFrameBuffer(BBuffer* buffer, bigtime_t* stamp)
 						actualSize, w, h);
 					break;
 			}
-
-			if (validation == FRAME_VALID)
-				_CacheValidFrame((const uint8*)srcData, actualSize, w, h);
 		}
 	}
 
@@ -6878,52 +6860,6 @@ UVCCamDevice::_FindJpegMarker(const uint8* data, size_t size,
 			return true;
 		}
 	}
-	return false;
-}
-
-
-void
-UVCCamDevice::_CacheValidFrame(const uint8* data, size_t size,
-	int32 width, int32 height)
-{
-	// Reallocate if size changed. FIX: shrink when the stream drops to a
-	// much smaller resolution so a 1080p session does not pin megabytes
-	// after switching to QVGA. Cap the cache at 8MB either way.
-	if (size > 8u * 1024 * 1024)
-		return;
-	if (fLastValidFrame == NULL || fLastValidFrameSize < size
-		|| (fLastValidFrameSize > 1024 * 1024 && size < fLastValidFrameSize / 4)) {
-		delete[] fLastValidFrame;
-		fLastValidFrame = new(std::nothrow) uint8[size];
-		if (fLastValidFrame == NULL) {
-			fLastValidFrameSize = 0;
-			return;
-		}
-	}
-
-	memcpy(fLastValidFrame, data, size);
-	fLastValidFrameSize = size;
-	fLastValidWidth = width;
-	fLastValidHeight = height;
-	fValidationStats.last_valid_frame_time = system_time();
-}
-
-
-bool
-UVCCamDevice::_UseLastValidFrame(uint8* dst, size_t dstSize)
-{
-	if (fLastValidFrame == NULL || fLastValidFrameSize == 0) {
-		return false;
-	}
-
-	// For RGB32 output, we need to decompress/convert the cached frame
-	// This simplified version just copies if dst is large enough
-	if (dstSize >= fLastValidFrameSize) {
-		memcpy(dst, fLastValidFrame, fLastValidFrameSize);
-		fValidationStats.frames_repeated++;
-		return true;
-	}
-
 	return false;
 }
 

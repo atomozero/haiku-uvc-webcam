@@ -60,6 +60,7 @@
 #   FIX-47  hoisted row bounds check        static: last full row once
 #   FIX-48  pool byte cap                   static: byte cap for the pool
 #   FIX-49  probe size hint                 static: last good size
+#   FIX-50  no frame repeat cache           static: cache removed
 set -e
 cd "$(dirname "$0")"
 
@@ -177,6 +178,8 @@ check "FIX-48 pool byte cap" \
 	"grep -q 'Byte cap for the pool' $SRC/CamDeframer.cpp"
 check "FIX-49 probe size hint" \
 	"grep -q 'last good size' $SRC/addons/uvc/UVCCamDevice.cpp"
+check "FIX-50 no frame repeat cache" \
+	"! grep -q '_CacheValidFrame' $SRC/addons/uvc/UVCCamDevice.cpp"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"
