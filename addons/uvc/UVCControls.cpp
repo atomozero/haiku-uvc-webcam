@@ -377,7 +377,7 @@ UVCCamDevice::AddParameters(BParameterGroup* group, int32& index)
 					|| ctrlLen == 0) {
 					// No reliable length: skip the GET_CUR probe rather than
 					// risk a babble. GET_INFO already told us it's readable.
-					syslog(LOG_INFO, "UVCCamDevice: XU[%d] sel=%d info=0x%02x "
+					WEBCAM_VERBOSE("UVCCamDevice: XU[%d] sel=%d info=0x%02x "
 						"%s (length unknown, GET_CUR skipped)\n",
 						xu->unit_id, sel, info,
 						(info & 0x02) ? "(rw)" : "(ro)");
@@ -392,7 +392,7 @@ UVCCamDevice::AddParameters(BParameterGroup* group, int32& index)
 				if (_XUGetCur(xu->unit_id, sel, probe, ctrlLen) != B_OK)
 					continue;
 
-				syslog(LOG_INFO, "UVCCamDevice: XU[%d] sel=%d info=0x%02x "
+				WEBCAM_VERBOSE("UVCCamDevice: XU[%d] sel=%d info=0x%02x "
 					"len=%u cur=0x%02x %s\n",
 					xu->unit_id, sel, info, ctrlLen, probe[0],
 					(info & 0x02) ? "(rw)" : "(ro)");

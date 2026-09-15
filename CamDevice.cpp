@@ -1540,7 +1540,8 @@ CamDeviceAddon::Sniff(BUSBDevice *device)
 		}
 	}
 
-	syslog(LOG_INFO, "CamDeviceAddon::Sniff[%s]: NOT supported "
+	// One line per addon per USB device (hubs included) — VERBOSE only.
+	WEBCAM_VERBOSE("CamDeviceAddon::Sniff[%s]: NOT supported "
 		"(VID=0x%04x PID=0x%04x)\n",
 		BrandName() ? BrandName() : "?",
 		device->VendorID(), device->ProductID());

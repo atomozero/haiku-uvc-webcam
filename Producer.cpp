@@ -26,6 +26,7 @@
 
 #include "CamDevice.h"
 #include "CamSensor.h"
+#include "CamDebug.h"
 
 #define SINGLE_PARAMETER_GROUP 1
 
@@ -1484,7 +1485,7 @@ VideoProducer::FrameGenerator()
 		// Only skip if semaphore was explicitly released (timing change signal)
 		if (err == B_OK) {
 			if (frameLog < 10) {
-				syslog(LOG_INFO, "Producer: Frame %u: sem acquired (timing change), skip\n", fFrame);
+				WEBCAM_VERBOSE("Producer: Frame %u: sem acquired (timing change), skip\n", fFrame);
 				frameLog++;
 			}
 			continue;
@@ -1492,7 +1493,7 @@ VideoProducer::FrameGenerator()
 
 		if (!fRunning || !fEnabled) {
 			if (frameLog < 10) {
-				syslog(LOG_INFO, "Producer: Frame %u: not running/enabled (%d/%d)\n",
+				WEBCAM_VERBOSE("Producer: Frame %u: not running/enabled (%d/%d)\n",
 					fFrame, (int)fRunning.load(), (int)fEnabled.load());
 				frameLog++;
 			}
@@ -1595,7 +1596,7 @@ VideoProducer::FrameGenerator()
 			continue;
 		}
 		if (frameLog < 10) {
-			syslog(LOG_INFO, "Producer: FillFrameBuffer OK #%d\n", frameLog);
+			WEBCAM_VERBOSE("Producer: FillFrameBuffer OK #%d\n", frameLog);
 			frameLog++;
 		}
 #ifdef UseGetFrameBitmap
@@ -1643,7 +1644,7 @@ VideoProducer::FrameGenerator()
 			buffer->Recycle();
 		} else {
 			if (frameLog < 10) {
-				syslog(LOG_INFO, "Producer: Frame %u: SendBuffer OK!\n", fFrame);
+				WEBCAM_VERBOSE("Producer: Frame %u: SendBuffer OK!\n", fFrame);
 				frameLog++;
 			}
 		}

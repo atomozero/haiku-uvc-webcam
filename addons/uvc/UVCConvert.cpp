@@ -497,9 +497,12 @@ UVCCamDevice::_ConvertYUY2toRGB32(unsigned char* dst, unsigned char* src,
 		}
 	}
 
-	// Enhanced YUY2 diagnostics to detect byte order issues
+	// Enhanced YUY2 diagnostics to detect byte order issues.
+	// First-frames-only analysis, VERBOSE gated (used to spam ~20 lines).
 	static int32 sYUY2Diag = 0;
-	if (++sYUY2Diag <= 5) {
+	if (sYUY2Diag < 5
+		&& gWebcamDebugLevel >= WEBCAM_DEBUG_VERBOSE) {
+		++sYUY2Diag;
 		// Analyze first few pixels to detect YUYV vs UYVY
 		// In YUYV: Y values vary widely (0-255), U/V are more stable (around 128 for gray)
 		// In UYVY: positions are swapped
@@ -516,18 +519,18 @@ UVCCamDevice::_ConvertYUY2toRGB32(unsigned char* dst, unsigned char* src,
 		// In UYVY: even bytes are U/V (near 128), odd bytes are Y (vary)
 		bool probablyYUYV = (abs(oddAvg - 128) < abs(evenAvg - 128));
 
-		syslog(LOG_INFO, "YUY2 diag #%d: bytes=[%02x %02x %02x %02x | %02x %02x %02x %02x]\n",
+		WEBCAM_VERBOSE("YUY2 diag #%d: bytes=[%02x %02x %02x %02x | %02x %02x %02x %02x]\n",
 			(int)sYUY2Diag, b0, b1, b2, b3, b4, b5, b6, b7);
-		syslog(LOG_INFO, "YUY2 diag #%d: evenAvg=%d oddAvg=%d -> likely %s\n",
+		WEBCAM_VERBOSE("YUY2 diag #%d: evenAvg=%d oddAvg=%d -> likely %s\n",
 			(int)sYUY2Diag, evenAvg, oddAvg, probablyYUYV ? "YUYV" : "UYVY");
-		syslog(LOG_INFO, "YUY2 diag #%d: srcSize=%zu expected=%zu srcStride=%zu dstStride=%zu\n",
+		WEBCAM_VERBOSE("YUY2 diag #%d: srcSize=%zu expected=%zu srcStride=%zu dstStride=%zu\n",
 			(int)sYUY2Diag, srcSize, (size_t)width * height * 2, srcStride, dstStride);
 
 		// Detect if camera pads rows to alignment boundaries
 		// Check if srcSize is larger than expected and find actual stride
 		if (srcSize > (size_t)width * height * 2) {
 			size_t actualStride = srcSize / height;
-			syslog(LOG_WARNING, "YUY2 diag #%d: Source has PADDING! srcSize=%zu > expected=%zu, actualStride=%zu (expected %zu)\n",
+			WEBCAM_VERBOSE("YUY2 diag #%d: Source has PADDING! srcSize=%zu > expected=%zu, actualStride=%zu (expected %zu)\n",
 				(int)sYUY2Diag, srcSize, (size_t)width * height * 2, actualStride, srcStride);
 		}
 
@@ -543,7 +546,7 @@ UVCCamDevice::_ConvertYUY2toRGB32(unsigned char* dst, unsigned char* src,
 				// Compare first few pixels of row 0 with potential row 1
 				int diff = abs((int)src[0] - (int)src[off]) + abs((int)src[2] - (int)src[off+2]) +
 				           abs((int)src[4] - (int)src[off+4]) + abs((int)src[6] - (int)src[off+6]);
-				syslog(LOG_INFO, "YUY2 stride test: offset=%d diff=%d (low=similar rows)\n", off, diff);
+				WEBCAM_VERBOSE("YUY2 stride test: offset=%d diff=%d (low=similar rows)\n", off, diff);
 			}
 		}
 	}

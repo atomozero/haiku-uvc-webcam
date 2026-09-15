@@ -27,6 +27,22 @@
 #define TRACE(x...) do {} while(0)
 //#define TRACE(x...) printf(x)
 
+// Descriptor-dump gate: every printf() in this file is enumeration noise
+// from the VS/VC descriptor parsers (~100 lines per device start).
+// Route them through the debug level so the default log stays quiet;
+// parsing itself is unaffected.
+#include <stdarg.h>
+static inline void UVC_Dump(const char* format, ...)
+{
+	if (gWebcamDebugLevel < WEBCAM_DEBUG_VERBOSE)
+		return;
+	va_list args;
+	va_start(args, format);
+	vprintf(format, args);
+	va_end(args);
+}
+#define printf UVC_Dump
+
 
 usb_webcam_support_descriptor kSupportedDevices[] = {
 	// Specific VID/PID devices first (higher priority than generic class match)
@@ -1269,13 +1285,13 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 
 		// Log frame indices for current format (raw USB order, for debugging)
 		BList* frameList = fIsMJPEG ? &fMJPEGFrames : &fUncompressedFrames;
-		syslog(LOG_DEBUG, "UVCCamDevice: Raw %s frame list (%d entries):\n",
+		WEBCAM_VERBOSE("UVCCamDevice: Raw %s frame list (%d entries):\n",
 			fIsMJPEG ? "MJPEG" : uncompressedName, (int)frameList->CountItems());
 		for (int32 i = 0; i < frameList->CountItems(); i++) {
 			const usb_video_frame_descriptor* desc =
 				(const usb_video_frame_descriptor*)frameList->ItemAt(i);
 			if (desc)
-				syslog(LOG_DEBUG, "UVCCamDevice:   raw[%d] %ux%u frame_index=%u\n",
+				WEBCAM_VERBOSE("UVCCamDevice:   raw[%d] %ux%u frame_index=%u\n",
 					(int)i, desc->width, desc->height, desc->frame_index);
 		}
 	} else if (fFrameBasedFrames.CountItems() > 0) {
@@ -2907,9 +2923,9 @@ UVCCamDevice::_ProbeCommitFormat()
 				&& queriedLen >= 22
 				&& queriedLen <= sizeof(probeBuf.raw)) {
 			length = queriedLen;
-			syslog(LOG_INFO, "UVC Probe: GET_LEN reports %zu bytes\n", length);
+			WEBCAM_VERBOSE("UVC Probe: GET_LEN reports %zu bytes\n", length);
 		} else if (got > 0) {
-			syslog(LOG_INFO, "UVC Probe: GET_LEN returned %zu bytes "
+			WEBCAM_VERBOSE("UVC Probe: GET_LEN returned %zu bytes "
 				"(value=%u out of range, falling back to version guess)\n",
 				got, queriedLen);
 		}
@@ -2921,7 +2937,7 @@ UVCCamDevice::_ProbeCommitFormat()
 		if (fProbeCommitSize >= 22
 			&& fProbeCommitSize <= sizeof(probeBuf.raw)
 			&& fProbeCommitSize != length) {
-			syslog(LOG_INFO, "UVC Probe: trying last good size %zu first\n",
+			WEBCAM_VERBOSE("UVC Probe: trying last good size %zu first\n",
 				fProbeCommitSize);
 			length = fProbeCommitSize;
 		}
@@ -2952,21 +2968,21 @@ UVCCamDevice::_ProbeCommitFormat()
 	const bool haveDef = (defLen == length);
 
 	if (haveMin) {
-		syslog(LOG_DEBUG, "UVC Probe GET_MIN: frame_interval=%u "
+		WEBCAM_VERBOSE("UVC Probe GET_MIN: frame_interval=%u "
 			"max_video_frame_size=%u max_payload=%u\n",
 			minBuf.fields.frame_interval,
 			minBuf.fields.max_video_frame_size,
 			minBuf.fields.max_payload_transfer_size);
 	}
 	if (haveMax) {
-		syslog(LOG_DEBUG, "UVC Probe GET_MAX: frame_interval=%u "
+		WEBCAM_VERBOSE("UVC Probe GET_MAX: frame_interval=%u "
 			"max_video_frame_size=%u max_payload=%u\n",
 			maxBuf.fields.frame_interval,
 			maxBuf.fields.max_video_frame_size,
 			maxBuf.fields.max_payload_transfer_size);
 	}
 	if (haveDef) {
-		syslog(LOG_DEBUG, "UVC Probe GET_DEF: format=%u frame=%u "
+		WEBCAM_VERBOSE("UVC Probe GET_DEF: format=%u frame=%u "
 			"frame_interval=%u\n",
 			defBuf.fields.format_index, defBuf.fields.frame_index,
 			defBuf.fields.frame_interval);
@@ -2994,7 +3010,7 @@ UVCCamDevice::_ProbeCommitFormat()
 		probeBuf.fields.frame_interval = request.frame_interval;
 	}
 
-	syslog(LOG_DEBUG, "UVC Probe request: format=%d frame=%d interval=%u (MJPEG=%d)\n",
+	WEBCAM_VERBOSE("UVC Probe request: format=%d frame=%d interval=%u (MJPEG=%d)\n",
 		request.format_index, request.frame_index, request.frame_interval, fIsMJPEG);
 
 	// Try SET_CUR Probe with retry logic and fallback to different sizes
@@ -3018,12 +3034,12 @@ UVCCamDevice::_ProbeCommitFormat()
 	bool probeSuccess = false;
 
 	// First try the expected size based on UVC version with retries
-	syslog(LOG_INFO, "UVC Probe: trying size %zu (UVC version 0x%04x)\n",
+	WEBCAM_VERBOSE("UVC Probe: trying size %zu (UVC version 0x%04x)\n",
 		length, uvcVersion);
 
 	for (int retry = 0; retry < kMaxRetries && !probeSuccess; retry++) {
 		if (retry > 0) {
-			syslog(LOG_INFO, "UVC Probe: retry %d with delay %lldms\n",
+			WEBCAM_VERBOSE("UVC Probe: retry %d with delay %lldms\n",
 				retry, kRetryDelays[retry - 1] / 1000);
 			snooze(kRetryDelays[retry - 1]);
 		}
@@ -3049,7 +3065,7 @@ UVCCamDevice::_ProbeCommitFormat()
 			if (trySize == length)
 				continue;  // Already tried this one
 
-			syslog(LOG_INFO, "UVC Probe: trying alternative size %zu\n", trySize);
+			WEBCAM_VERBOSE("UVC Probe: trying alternative size %zu\n", trySize);
 
 			for (int retry = 0; retry < kMaxRetries && !probeSuccess; retry++) {
 				// Delay before each attempt (including first)
@@ -3357,7 +3373,7 @@ UVCCamDevice::_SelectBestAlternate()
 	bool selectedHighBandwidth = false;
 
 	// PASS 1: Only consider single-transaction endpoints (mult=1)
-	syslog(LOG_INFO, "UVCCamDevice: Pass 1 - scanning for single-transaction endpoints (mult=1)\n");
+	WEBCAM_VERBOSE("UVCCamDevice: Pass 1 - scanning for single-transaction endpoints (mult=1)\n");
 
 	for (uint32 i = 0; i < streaming->CountAlternates(); i++) {
 		const BUSBInterface* alternate = streaming->AlternateAt(i);
@@ -3374,12 +3390,12 @@ UVCCamDevice::_SelectBestAlternate()
 			uint32 transactions = ((rawMaxPacketSize >> 11) & 0x3) + 1;
 			uint32 totalBandwidth = basePacketSize * transactions;
 
-			syslog(LOG_DEBUG, "UVCCamDevice: Alt %u EP %u: raw=0x%04x base=%u trans=%u total=%u bytes\n",
+			WEBCAM_VERBOSE("UVCCamDevice: Alt %u EP %u: raw=0x%04x base=%u trans=%u total=%u bytes\n",
 				i, j, rawMaxPacketSize, basePacketSize, transactions, totalBandwidth);
 
 			// Pass 1: Skip high-bandwidth endpoints (mult > 1)
 			if (transactions > 1) {
-				syslog(LOG_DEBUG, "UVCCamDevice: Pass 1: Skipping high-bandwidth endpoint (mult=%u)\n",
+				WEBCAM_VERBOSE("UVCCamDevice: Pass 1: Skipping high-bandwidth endpoint (mult=%u)\n",
 					transactions);
 				continue;
 			}
@@ -4175,13 +4191,13 @@ UVCCamDevice::_BuildSortedResolutionList()
 		fSortedMJPEGCount = mjpegCount;
 
 		// Log the sorted order
-		syslog(LOG_INFO, "UVC: MJPEG resolutions sorted by size (count=%d):\n", mjpegCount);
+		WEBCAM_VERBOSE("UVC: MJPEG resolutions sorted by size (count=%d):\n", mjpegCount);
 		for (int32 i = 0; i < mjpegCount; i++) {
 			int32 sortedIdx = fSortedMJPEGIndices[i];
 			usb_video_frame_descriptor* desc =
 				(usb_video_frame_descriptor*)fMJPEGFrames.ItemAt(sortedIdx);
 			if (desc) {
-				syslog(LOG_INFO, "UVCCamDevice:   [%d] %ux%u frame_index=%u\n",
+				WEBCAM_VERBOSE("UVCCamDevice:   [%d] %ux%u frame_index=%u\n",
 					i, desc->width, desc->height, desc->frame_index);
 			} else {
 				syslog(LOG_WARNING, "UVCCamDevice:   [%d] NULL descriptor at sorted index %d\n",
@@ -4221,13 +4237,13 @@ UVCCamDevice::_BuildSortedResolutionList()
 		fSortedUncompressedCount = uncompCount;
 
 		// Log the sorted order
-		syslog(LOG_INFO, "UVC: Uncompressed resolutions sorted by size (count=%d):\n", uncompCount);
+		WEBCAM_VERBOSE("UVC: Uncompressed resolutions sorted by size (count=%d):\n", uncompCount);
 		for (int32 i = 0; i < uncompCount; i++) {
 			int32 sortedIdx = fSortedUncompressedIndices[i];
 			usb_video_frame_descriptor* desc =
 				(usb_video_frame_descriptor*)fUncompressedFrames.ItemAt(sortedIdx);
 			if (desc) {
-				syslog(LOG_INFO, "UVCCamDevice:   [%d] %ux%u frame_index=%u\n",
+				WEBCAM_VERBOSE("UVCCamDevice:   [%d] %ux%u frame_index=%u\n",
 					i, desc->width, desc->height, desc->frame_index);
 			} else {
 				syslog(LOG_WARNING, "UVCCamDevice:   [%d] NULL descriptor at sorted index %d\n",

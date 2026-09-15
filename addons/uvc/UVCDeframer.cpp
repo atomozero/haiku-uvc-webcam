@@ -90,7 +90,7 @@ UVCDeframer::Flush()
 	fID = 0;
 	fPacketsThisFrame = 0;
 
-	syslog(LOG_INFO, "UVCDeframer: Flush complete (completed=%d, incomplete=%d)\n",
+	WEBCAM_VERBOSE("UVCDeframer: Flush complete (completed=%d, incomplete=%d)\n",
 		(int)fFramesCompleted, (int)fFramesIncomplete);
 
 	return err;
@@ -189,7 +189,7 @@ UVCDeframer::Write(const void* buffer, size_t size)
 		// Log previous frame's total bytes (before reset)
 		static int32 sBytesLog = 0;
 		if (++sBytesLog <= 10 && fTotalBytesThisFrame > 0) {
-			syslog(LOG_INFO, "UVCDeframer: Previous frame total bytes=%zu (expected=%zu diff=%d)\n",
+			WEBCAM_VERBOSE("UVCDeframer: Previous frame total bytes=%zu (expected=%zu diff=%d)\n",
 				fTotalBytesThisFrame, fExpectedFrameSize,
 				(int)((ssize_t)fTotalBytesThisFrame - (ssize_t)fExpectedFrameSize));
 		}
@@ -198,7 +198,7 @@ UVCDeframer::Write(const void* buffer, size_t size)
 		static int32 sDebugFrames = 0;
 		if (sDebugFrames < 3) {
 			sDebugFrames++;
-			syslog(LOG_INFO, "UVCDeframer: New frame #%d started (FID=%d pkts=%d bufSize=%zu)\n",
+			WEBCAM_VERBOSE("UVCDeframer: New frame #%d started (FID=%d pkts=%d bufSize=%zu)\n",
 				(int)sDebugFrames, fID, (int)fPacketsThisFrame,
 				fCurrentFrame != NULL ? fCurrentFrame->BufferLength() : 0);
 			// Dump first 16 bytes of this packet (header + start of payload)
@@ -216,7 +216,7 @@ UVCDeframer::Write(const void* buffer, size_t size)
 				dumpLen > 10 ? buf[10] : 0, dumpLen > 11 ? buf[11] : 0,
 				dumpLen > 12 ? buf[12] : 0, dumpLen > 13 ? buf[13] : 0,
 				dumpLen > 14 ? buf[14] : 0, dumpLen > 15 ? buf[15] : 0);
-			syslog(LOG_INFO, "UVCDeframer: %s\n", hexbuf);
+			WEBCAM_VERBOSE("UVCDeframer: %s\n", hexbuf);
 		}
 
 		// A FID toggle starts a new frame. MJPEG completes the
@@ -318,7 +318,7 @@ UVCDeframer::Write(const void* buffer, size_t size)
 		// Log EOF occurrences for YUY2 to understand frame boundaries
 		static int32 sEofLog = 0;
 		if (eof && ++sEofLog <= 10) {
-			syslog(LOG_INFO, "UVCDeframer: EOF at size=%zu (expected=%zu, diff=%d)\n",
+			WEBCAM_VERBOSE("UVCDeframer: EOF at size=%zu (expected=%zu, diff=%d)\n",
 				currentSize, fExpectedFrameSize,
 				(int)((ssize_t)currentSize - (ssize_t)fExpectedFrameSize));
 		}
@@ -337,7 +337,7 @@ UVCDeframer::Write(const void* buffer, size_t size)
 				size_t paddingNeeded = fExpectedFrameSize - currentSize;
 				static int32 sPadLog = 0;
 				if (++sPadLog <= 10) {
-					syslog(LOG_INFO, "UVCDeframer: Padding YUY2 frame with %zu bytes (%.1f%% complete)\n",
+					WEBCAM_VERBOSE("UVCDeframer: Padding YUY2 frame with %zu bytes (%.1f%% complete)\n",
 						paddingNeeded, 100.0f * currentSize / fExpectedFrameSize);
 				}
 			// Write padding as 32-bit black words, tail keeps pattern.
@@ -358,14 +358,14 @@ UVCDeframer::Write(const void* buffer, size_t size)
 			frameComplete = true;
 			static int32 sEofComplete = 0;
 			if (++sEofComplete <= 5)
-				syslog(LOG_INFO, "UVCDeframer: YUY2 frame complete by EOF! size=%zu expected=%zu\n",
+				WEBCAM_VERBOSE("UVCDeframer: YUY2 frame complete by EOF! size=%zu expected=%zu\n",
 					currentSize, fExpectedFrameSize);
 		} else if (currentSize >= fExpectedFrameSize) {
 			frameComplete = true;
 			// Log first few frame completions
 			static int32 sCompletedLog = 0;
 			if (++sCompletedLog <= 5)
-				syslog(LOG_INFO, "UVCDeframer: Frame complete by SIZE! size=%zu expected=%zu\n",
+				WEBCAM_VERBOSE("UVCDeframer: Frame complete by SIZE! size=%zu expected=%zu\n",
 					currentSize, fExpectedFrameSize);
 
 			// P32: previously, when fTotalBytesThisFrame > fExpectedFrameSize
