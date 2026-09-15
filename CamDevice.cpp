@@ -17,18 +17,9 @@
 #include <MediaRoster.h>
 #include <syslog.h>
 
-/* PRODUCTION BUILD: Disable all file I/O to prevent BFS corruption */
-/* CRITICAL: File I/O in USB threads causes kernel panics */
-#define PRODUCTION_BUILD 1
-
-#ifdef PRODUCTION_BUILD
-#undef fopen
-#define fopen(path, mode) ((FILE*)NULL)
-#undef fclose
-#define fclose(f) do {} while(0)
-#undef fflush
-#define fflush(f) do {} while(0)
-#endif
+/* File I/O stays disabled by leaving the DEBUG_* dump flags
+ * below undefined. Do not redefine fopen here, hidden macros
+ * make call sites lie about what they do. */
 
 //#define DEBUG_WRITE_DUMP
 //#define DEBUG_DISCARD_DATA

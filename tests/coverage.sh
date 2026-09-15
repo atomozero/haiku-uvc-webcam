@@ -48,6 +48,7 @@
 #   FIX-35  fill counters atomic          static: fill counters are atomic
 #   FIX-36  audio params atomic           static: keep them atomic
 #   FIX-37  deframer teardown order       static: pump must be stopped
+#   FIX-38  no fopen macro                static: hidden macros
 set -e
 cd "$(dirname "$0")"
 
@@ -141,6 +142,8 @@ check "FIX-36 audio params atomic" \
 	"grep -q 'keep them atomic' $SRC/AudioProducer.h"
 check "FIX-37 deframer teardown order" \
 	"grep -q 'Pump must be stopped' $SRC/CamDeframer.cpp"
+check "FIX-38 no fopen macro" \
+	"! grep -q 'define fopen(path' $SRC/CamDevice.cpp"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"
