@@ -20,7 +20,7 @@ Rules:
 | FIX-22 | fFrameSync TOCTOU release vs delete | Producer.cpp, AudioProducer.cpp | Medium | done |
 | FIX-23 | Generator holds fLock across SendBuffer | Producer.cpp | Medium | done |
 | FIX-24 | UVC Flush touches state without lock | addons/uvc/UVCDeframer.cpp | Medium | done |
-| FIX-25 | CamDeframer pool/sem robustness | CamDeframer.cpp | Medium | todo |
+| FIX-25 | CamDeframer pool/sem robustness | CamDeframer.cpp | Medium | done |
 | FIX-26 | fStats garbage on first update | Producer.cpp | Low | todo |
 | FIX-27 | AddOn InitCheck NULL and CountFlavors error | AddOn.cpp | Low | todo |
 | FIX-28 | Backoff cap attempt to avoid long loop | addons/uvc/UVCSafety.cpp, CamDevice.cpp | Low | todo |

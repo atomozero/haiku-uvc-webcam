@@ -35,6 +35,7 @@
 #   FIX-22  frame sync race           static: copy id under lock
 #   FIX-23  short generator lock      static: copy group under lock
 #   FIX-24  flush under lock          static: lock in UVC Flush
+#   FIX-25  deframer pool robustness  static: recycle + tag guards
 set -e
 cd "$(dirname "$0")"
 
@@ -100,6 +101,10 @@ check "FIX-23 short lock" \
 	"grep -q 'Copy group and size under lock' $SRC/Producer.cpp"
 check "FIX-24 flush lock" \
 	"grep -q 'Clear local state under lock' $SRC/addons/uvc/UVCDeframer.cpp"
+check "FIX-25 recycle drop" \
+	"grep -q 'Recycle to keep pool warm' $SRC/CamDeframer.cpp"
+check "FIX-25 tag guards" \
+	"grep -q 'tags == NULL' $SRC/CamDeframer.cpp"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"

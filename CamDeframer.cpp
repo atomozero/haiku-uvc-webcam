@@ -180,7 +180,8 @@ CamDeframer::DropFrame()
 	CamFrame *f = (CamFrame *)fFrames.RemoveItem((int32)0);
 	if (!f)
 		return ENOENT;
-	delete f;
+	// Recycle to keep pool warm, matches drop-oldest path.
+	RecycleFrame(f);
 	// Consume one permit for the removed frame.
 	acquire_sem_etc(fFrameSem, 1, B_RELATIVE_TIMEOUT, (bigtime_t)0);
 	return B_OK;
@@ -221,9 +222,9 @@ CamDeframer::RegisterSOFTags(const uint8 **tags, int count, size_t len, size_t s
 {
 	if (fSOFTags)
 		return EALREADY;
-	if (len > MAX_TAG_LEN)
+	if (tags == NULL || count <= 0 || count > 16)
 		return EINVAL;
-	if (count > 16)
+	if (len == 0 || len > MAX_TAG_LEN)
 		return EINVAL;
 	fSOFTags = tags;
 	fNumSOFTags = count;
@@ -238,9 +239,9 @@ CamDeframer::RegisterEOFTags(const uint8 **tags, int count, size_t len, size_t s
 {
 	if (fEOFTags)
 		return EALREADY;
-	if (len > MAX_TAG_LEN)
+	if (tags == NULL || count <= 0 || count > 16)
 		return EINVAL;
-	if (count > 16)
+	if (len == 0 || len > MAX_TAG_LEN)
 		return EINVAL;
 	fEOFTags = tags;
 	fNumEOFTags = count;
@@ -254,8 +255,13 @@ int
 CamDeframer::FindTags(const uint8 *buf, size_t buflen, const uint8 **tags, int tagcount, size_t taglen, size_t skiplen, int *which)
 {
 	int i, t;
+	if (buf == NULL || tags == NULL || tagcount <= 0)
+		return -1;
 	// Prevent unsigned underflow if buflen < skiplen
 	if (buflen < skiplen)
+		return -1;
+	// Keep int cast safe, buffers are small.
+	if (buflen > (size_t)INT_MAX)
 		return -1;
 	for (i = 0; i < (int)(buflen - skiplen + 1); i++) {
 		for (t = 0; t < tagcount; t++) {
@@ -333,6 +339,8 @@ CamDeframer::RecycleFrame(CamFrame* frame)
 int32
 CamDeframer::PoolSize() const
 {
+	// Read under lock, count can change on pump thread.
+	BAutolock l((BLocker&)fLocker);
 	return fFramePool.CountItems();
 }
 
