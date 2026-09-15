@@ -328,6 +328,8 @@ AudioProducer::FormatSuggestionRequested(
 {
 	if (type != B_MEDIA_RAW_AUDIO)
 		return B_MEDIA_BAD_FORMAT;
+	if (format == NULL)
+		return B_BAD_VALUE;
 
 	TOUCH(quality);
 
@@ -339,6 +341,8 @@ AudioProducer::FormatSuggestionRequested(
 status_t
 AudioProducer::FormatProposal(const media_source &output, media_format *format)
 {
+	if (format == NULL)
+		return B_BAD_VALUE;
 	if (output != fOutput.source)
 		return B_MEDIA_BAD_SOURCE;
 
@@ -564,18 +568,23 @@ AudioProducer::Connect(status_t error, const media_source &source,
 	size_t sampleSize = fConnectedFormat.format
 		& media_raw_audio_format::B_AUDIO_SIZE_MASK;
 	size_t channelCount = fConnectedFormat.channel_count;
-	if (sampleSize == 0 || channelCount == 0)
+	if (sampleSize == 0 || channelCount == 0) {
+		fOutput.destination = media_destination::null;
 		return;
+	}
 	size_t frameSize = sampleSize * channelCount;
 	if (frameSize == 0
 		|| fConnectedFormat.buffer_size % frameSize != 0
-		|| fConnectedFormat.buffer_size == 0)
+		|| fConnectedFormat.buffer_size == 0) {
+		fOutput.destination = media_destination::null;
 		return;
+	}
 	size_t framesPerBuffer = fConnectedFormat.buffer_size / frameSize;
 	if (framesPerBuffer == 0)
 		framesPerBuffer = 1;
 	if (!(fConnectedFormat.frame_rate > 1.0f
 		&& fConnectedFormat.frame_rate < 1000000.0f)) {
+		fOutput.destination = media_destination::null;
 		return;
 	}
 	fProcessingLatency = (bigtime_t)(framesPerBuffer * 1000000LL
@@ -588,17 +597,23 @@ AudioProducer::Connect(status_t error, const media_source &source,
 		|| fConnectedFormat.buffer_size > 4u * 1024 * 1024) {
 		syslog(LOG_ERR, "AudioProducer: refusing insane buffer size %u\n",
 			(unsigned)fConnectedFormat.buffer_size);
+		fOutput.destination = media_destination::null;
 		return;
 	}
 	fBufferGroup = new (std::nothrow) BBufferGroup(fConnectedFormat.buffer_size,
 		AUDIO_BUFFER_COUNT);
-	if (fBufferGroup == NULL || fBufferGroup->InitCheck() < B_OK) {
+	if (fBufferGroup == NULL) {
+		fOutput.destination = media_destination::null;
+		return;
+	}
+	if (fBufferGroup->InitCheck() < B_OK) {
 		syslog(LOG_ERR, "AudioProducer: BufferGroup InitCheck failed "
 			"(size=%u, err=%s)\n",
 			(unsigned)fConnectedFormat.buffer_size,
 			strerror(fBufferGroup->InitCheck()));
 		delete fBufferGroup;
 		fBufferGroup = NULL;
+		fOutput.destination = media_destination::null;
 		return;
 	}
 

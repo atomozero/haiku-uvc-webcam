@@ -20,7 +20,7 @@ Rules for this batch:
 | FIX-02 | `NW80xCamDevice::ReadIIC` calls itself, stack overflow | `addons/NW80xCamDevice.cpp:197` | Critical | done |
 | FIX-03 | Destructor frees after stall, wedged thread UAF (video + audio) | `CamDevice.cpp:209`, `UVCCamDevice.cpp:1307` | Critical | done |
 | FIX-04 | `fCamDevice` plain ptr race on hot-unplug (video + audio) | `Producer.h/.cpp`, `AudioProducer.h/.cpp` | Critical | done |
-| FIX-05 | `Connect` destination leak + missing NULL/format checks | `Producer.cpp:800`, `AudioProducer.cpp:530` | High | todo |
+| FIX-05 | `Connect` destination leak + missing NULL/format checks | `Producer.cpp:800`, `AudioProducer.cpp:530` | High | done |
 | FIX-06 | Param ID collision + missing size/NULL checks | `UVCCamDevice.cpp:4521`, `CamDevice.cpp:587` | High | todo |
 | FIX-07 | `w*h*bpp` overflow and div-by-zero in bandwidth math | `UVCCamDevice.cpp:2243,2635,3199` | High | todo |
 | FIX-08 | Shared `tjhandle` without lock, destroy while pump runs | `UVCCamDevice.cpp:6579,1331` | High | todo |

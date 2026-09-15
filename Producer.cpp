@@ -445,6 +445,8 @@ VideoProducer::FormatSuggestionRequested(
 {
 	if (type != B_MEDIA_RAW_VIDEO)
 		return B_MEDIA_BAD_FORMAT;
+	if (format == NULL)
+		return B_BAD_VALUE;
 
 	TOUCH(quality);
 
@@ -504,6 +506,10 @@ VideoProducer::FormatProposal(const media_source &output, media_format *format)
 	uint32 width = format->u.raw_video.display.line_width;
 	uint32 height = format->u.raw_video.display.line_count;
 
+	// Reject wild values before they reach the device.
+	if (width == 0 || height == 0 || width > 8192 || height > 8192)
+		return B_MEDIA_BAD_FORMAT;
+
 	// Check basic format compatibility (type and colorspace only)
 	bool basicCompatible = true;
 	if (format->type != B_MEDIA_RAW_VIDEO && format->type != B_MEDIA_UNKNOWN_TYPE)
@@ -528,6 +534,7 @@ VideoProducer::FormatProposal(const media_source &output, media_format *format)
 		if (err >= B_OK) {
 			format->u.raw_video.display.line_width = width;
 			format->u.raw_video.display.line_count = height;
+			// 4 bytes per pixel, width already capped above.
 			format->u.raw_video.display.bytes_per_row = width * 4;
 
 			/* FIX: Update fOutput.format to match the accepted resolution.
@@ -841,11 +848,13 @@ VideoProducer::Connect(status_t error, const media_source &source,
 		|| fConnectedFormat.display.line_width > 8192
 		|| fConnectedFormat.display.line_count > 8192) {
 		PRINTF(0, ("Connect: invalid dimensions\n"));
+		fOutput.destination = media_destination::null;
 		return;
 	}
 	p = buffer = (uint32 *)malloc(previewSize);
 	if (!buffer) {
 		PRINTF(0, ("Connect: Out of memory\n"));
+		fOutput.destination = media_destination::null;
 		return;
 	}
 	bigtime_t now = system_time();
@@ -863,6 +872,7 @@ VideoProducer::Connect(status_t error, const media_source &source,
 	if (bufferSize == 0 || bufferSize > 64u * 1024 * 1024) {
 		fprintf(stderr, "ERROR: Connect refuses insane buffer size %zu\n",
 			bufferSize);
+		fOutput.destination = media_destination::null;
 		return;
 	}
 	fprintf(stderr, "Creating buffer group: size=%zu count=8\n", bufferSize);
@@ -873,6 +883,7 @@ VideoProducer::Connect(status_t error, const media_source &source,
 		delete fBufferGroup;
 		fBufferGroup = NULL;
 	fprintf(stderr, "=== Connect END (buffer group failed) ===\n\n");
+		fOutput.destination = media_destination::null;
 		return;
 	}
 	fprintf(stderr, "BufferGroup created successfully\n");
