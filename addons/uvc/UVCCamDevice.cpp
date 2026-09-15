@@ -4632,6 +4632,10 @@ UVCCamDevice::AddParameters(BParameterGroup* group, int32& index)
 		}
 	}
 
+	// PU uses index+0..13, stream uses +14/+16. Keep them apart
+	// from CT/XU which allocate with index++ below.
+	index += 20;
+
 	// ── Camera Controls ──────────────────────────────────────
 	_AddCameraTerminalControls(group, index);
 
@@ -4710,7 +4714,13 @@ status_t
 UVCCamDevice::GetParameterValue(int32 id, bigtime_t* last_change, void* value,
 	size_t* size)
 {
-	printf("UVCCAmDevice::GetParameterValue(%" B_PRId32 ")\n", id - fFirstParameterID);
+	printf("UVCCamDevice::GetParameterValue(%" B_PRId32 ")\n", id - fFirstParameterID);
+	// Caller provides the buffer, check it before writing.
+	if (last_change == NULL || value == NULL || size == NULL)
+		return B_BAD_VALUE;
+	// All cases below write 4 bytes, reject small buffers.
+	if (*size < sizeof(float))
+		return B_BAD_VALUE;
 	float* currValue;
 	int* currValueInt;
 	int16 data;
@@ -4796,6 +4806,7 @@ UVCCamDevice::GetParameterValue(int32 id, bigtime_t* last_change, void* value,
 			} else {
 				// debug_printf("\tBacklight Compensation:\n");
 				// debug_printf("\tValue = %d\n",fBacklightCompensationBinary);
+				*size = sizeof(int);
 				currValueInt = (int*)value;
 				*currValueInt = fBacklightCompensationBinary;
 				*last_change = fLastParameterChanges;
