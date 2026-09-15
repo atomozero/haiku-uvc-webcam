@@ -392,7 +392,9 @@ MicrosecondsToFPS(bigtime_t interval)
 inline bigtime_t
 FPSToMicroseconds(float fps)
 {
-	if (fps <= 0.0f)
+	// Reject NaN, zero, negative and huge rates.
+	// NaN fails the range test and falls to 0.
+	if (!(fps >= 1.0f && fps <= 1000.0f))
 		return 0;
 	return (bigtime_t)(1000000.0f / fps);
 }

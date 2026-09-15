@@ -89,7 +89,8 @@ UVCDescByte(const uint8* desc, size_t len, size_t off)
 uint16
 UVCDescLE16(const uint8* desc, size_t len, size_t off)
 {
-	if (desc == NULL || off + 2 > len)
+	// Subtract style check, off + 2 can wrap near SIZE_MAX.
+	if (desc == NULL || off >= len || len - off < 2)
 		return 0;
 	return (uint16)((uint32)desc[off] | ((uint32)desc[off + 1] << 8));
 }
@@ -98,7 +99,8 @@ UVCDescLE16(const uint8* desc, size_t len, size_t off)
 uint32
 UVCDescLE32(const uint8* desc, size_t len, size_t off)
 {
-	if (desc == NULL || off + 4 > len)
+	// Same wrap-safe style as above.
+	if (desc == NULL || off >= len || len - off < 4)
 		return 0;
 	return (uint32)desc[off] | ((uint32)desc[off + 1] << 8)
 		| ((uint32)desc[off + 2] << 16) | ((uint32)desc[off + 3] << 24);

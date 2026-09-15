@@ -84,6 +84,7 @@ AudioProducer::AudioProducer(
 	// Group 8: Initialize audio statistics
 	fAudioStats.Reset();
 	fLastStatsReport = 0;
+	fLastBytesRead = -1;
 
 	fOutput.destination = media_destination::null;
 
@@ -1006,14 +1007,14 @@ AudioProducer::AudioGenerator()
 		}
 
 		// Only log when status changes: first read, transitions to/from underrun
-		static int sLastBytesRead = -1;
-		bool wasUnderrun = (sLastBytesRead == 0);
+		// Per instance state, shared static mixed two microphones.
+		bool wasUnderrun = (fLastBytesRead == 0);
 		bool isUnderrun = (bytesRead == 0);
-		if (sLastBytesRead < 0 || wasUnderrun != isUnderrun) {
+		if (fLastBytesRead < 0 || wasUnderrun != isUnderrun) {
 			syslog(LOG_INFO, "AudioProducer: read %zu/%zu bytes%s\n",
 				bytesRead, bytesToFill,
 				isUnderrun ? " (UNDERRUN)" : "");
-			sLastBytesRead = (int)bytesRead;
+			fLastBytesRead = (int)bytesRead;
 		}
 
 		// Fill remaining with silence if not enough data

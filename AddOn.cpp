@@ -126,6 +126,9 @@ WebCamMediaAddOn::CountFlavors()
 		int32 streams = (uvcCam != NULL) ? uvcCam->NumStreams() : 1;
 		if (streams < 1)
 			streams = 1;
+		// internal_id packs stream in bits 24-30, cap to 127.
+		if (streams > 127)
+			streams = 127;
 		videoFlavors += streams;
 		if (uvcCam != NULL && uvcCam->HasAudio())
 			audioFlavors++;
@@ -175,6 +178,8 @@ WebCamMediaAddOn::GetFlavorAt(int32 n, const flavor_info **out_info)
 		int32 streams = (uvcCam != NULL) ? uvcCam->NumStreams() : 1;
 		if (streams < 1)
 			streams = 1;
+		if (streams > 127)
+			streams = 127;
 		if (n < videoWalker + streams) {
 			int32 streamIdx = n - videoWalker;
 			if (streamIdx == 0) {

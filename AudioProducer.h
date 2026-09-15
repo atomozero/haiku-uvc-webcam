@@ -257,6 +257,8 @@ static	int32				_audio_generator_(void *data);
 		// Group 8: Audio statistics
 		audio_timing_stats	fAudioStats;
 		bigtime_t			fLastStatsReport;
+		// Last read size for underrun logs, per instance.
+		int					fLastBytesRead;
 
 public:
 		// Group 8: Statistics API

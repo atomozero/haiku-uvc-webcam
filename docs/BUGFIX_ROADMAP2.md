@@ -20,7 +20,7 @@ Rules:
 | FIX-15 | Unplugged w/o lock, tjDestroy w/o generator join, reconfig volatile + unbounded join | CamDevice.cpp/.h, UVCCamDevice.cpp | High | done |
 | FIX-16 | StartTransfer probe outside lock, audio Start/Stop race, ring free vs memcpy | UVCCamDevice.cpp | High | done |
 | FIX-17 | Deframer Write vs Flush race, sem drain livelock, DropFrame permit | CamDeframer.cpp, CamStreamingDeframer.cpp, UVCDeframer.cpp | Medium | done |
-| FIX-18 | streamIdx bit-pack overflow, fConnectedFormat race, audio static, FPSToMicroseconds NaN, UVCDesc wrap | AddOn.cpp, Producer.h, AudioProducer.cpp, CamUtils.h, UVCDescriptors.cpp | Medium | todo |
+| FIX-18 | streamIdx bit-pack overflow, fConnectedFormat race, audio static, FPSToMicroseconds NaN, UVCDesc wrap | AddOn.cpp, Producer.h, AudioProducer.cpp, CamUtils.h, UVCDescriptors.cpp | Medium | done |
 
 ## Coverage map
 
