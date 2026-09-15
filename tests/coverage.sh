@@ -33,6 +33,7 @@
 #   FIX-20  audio multi-instance      static: no early return on instances
 #   FIX-21  reconfig sem cleanup      static: delete sem after wait
 #   FIX-22  frame sync race           static: copy id under lock
+#   FIX-23  short generator lock      static: copy group under lock
 set -e
 cd "$(dirname "$0")"
 
@@ -94,6 +95,8 @@ check "FIX-20 multi mic" "grep -q 'allow many mics' $SRC/AudioProducer.cpp"
 check "FIX-21 sem cleanup" "grep -q 'Free sem even on timeout' $SRC/CamDevice.cpp"
 check "FIX-22 sync under lock" \
 	"grep -q 'Copy id under lock' $SRC/Producer.cpp $SRC/AudioProducer.cpp"
+check "FIX-23 short lock" \
+	"grep -q 'Copy group and size under lock' $SRC/Producer.cpp"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"

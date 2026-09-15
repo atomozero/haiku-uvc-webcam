@@ -18,7 +18,7 @@ Rules:
 | FIX-20 | Audio single-instance blocks second mic | AudioProducer.cpp | High | done |
 | FIX-21 | StopReconfigThread leaks sem on timeout | CamDevice.cpp | High | done |
 | FIX-22 | fFrameSync TOCTOU release vs delete | Producer.cpp, AudioProducer.cpp | Medium | done |
-| FIX-23 | Generator holds fLock across SendBuffer | Producer.cpp | Medium | todo |
+| FIX-23 | Generator holds fLock across SendBuffer | Producer.cpp | Medium | done |
 | FIX-24 | UVC Flush touches state without lock | addons/uvc/UVCDeframer.cpp | Medium | todo |
 | FIX-25 | CamDeframer pool/sem robustness | CamDeframer.cpp | Medium | todo |
 | FIX-26 | fStats garbage on first update | Producer.cpp | Low | todo |

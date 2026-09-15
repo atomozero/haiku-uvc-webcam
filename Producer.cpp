@@ -1487,9 +1487,19 @@ VideoProducer::FrameGenerator()
 			continue;
 		}
 
-		BAutolock _(fLock);
-
-		if (!fBufferGroup) {
+		// Copy group and size under lock, work outside.
+		BBufferGroup* group = NULL;
+		uint32 w = 0;
+		uint32 h = 0;
+		uint32 lineCount = 0;
+		{
+			BAutolock lock(fLock);
+			group = fBufferGroup;
+			w = fConnectedFormat.display.line_width;
+			h = fConnectedFormat.display.line_count;
+			lineCount = fConnectedFormat.display.line_count;
+		}
+		if (group == NULL) {
 			if (frameLog < 10) {
 				syslog(LOG_WARNING, "Producer: Frame %u: NO BUFFER GROUP!\n", fFrame);
 				frameLog++;
@@ -1497,20 +1507,16 @@ VideoProducer::FrameGenerator()
 			continue;
 		}
 
-		/* Fetch a buffer from the buffer group. FIX: compute the frame size
-		 * once in 64 bit with bounds so a hostile negotiated format cannot
-		 * wrap RequestBuffer/size_used and overflow the buffer below. */
+		// Use 64-bit size math with bounds.
 		size_t frameSize = 0;
 		{
-			uint32 w = fConnectedFormat.display.line_width;
-			uint32 h = fConnectedFormat.display.line_count;
 			if (w == 0 || h == 0 || w > 8192 || h > 8192)
 				continue;
 			frameSize = (size_t)4 * (size_t)w * (size_t)h;
 			if (frameSize == 0 || frameSize > 64u * 1024 * 1024)
 				continue;
 		}
-		BBuffer *buffer = fBufferGroup->RequestBuffer(frameSize, 0LL);
+		BBuffer *buffer = group->RequestBuffer(frameSize, 0LL);
 		if (!buffer) {
 			if (frameLog < 10) {
 				syslog(LOG_WARNING, "Producer: Frame %u: RequestBuffer failed\n", fFrame);
@@ -1541,7 +1547,7 @@ VideoProducer::FrameGenerator()
 		h->u.raw_video.field_number = 0;
 		h->u.raw_video.pulldown_number = 0;
 		h->u.raw_video.first_active_line = 1;
-		h->u.raw_video.line_count = fConnectedFormat.display.line_count;
+		h->u.raw_video.line_count = lineCount;
 
 		// This is where we fill the video buffer.
 
@@ -1551,10 +1557,12 @@ VideoProducer::FrameGenerator()
 		bigtime_t now = system_time();
 		bigtime_t stamp = 0;
 
-		// Capture device pointer to avoid race with hot-unplug.
-		// SetCamDevice(NULL) is called before device destruction,
-		// so checking fCamDevice here is safe.
-		CamDevice* device = fCamDevice;
+		// Copy device under lock, use outside.
+		CamDevice* device = NULL;
+		{
+			BAutolock lock(fLock);
+			device = fCamDevice;
+		}
 		if (device == NULL) {
 			buffer->Recycle();
 			break;	// device gone, exit loop
