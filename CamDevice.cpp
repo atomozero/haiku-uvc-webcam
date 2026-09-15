@@ -1078,28 +1078,45 @@ CamDevice::DataPumpThread()
 
 		while (atomic_get(&fTransferEnabled)) {
 			ssize_t len = -1;
-			BAutolock lock(fLocker);
-			if (!lock.IsLocked())
-				break;
-			if (!fBulkIn)
+			const BUSBEndpoint* endpoint = NULL;
+			uint8* buffer = NULL;
+			size_t bufferLen = 0;
+			BDataIO* input = NULL;
+			{
+				// Copy under lock, transfer outside so retry
+				// snooze never blocks reader threads.
+				BAutolock lock(fLocker);
+				if (!lock.IsLocked())
+					break;
+				if (!fBulkIn)
+					break;
+				endpoint = fBulkIn;
+				buffer = fBuffer;
+				bufferLen = fBufferLen;
+				input = fDataInput;
+			}
+			if (endpoint == NULL || buffer == NULL || bufferLen == 0)
 				break;
 #ifndef DEBUG_DISCARD_INPUT
-			// Use retry wrapper for more robust bulk transfers
-			len = BulkTransferWithRetry(fBulkIn, fBuffer, fBufferLen,
+			// Retry wrapper can snooze, keep it outside the lock.
+			len = BulkTransferWithRetry(endpoint, buffer, bufferLen,
 				bulkRetryConfig);
 #endif
 
 			//PRINT((CH ": got %ld bytes" CT, len));
 #ifdef DEBUG_WRITE_DUMP
-			write(fDumpFD, fBuffer, len);
+			if (len > 0)
+				write(fDumpFD, buffer, (size_t)len);
 #endif
 #ifdef DEBUG_READ_DUMP
-			if ((len = read(fDumpFD, fBuffer, fBufferLen)) < fBufferLen)
+			if ((len = read(fDumpFD, buffer, bufferLen)) < (ssize_t)bufferLen)
 				lseek(fDumpFD, 0LL, SEEK_SET);
 #endif
 
 			if (len <= 0) {
-				PRINT((CH ": BulkIn: %s" CT, strerror(len)));
+				// Log numeric code, strerror needs a status value.
+				PRINT((CH ": BulkIn: %ld (%s)" CT, (long)len,
+					strerror((status_t)len)));
 				// Check if device disconnected
 				if (ClassifyUSBError(len) == USB_ERROR_DISCONNECTED)
 					break;
@@ -1108,8 +1125,8 @@ CamDevice::DataPumpThread()
 			}
 
 #ifndef DEBUG_DISCARD_DATA
-			if (fDataInput) {
-				fDataInput->Write(fBuffer, len);
+			if (input != NULL) {
+				input->Write(buffer, (size_t)len);
 			} else {
 				// Data dropped: no consumer connected
 				PRINT((CH ": dropping %zd bytes (no consumer)" CT, len));
