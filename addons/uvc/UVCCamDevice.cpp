@@ -3690,6 +3690,8 @@ UVCCamDevice::_SelectIdleAlternate()
 status_t
 UVCCamDevice::StartAudioTransfer()
 {
+	// Serialise concurrent starts, Start uses same lock pattern.
+	BAutolock transferLock(Locker());
 	if (!fHasAudio) {
 		syslog(LOG_ERR, "UVCCamDevice::StartAudioTransfer: No audio interface\n");
 		return B_ERROR;
@@ -3848,6 +3850,8 @@ UVCCamDevice::StartAudioTransfer()
 status_t
 UVCCamDevice::StopAudioTransfer()
 {
+	// Serialise with Start, same lock.
+	BAutolock transferLock(Locker());
 	if (!fAudioTransferRunning)
 		return B_OK;
 
@@ -3953,6 +3957,10 @@ UVCCamDevice::ReadAudioData(void* buffer, size_t size)
 
 	size_t toRead = (available < size) ? available : size;
 	size_t firstChunk = fAudioRingSize - tail;
+
+	// Re-check lifetime, Stop may have freed the ring after the wait.
+	if (fAudioRingBuffer == NULL)
+		return 0;
 
 	if (firstChunk >= toRead) {
 		memcpy(buffer, fAudioRingBuffer + tail, toRead);
