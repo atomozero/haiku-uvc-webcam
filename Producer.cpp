@@ -1006,10 +1006,16 @@ VideoProducer::GetParameterValue(
 {
 	status_t err;
 
+	// Caller provides buffers, check before use.
+	if (last_change == NULL || value == NULL || size == NULL)
+		return B_BAD_VALUE;
+
 	switch (id) {
 		case P_COLOR:
 			//return B_BAD_VALUE;
 
+			if (*size < sizeof(uint32))
+				return B_BAD_VALUE;
 			*last_change = fLastColorChange;
 			*size = sizeof(uint32);
 			*((uint32 *)value) = fColor;

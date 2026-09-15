@@ -724,18 +724,28 @@ status_t
 AudioProducer::GetParameterValue(
 	int32 id, bigtime_t *last_change, void *value, size_t *size)
 {
+	// Caller provides buffers, check before use.
+	if (last_change == NULL || value == NULL || size == NULL)
+		return B_BAD_VALUE;
+
 	switch (id) {
 		case P_MUTE:
+			if (*size < sizeof(int32))
+				return B_BAD_VALUE;
 			*last_change = fLastParamChange;
 			*size = sizeof(int32);
 			*((int32 *)value) = fMuted ? 1 : 0;
 			return B_OK;
 		case P_VOLUME:
+			if (*size < sizeof(float))
+				return B_BAD_VALUE;
 			*last_change = fLastParamChange;
 			*size = sizeof(float);
 			*((float *)value) = fVolume;
 			return B_OK;
 		case P_AUTO_GAIN:
+			if (*size < sizeof(int32))
+				return B_BAD_VALUE;
 			*last_change = fLastParamChange;
 			*size = sizeof(int32);
 			*((int32 *)value) = fAutoGain ? 1 : 0;
