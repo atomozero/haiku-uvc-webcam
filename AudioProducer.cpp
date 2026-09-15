@@ -140,7 +140,11 @@ AudioProducer::Preroll()
 void
 AudioProducer::SetTimeSource(BTimeSource* /*time_source*/)
 {
-	if (fFrameSync >= 0) release_sem(fFrameSync);
+	// Copy id under lock, release outside.
+	BAutolock lock(fLock);
+	sem_id sync = fFrameSync;
+	if (sync >= 0)
+		release_sem(sync);
 }
 
 
@@ -620,7 +624,13 @@ AudioProducer::Connect(status_t error, const media_source &source,
 	fConnected = true;
 	fEnabled = true;
 
-	if (fFrameSync >= 0) release_sem(fFrameSync);
+	{
+		// Copy id under lock, release outside.
+		BAutolock lock(fLock);
+		sem_id sync = fFrameSync;
+		if (sync >= 0)
+			release_sem(sync);
+	}
 }
 
 
@@ -896,8 +906,15 @@ AudioProducer::HandleStop(void)
 
 	fRunning = false;
 
-	delete_sem(fFrameSync);
-	fFrameSync = -1;
+	// Clear id under lock, delete outside.
+	sem_id sync = -1;
+	{
+		BAutolock lock(fLock);
+		sync = fFrameSync;
+		fFrameSync = -1;
+	}
+	if (sync >= 0)
+		delete_sem(sync);
 
 	status_t threadStatus;
 	status_t waitErr = wait_for_thread_etc(fThread, B_RELATIVE_TIMEOUT,
@@ -929,7 +946,11 @@ AudioProducer::HandleTimeWarp(bigtime_t performance_time)
 	TOUCH(performance_time);
 	fStartTime = system_time();
 	fFramesSent = 0;
-	if (fFrameSync >= 0) release_sem(fFrameSync);
+	// Copy id under lock, release outside.
+	BAutolock lock(fLock);
+	sem_id sync = fFrameSync;
+	if (sync >= 0)
+		release_sem(sync);
 }
 
 
@@ -939,7 +960,11 @@ AudioProducer::HandleSeek(bigtime_t performance_time)
 	TOUCH(performance_time);
 	fStartTime = system_time();
 	fFramesSent = 0;
-	if (fFrameSync >= 0) release_sem(fFrameSync);
+	// Copy id under lock, release outside.
+	BAutolock lock(fLock);
+	sem_id sync = fFrameSync;
+	if (sync >= 0)
+		release_sem(sync);
 }
 
 

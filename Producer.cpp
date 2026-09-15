@@ -185,10 +185,11 @@ VideoProducer::Preroll()
 void
 VideoProducer::SetTimeSource(BTimeSource* /*time_source*/)
 {
-	/* Tell frame generation thread to recalculate delay value */
-	/* FIX: Check semaphore is valid before releasing */
-	if (fFrameSync >= 0)
-		release_sem(fFrameSync);
+	// Copy id under lock, release outside.
+	BAutolock lock(fLock);
+	sem_id sync = fFrameSync;
+	if (sync >= 0)
+		release_sem(sync);
 }
 
 
@@ -898,11 +899,11 @@ VideoProducer::Connect(status_t error, const media_source &source,
 	fprintf(stderr, "  Buffer group: %p\n", fBufferGroup);
 	fprintf(stderr, "=== Connect END (SUCCESS) ===\n\n");
 
-	/* Tell frame generation thread to recalculate delay value */
-	/* Guard: fFrameSync is -1 before HandleStart and after HandleStop; releasing
-	 * a stale/-1 id would perturb a reused semaphore or fail. */
-	if (fFrameSync >= 0)
-		release_sem(fFrameSync);
+	// Copy id under lock, release outside.
+	BAutolock lock(fLock);
+	sem_id sync = fFrameSync;
+	if (sync >= 0)
+		release_sem(sync);
 }
 
 void
@@ -1310,13 +1311,17 @@ VideoProducer::HandleStop(void)
 		return;
 	}
 
-	// CRITICAL: Set fRunning=false BEFORE deleting sem
-	// The FrameGenerator thread checks this flag in its loop
+	// Set flag first, clear id under lock, delete outside.
 	fRunning = false;
 
-	// Now delete the semaphore - thread will see fRunning=false and exit
-	delete_sem(fFrameSync);
-	fFrameSync = -1;  // Mark as invalid
+	sem_id sync = -1;
+	{
+		BAutolock lock(fLock);
+		sync = fFrameSync;
+		fFrameSync = -1;
+	}
+	if (sync >= 0)
+		delete_sem(sync);
 
 	// Wait for thread with 5 second timeout
 	status_t threadStatus;
@@ -1359,13 +1364,12 @@ VideoProducer::HandleTimeWarp(bigtime_t performance_time)
 	fStartRealTime = system_time();
 	fFrameBase = fFrame;
 
-	/* Tell frame generation thread to recalculate delay value */
-	/* Guard: fFrameSync is -1 before HandleStart and after HandleStop; releasing
-	 * a stale/-1 id would perturb a reused semaphore or fail. */
-	if (fFrameSync >= 0)
-		release_sem(fFrameSync);
+	// Copy id under lock, release outside.
+	BAutolock lock(fLock);
+	sem_id sync = fFrameSync;
+	if (sync >= 0)
+		release_sem(sync);
 }
-
 
 void
 VideoProducer::HandleSeek(bigtime_t performance_time)
@@ -1375,11 +1379,11 @@ VideoProducer::HandleSeek(bigtime_t performance_time)
 	fStartRealTime = system_time();
 	fFrameBase = fFrame;
 
-	/* Tell frame generation thread to recalculate delay value */
-	/* Guard: fFrameSync is -1 before HandleStart and after HandleStop; releasing
-	 * a stale/-1 id would perturb a reused semaphore or fail. */
-	if (fFrameSync >= 0)
-		release_sem(fFrameSync);
+	// Copy id under lock, release outside.
+	BAutolock lock(fLock);
+	sem_id sync = fFrameSync;
+	if (sync >= 0)
+		release_sem(sync);
 }
 
 

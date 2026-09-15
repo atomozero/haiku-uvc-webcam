@@ -32,6 +32,7 @@
 #   FIX-19  Suggest/Accept NULL+wrap   static: NULL skip + 64-bit gap
 #   FIX-20  audio multi-instance      static: no early return on instances
 #   FIX-21  reconfig sem cleanup      static: delete sem after wait
+#   FIX-22  frame sync race           static: copy id under lock
 set -e
 cd "$(dirname "$0")"
 
@@ -91,6 +92,8 @@ check "FIX-19 accept null skip" "grep -q 'if (descriptor == NULL)' $SRC/addons/u
 check "FIX-19 64-bit gap" "grep -q 'pixels > target' $SRC/addons/uvc/UVCCamDevice.cpp"
 check "FIX-20 multi mic" "grep -q 'allow many mics' $SRC/AudioProducer.cpp"
 check "FIX-21 sem cleanup" "grep -q 'Free sem even on timeout' $SRC/CamDevice.cpp"
+check "FIX-22 sync under lock" \
+	"grep -q 'Copy id under lock' $SRC/Producer.cpp $SRC/AudioProducer.cpp"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"
