@@ -92,7 +92,9 @@ status_t
 WebCamMediaAddOn::InitCheck(const char **out_failure_text)
 {
 	if (fInitStatus < B_OK) {
-		*out_failure_text = "No cameras attached";
+		// Caller may pass NULL, keep guard simple.
+		if (out_failure_text != NULL)
+			*out_failure_text = "No cameras attached";
 		return fInitStatus;
 	}
 
@@ -104,12 +106,10 @@ int32
 WebCamMediaAddOn::CountFlavors()
 {
 	PRINT((CH "()" CT));
-	if (!fRoster) {
-		return B_NO_INIT;
-	}
-	if (fInitStatus < B_OK) {
-		return fInitStatus;
-	}
+	if (!fRoster)
+		return 0;
+	if (fInitStatus < B_OK)
+		return 0;
 
 	int32 cameraCount = fRoster->CountCameras();
 	int32 videoFlavors = 0;
