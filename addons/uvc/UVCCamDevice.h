@@ -765,8 +765,10 @@ private:
 			BList				fExtensionUnits;		// List of extension_unit_info*
 			bool				fHasExtensionUnits;
 
-			// EHCI host system error recovery state
-			bool				fEHCIRecoveryInProgress;
+		// EHCI host system error recovery state
+		// Recovery flag is atomic, pump and consumer
+		// threads test and set it concurrently.
+		std::atomic<bool>	fEHCIRecoveryInProgress;
 
 			// Still image capture support
 			still_capture_method	fStillCaptureMethod;

@@ -50,6 +50,7 @@
 #   FIX-37  deframer teardown order       static: pump must be stopped
 #   FIX-38  no fopen macro                static: hidden macros
 #   FIX-39  single node per camera        static: one node of each kind
+#   FIX-40  recovery flag atomic          static: recovery flag is atomic
 set -e
 cd "$(dirname "$0")"
 
@@ -147,6 +148,8 @@ check "FIX-38 no fopen macro" \
 	"! grep -q 'define fopen(path' $SRC/CamDevice.cpp"
 check "FIX-39 single node per camera" \
 	"grep -q 'One node of each kind' $SRC/AddOn.cpp"
+check "FIX-40 recovery flag atomic" \
+	"grep -q 'Recovery flag is atomic' $SRC/addons/uvc/UVCCamDevice.h"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"

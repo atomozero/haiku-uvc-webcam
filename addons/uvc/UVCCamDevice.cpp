@@ -5497,8 +5497,9 @@ UVCCamDevice::FillFrameBuffer(BBuffer* buffer, bigtime_t* stamp)
 		// This is typical of EHCI "host system error" on Intel controllers
 		// after sustained isochronous streaming. Cycle the streaming alternate
 		// (down to 0, back to streaming) to re-initialize the endpoint.
-		if (atomic_get(&fFillFrameTimeout) == 10 && !fEHCIRecoveryInProgress) {
-			fEHCIRecoveryInProgress = true;
+		if (atomic_get(&fFillFrameTimeout) == 10
+			&& !fEHCIRecoveryInProgress.load()) {
+			fEHCIRecoveryInProgress.store(true);
 			syslog(LOG_WARNING, "UVCCamDevice: 10 consecutive frame timeouts - "
 				"attempting recovery via alternate cycle\n");
 
@@ -5553,7 +5554,7 @@ UVCCamDevice::FillFrameBuffer(BBuffer* buffer, bigtime_t* stamp)
 					}
 				}
 			}
-			fEHCIRecoveryInProgress = false;
+			fEHCIRecoveryInProgress.store(false);
 		}
 
 		// If recovery didn't help by 30 timeouts, give up and stop the pump.
@@ -8499,8 +8500,8 @@ UVCCamDevice::OnConsecutiveTransferFailures(uint32 count)
 	// cycling the streaming alternate: drop to alt 0 (idle) then back
 	// to the streaming alternate. This re-initializes the isochronous
 	// endpoint without requiring a full controller reset.
-	if (count == 300 && !fEHCIRecoveryInProgress) {
-		fEHCIRecoveryInProgress = true;
+	if (count == 300 && !fEHCIRecoveryInProgress.load()) {
+		fEHCIRecoveryInProgress.store(true);
 		syslog(LOG_ERR, "UVCCamDevice: 300+ consecutive failures - "
 			"attempting EHCI recovery via alternate cycle\n");
 
@@ -8565,7 +8566,7 @@ UVCCamDevice::OnConsecutiveTransferFailures(uint32 count)
 				}
 			}
 		}
-		fEHCIRecoveryInProgress = false;
+		fEHCIRecoveryInProgress.store(false);
 	}
 }
 
