@@ -24,7 +24,7 @@ Rules:
 | FIX-26 | fStats garbage on first update | Producer.cpp | Low | done |
 | FIX-27 | AddOn InitCheck NULL and CountFlavors error | AddOn.cpp | Low | done |
 | FIX-28 | Backoff cap attempt to avoid long loop | addons/uvc/UVCSafety.cpp, CamDevice.cpp | Low | done |
-| FIX-29 | Still capture NULL device guard | addons/uvc/UVCCamDevice.cpp | Medium | todo |
+| FIX-29 | Still capture NULL device guard | addons/uvc/UVCCamDevice.cpp | Medium | done |
 
 ## Coverage map
 

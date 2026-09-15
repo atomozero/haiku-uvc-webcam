@@ -7840,6 +7840,10 @@ UVCCamDevice::TriggerStillCapture(uint8* buffer, size_t bufferSize,
 		syslog(LOG_INFO, "UVCCamDevice: Triggering still capture %ux%u\n",
 			width, height);
 
+		// Device can go NULL on unplug, fail closed.
+		if (fDevice == NULL)
+			return B_DEV_NOT_READY;
+
 		// Step 2: Send trigger command
 		// UVC spec: VS_STILL_IMAGE_TRIGGER_CONTROL SET_CUR with value 0x01
 		uint8 trigger = 0x01;

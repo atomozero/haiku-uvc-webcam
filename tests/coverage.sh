@@ -39,6 +39,7 @@
 #   FIX-26  stats init                static: memset stats + skip equal stamp
 #   FIX-27  addon guards              static: NULL check + return 0
 #   FIX-28  backoff cap               static: attempt cap 32
+#   FIX-29  still NULL guard          static: device NULL check in trigger
 set -e
 cd "$(dirname "$0")"
 
@@ -114,6 +115,8 @@ check "FIX-27 addon guard" \
 	"grep -q 'out_failure_text != NULL' $SRC/AddOn.cpp"
 check "FIX-28 backoff cap" \
 	"grep -q 'attempt > 32' $SRC/addons/uvc/UVCSafety.cpp $SRC/CamDevice.cpp"
+check "FIX-29 still guard" \
+	"grep -q 'Device can go NULL on unplug' $SRC/addons/uvc/UVCCamDevice.cpp"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"
