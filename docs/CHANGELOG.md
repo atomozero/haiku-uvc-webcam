@@ -3,6 +3,23 @@
 This file summarises notable changes per topic. For the exact commits,
 look up the IDs with `git log` — they are referenced in each entry.
 
+## Sept 2026 — FIX-30..FIX-39 phase 4 batch
+
+Follow-up to FIX-19..29, see `docs/BUGFIX_ROADMAP4.md`.
+Each fix is one commit with static coverage guards.
+No full `make` here (needs Haiku host).
+
+- FIX-30: probe unplug outside roster lock.
+- FIX-31: run bulk pump outside device lock, fix BulkIn log.
+- FIX-32: cycle EHCI recovery outside device lock, refresh endpoint.
+- FIX-33: guard set param paths against unplug.
+- FIX-34: harden CamConfig size math and FPS helper.
+- FIX-35: make fill and decode counters atomic.
+- FIX-36: make audio volume and mute atomic.
+- FIX-37: order deframer teardown and guard frame read.
+- FIX-38: drop fopen macro that hides call sites.
+- FIX-39: cap nodes to one of each kind per camera.
+
 ## Sept 2026 — FIX-19..FIX-29 phase 3 batch
 
 Follow-up to FIX-11..18, see `docs/BUGFIX_ROADMAP3.md`.
