@@ -1627,9 +1627,10 @@ CamDevice::ClassifyUSBError(ssize_t error)
 bigtime_t
 CamDevice::CalculateBackoffDelay(uint32 attempt, const usb_retry_config& config)
 {
-	// FIX-B4: compute in double precision with pre-cast clamping so a huge
-	// max_retries / multiplier cannot push the float to INF and trigger a
-	// float->int64 cast UB. Invalid configs fail closed with max_delay.
+	// Compute in double with clamp so huge values cannot push INF.
+	// Cap steps, huge attempt would spin the loop.
+	if (attempt > 32)
+		return config.max_delay;
 	double delay = (double)config.initial_delay;
 	if (!(config.initial_delay > 0 && config.max_delay > 0)
 		|| !(config.backoff_multiplier >= 1.0f

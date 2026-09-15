@@ -132,6 +132,10 @@ UVCSafeBackoffDelay(uint32 attempt, int64 initialDelay, int64 maxDelay,
 	if (!UVCSafeRetryConfig(initialDelay, maxDelay, multiplier))
 		return maxDelay > 0 ? maxDelay : 0;
 
+	// Cap steps, huge attempt would spin the loop.
+	if (attempt > 32)
+		return maxDelay;
+
 	double delay = (double)initialDelay;
 	for (uint32 i = 0; i < attempt; i++) {
 		delay *= (double)multiplier;
