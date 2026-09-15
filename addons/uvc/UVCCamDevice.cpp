@@ -771,7 +771,7 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 
 			if (interface->Class() == USB_VIDEO_DEVICE_CLASS && interface->Subclass()
 				== USB_VIDEO_INTERFACE_VIDEOCONTROL_SUBCLASS) {
-				printf("UVCCamDevice: (%" B_PRIu32 ",%" B_PRIu32 "): Found Video Control "
+				syslog(LOG_INFO, "UVCCamDevice: (%" B_PRIu32 ",%" B_PRIu32 "): Found Video Control "
 					"interface.\n", i, j);
 
 				// look for class specific interface descriptors and parse them
@@ -803,7 +803,7 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 						i, j);
 					continue;
 				}
-				printf("UVCCamDevice: (%" B_PRIu32 ",%" B_PRIu32 "): Found Video Streaming "
+				syslog(LOG_INFO, "UVCCamDevice: (%" B_PRIu32 ",%" B_PRIu32 "): Found Video Streaming "
 					"interface, #alternates=%u.\n", i, j, (unsigned)interface->CountAlternates());
 
 				fStreamingIndex = interface->Index();
@@ -867,7 +867,7 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 					(int)fUncompressedFrames.CountItems(),
 					(int)fMJPEGFrames.CountItems());
 
-				printf("UVCCamDevice: Total frames found: uncompressed=%d, mjpeg=%d\n",
+				syslog(LOG_INFO, "UVCCamDevice: Total frames found: uncompressed=%d, mjpeg=%d\n",
 					(int)fUncompressedFrames.CountItems(), (int)fMJPEGFrames.CountItems());
 
 				// P4: the VS base interface (alternate 0) is the
@@ -1301,7 +1301,7 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 
 UVCCamDevice::~UVCCamDevice()
 {
-	printf("UVCCamDevice::~UVCCamDevice() - Destroying device\n");
+	syslog(LOG_INFO, "UVCCamDevice::~UVCCamDevice() - Destroying device\n");
 
 	// Stop video first so the pump cannot use the jpeg handle below.
 	// Bounded join, on timeout the device is stalled and we leak.
@@ -1335,7 +1335,7 @@ UVCCamDevice::~UVCCamDevice()
 	if (fJpegDecompressor) {
 		tjDestroy(fJpegDecompressor);
 		fJpegDecompressor = NULL;
-		fprintf(stderr, "UVCCamDevice: TurboJPEG decompressor destroyed\n");
+		syslog(LOG_INFO, "UVCCamDevice: TurboJPEG decompressor destroyed\n");
 	}
 
 	// CRITICAL FIX: Free frame descriptors allocated with new
@@ -2251,7 +2251,7 @@ UVCCamDevice::StopTransfer()
 status_t
 UVCCamDevice::SuggestVideoFrame(uint32& width, uint32& height)
 {
-	printf("UVCCamDevice::SuggestVideoFrame(%" B_PRIu32 ", %" B_PRIu32 ")\n", width, height);
+	syslog(LOG_INFO, "UVCCamDevice::SuggestVideoFrame(%" B_PRIu32 ", %" B_PRIu32 ")\n", width, height);
 
 	// Safe mode: start with lowest resolution to avoid bandwidth issues
 	// Useful for systems with USB problems or EHCI controllers
@@ -2344,7 +2344,7 @@ UVCCamDevice::SuggestVideoFrame(uint32& width, uint32& height)
 	}
 
 	// Fallback to 320x240 if no frames available
-	printf("UVCCamDevice::SuggestVideoFrame: No frames available, using fallback 320x240\n");
+	syslog(LOG_INFO, "UVCCamDevice::SuggestVideoFrame: No frames available, using fallback 320x240\n");
 	width = 320;
 	height = 240;
 
@@ -2373,7 +2373,7 @@ UVCCamDevice::AcceptVideoFrame(uint32& width, uint32& height)
 		// accept any format with hardcoded 320x240 resolution.
 		// This allows video to work even when OtherDescriptorAt() doesn't
 		// return UVC class-specific descriptors.
-		printf("UVCCamDevice::AcceptVideoFrame: No frames parsed, using fallback 320x240\n");
+		syslog(LOG_INFO, "UVCCamDevice::AcceptVideoFrame: No frames parsed, using fallback 320x240\n");
 		if (width == 0 || height == 0) {
 			width = 320;
 			height = 240;
@@ -2404,7 +2404,7 @@ UVCCamDevice::AcceptVideoFrame(uint32& width, uint32& height)
 			if (desc) {
 				width = desc->width;
 				height = desc->height;
-				printf("UVCCamDevice::AcceptVideoFrame: Using selected resolution %ux%u (index %d)\n",
+				syslog(LOG_INFO, "UVCCamDevice::AcceptVideoFrame: Using selected resolution %ux%u (index %d)\n",
 					width, height, index);
 			}
 		}
@@ -4782,7 +4782,7 @@ status_t
 UVCCamDevice::GetParameterValue(int32 id, bigtime_t* last_change, void* value,
 	size_t* size)
 {
-	printf("UVCCamDevice::GetParameterValue(%" B_PRId32 ")\n", id - fFirstParameterID);
+	// No per-poll log here, the Media Kit polls often.
 	// Caller provides the buffer, check it before writing.
 	if (last_change == NULL || value == NULL || size == NULL)
 		return B_BAD_VALUE;
@@ -4995,7 +4995,7 @@ status_t
 UVCCamDevice::SetParameterValue(int32 id, bigtime_t when, const void* value,
 	size_t size)
 {
-	printf("UVCCamDevice::SetParameterValue(%" B_PRId32 ")\n", id - fFirstParameterID);
+	syslog(LOG_INFO, "UVCCamDevice::SetParameterValue(%" B_PRId32 ")\n", id - fFirstParameterID);
 	switch (id - fFirstParameterID) {
 		case 0:
 			// debug_printf("\tBrightness:\n");
@@ -5101,7 +5101,7 @@ UVCCamDevice::SetParameterValue(int32 id, bigtime_t when, const void* value,
 
 			/* Validate index */
 			if (newIndex < 0 || newIndex >= frameList->CountItems()) {
-				printf("UVCCamDevice: Invalid resolution index %d (max %d)\n",
+				syslog(LOG_INFO, "UVCCamDevice: Invalid resolution index %d (max %d)\n",
 					(int)newIndex, (int)frameList->CountItems() - 1);
 				return B_BAD_VALUE;
 			}
@@ -5111,7 +5111,7 @@ UVCCamDevice::SetParameterValue(int32 id, bigtime_t when, const void* value,
 				const usb_video_frame_descriptor* frameDesc =
 					(const usb_video_frame_descriptor*)frameList->ItemAt(newIndex);
 				if (frameDesc != NULL) {
-					printf("UVCCamDevice: Resolution changed to %ux%u (index %d)\n",
+					syslog(LOG_INFO, "UVCCamDevice: Resolution changed to %ux%u (index %d)\n",
 						frameDesc->width, frameDesc->height, (int)newIndex);
 					syslog(LOG_INFO, "UVCCamDevice: Resolution changed to %ux%u (index %d, frame_index %u)\n",
 						frameDesc->width, frameDesc->height, (int)newIndex, frameDesc->frame_index);
@@ -5154,7 +5154,7 @@ UVCCamDevice::SetParameterValue(int32 id, bigtime_t when, const void* value,
 						}
 						fSelectedFrameInterval = fCurrentFrameIntervals[fSelectedFrameIntervalIndex];
 
-						printf("UVCCamDevice: Frame intervals updated for new resolution: %d options, default=%.1f fps\n",
+						syslog(LOG_INFO, "UVCCamDevice: Frame intervals updated for new resolution: %d options, default=%.1f fps\n",
 							(int)fNumFrameIntervals, 10000000.0f / fSelectedFrameInterval);
 					} else {
 						/* Continuous interval - use default */
@@ -5223,7 +5223,7 @@ UVCCamDevice::SetParameterValue(int32 id, bigtime_t when, const void* value,
 
 			/* Validate index */
 			if (newIndex < 0 || newIndex >= fNumFrameIntervals) {
-				printf("UVCCamDevice: Invalid frame rate index %d (max %d)\n",
+				syslog(LOG_INFO, "UVCCamDevice: Invalid frame rate index %d (max %d)\n",
 					(int)newIndex, (int)fNumFrameIntervals - 1);
 				return B_BAD_VALUE;
 			}
@@ -5234,7 +5234,7 @@ UVCCamDevice::SetParameterValue(int32 id, bigtime_t when, const void* value,
 				fSelectedFrameInterval = fCurrentFrameIntervals[newIndex];
 
 				float fps = 10000000.0f / fSelectedFrameInterval;
-				printf("UVCCamDevice: Frame rate changed to %.1f fps (interval %u)\n",
+				syslog(LOG_INFO, "UVCCamDevice: Frame rate changed to %.1f fps (interval %u)\n",
 					fps, fSelectedFrameInterval);
 				syslog(LOG_INFO, "UVCCamDevice: Frame rate changed to %.1f fps (interval %u)\n",
 					fps, fSelectedFrameInterval);
@@ -5272,7 +5272,7 @@ UVCCamDevice::SetParameterValue(int32 id, bigtime_t when, const void* value,
 			if (err == B_OK) {
 				fAutoExposureMode = mode;
 				fLastParameterChanges = when;
-				printf("UVCCamDevice: Auto Exposure Mode set to %d\n", mode);
+				syslog(LOG_INFO, "UVCCamDevice: Auto Exposure Mode set to %d\n", mode);
 			}
 			return err;
 		}
@@ -5289,7 +5289,7 @@ UVCCamDevice::SetParameterValue(int32 id, bigtime_t when, const void* value,
 		if (err == B_OK) {
 			fExposureTimeAbs = expTime;
 			fLastParameterChanges = when;
-			printf("UVCCamDevice: Exposure Time set to %.1f ms (%u units)\n",
+			syslog(LOG_INFO, "UVCCamDevice: Exposure Time set to %.1f ms (%u units)\n",
 				msValue, expTime);
 		}
 		return err;
@@ -5302,7 +5302,7 @@ UVCCamDevice::SetParameterValue(int32 id, bigtime_t when, const void* value,
 		if (err == B_OK) {
 			fAutoFocus = (autoFocus != 0);
 			fLastParameterChanges = when;
-			printf("UVCCamDevice: Auto Focus set to %s\n", fAutoFocus ? "On" : "Off");
+			syslog(LOG_INFO, "UVCCamDevice: Auto Focus set to %s\n", fAutoFocus ? "On" : "Off");
 		}
 		return err;
 	}
@@ -5314,7 +5314,7 @@ UVCCamDevice::SetParameterValue(int32 id, bigtime_t when, const void* value,
 		if (err == B_OK) {
 			fFocusAbsolute = focusVal;
 			fLastParameterChanges = when;
-			printf("UVCCamDevice: Focus set to %u\n", focusVal);
+			syslog(LOG_INFO, "UVCCamDevice: Focus set to %u\n", focusVal);
 		}
 		return err;
 	}
@@ -5327,7 +5327,7 @@ UVCCamDevice::SetParameterValue(int32 id, bigtime_t when, const void* value,
 		if (err == B_OK) {
 			fZoomAbsolute = zoomVal;
 			fLastParameterChanges = when;
-			printf("UVCCamDevice: Zoom set to %.1fx (%u)\n", zoomVal / 100.0f, zoomVal);
+			syslog(LOG_INFO, "UVCCamDevice: Zoom set to %.1fx (%u)\n", zoomVal / 100.0f, zoomVal);
 		}
 		return err;
 	}
@@ -5345,7 +5345,7 @@ UVCCamDevice::SetParameterValue(int32 id, bigtime_t when, const void* value,
 		if (err == B_OK) {
 			fPanAbsolute = panTilt.pan;
 			fLastParameterChanges = when;
-			printf("UVCCamDevice: Pan set to %.1f°\n", panTilt.pan / 3600.0f);
+			syslog(LOG_INFO, "UVCCamDevice: Pan set to %.1f°\n", panTilt.pan / 3600.0f);
 		}
 		return err;
 	}
@@ -5363,7 +5363,7 @@ UVCCamDevice::SetParameterValue(int32 id, bigtime_t when, const void* value,
 		if (err == B_OK) {
 			fTiltAbsolute = panTilt.tilt;
 			fLastParameterChanges = when;
-			printf("UVCCamDevice: Tilt set to %.1f°\n", panTilt.tilt / 3600.0f);
+			syslog(LOG_INFO, "UVCCamDevice: Tilt set to %.1f°\n", panTilt.tilt / 3600.0f);
 		}
 		return err;
 	}
@@ -7452,11 +7452,11 @@ void
 UVCCamDevice::_LogExtensionUnits()
 {
 	if (!fHasExtensionUnits || fExtensionUnits.CountItems() == 0) {
-		printf("UVCCamDevice: No Extension Units detected\n");
+		syslog(LOG_INFO, "UVCCamDevice: No Extension Units detected\n");
 		return;
 	}
 
-	printf("UVCCamDevice: %d Extension Unit(s) detected:\n",
+	syslog(LOG_INFO, "UVCCamDevice: %d Extension Unit(s) detected:\n",
 		fExtensionUnits.CountItems());
 
 	for (int32 i = 0; i < fExtensionUnits.CountItems(); i++) {
@@ -7728,11 +7728,11 @@ void
 UVCCamDevice::_LogStillImageCapabilities()
 {
 	if (!fHasStillCapture && fStillCaptureMethod == STILL_CAPTURE_NONE) {
-		printf("UVCCamDevice: Still image capture not supported\n");
+		syslog(LOG_INFO, "UVCCamDevice: Still image capture not supported\n");
 		return;
 	}
 
-	printf("UVCCamDevice: Still Image Capture Capabilities:\n");
+	syslog(LOG_INFO, "UVCCamDevice: Still Image Capture Capabilities:\n");
 	printf("  Capture Method: %s\n", _GetStillCaptureMethodName(fStillCaptureMethod));
 
 	if (fTriggerSupport) {
@@ -8973,7 +8973,7 @@ UVCCamDevice::_HasTBCTLBPCSupport()
 UVCCamDeviceAddon::UVCCamDeviceAddon(WebCamMediaAddOn* webcam)
 	: CamDeviceAddon(webcam)
 {
-	printf("UVCCamDeviceAddon::UVCCamDeviceAddon(WebCamMediaAddOn* webcam)\n");
+	syslog(LOG_INFO, "UVCCamDeviceAddon::UVCCamDeviceAddon(WebCamMediaAddOn* webcam)\n");
 	SetSupportedDevices(kSupportedDevices);
 }
 
@@ -8986,7 +8986,7 @@ UVCCamDeviceAddon::~UVCCamDeviceAddon()
 const char *
 UVCCamDeviceAddon::BrandName()
 {
-	printf("UVCCamDeviceAddon::BrandName()\n");
+	syslog(LOG_INFO, "UVCCamDeviceAddon::BrandName()\n");
 	return "USB Video Class";
 }
 
@@ -8994,7 +8994,7 @@ UVCCamDeviceAddon::BrandName()
 UVCCamDevice *
 UVCCamDeviceAddon::Instantiate(CamRoster& roster, BUSBDevice* from)
 {
-	printf("UVCCamDeviceAddon::Instantiate()\n");
+	syslog(LOG_INFO, "UVCCamDeviceAddon::Instantiate()\n");
 	return new UVCCamDevice(*this, from);
 }
 
