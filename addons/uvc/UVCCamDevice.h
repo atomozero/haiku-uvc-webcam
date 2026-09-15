@@ -341,6 +341,7 @@ public:
 	virtual bool				SupportsIsochronous();
 	virtual status_t			StartTransfer();
 	virtual status_t			StopTransfer();
+	virtual void				Unplugged();
 	virtual status_t			SuggestVideoFrame(uint32 &width,
 									uint32 &height);
 	virtual status_t			AcceptVideoFrame(uint32 &width,

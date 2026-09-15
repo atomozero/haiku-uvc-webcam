@@ -228,11 +228,12 @@ CamStreamingDeframer::Write(const void *buffer, size_t size)
 		fInputBuff.Write(buf+end, bufsize - end);
 #endif
 	BMallocIO m;
-	m.Write(buf+end, bufsize - end);
+	if (bufsize > end)
+		m.Write(buf + end, bufsize - end);
 	fInputBuff.Seek(0LL, SEEK_SET);
-	if (bufsize - end > 0)
+	if (bufsize > end)
 		fInputBuff.Write(m.Buffer(), bufsize - end);
-	fInputBuff.SetSize(bufsize - end);
+	fInputBuff.SetSize(bufsize > end ? bufsize - end : 0);
 	return size;
 }
 

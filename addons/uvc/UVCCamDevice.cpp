@@ -2199,6 +2199,17 @@ UVCCamDevice::SupportsIsochronous()
 }
 
 
+void
+UVCCamDevice::Unplugged()
+{
+	// Stop audio first, base stops video and clears USB pointers.
+	// Bounded join, on timeout the pump is stalled and leaked.
+	if (fAudioTransferRunning)
+		StopAudioTransfer();
+	CamDevice::Unplugged();
+}
+
+
 status_t
 UVCCamDevice::StartTransfer()
 {
@@ -6506,6 +6517,9 @@ UVCCamDevice::SelectStream(int32 idx)
 {
 	if (idx < 0 || idx >= fVSStreams.CountItems())
 		return B_BAD_INDEX;
+	// Hold the device lock for check and switch.
+	// StartTransfer uses the same lock, so no start can slip in.
+	BAutolock deviceLock(Locker());
 	if (atomic_get(&fTransferEnabled) != 0)
 		return B_BUSY;
 	if (idx == fActiveStreamIdx)
