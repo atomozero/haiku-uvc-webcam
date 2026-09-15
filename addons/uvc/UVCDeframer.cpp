@@ -354,14 +354,22 @@ UVCDeframer::Write(const void* buffer, size_t size)
 					syslog(LOG_INFO, "UVCDeframer: Padding YUY2 frame with %zu bytes (%.1f%% complete)\n",
 						paddingNeeded, 100.0f * currentSize / fExpectedFrameSize);
 				}
-				// Write padding pattern directly to fixed buffer
-				uint8 padPattern[4] = {0x00, 0x80, 0x00, 0x80};  // Y U Y V for 2 black pixels
-				while (fFixedBufferPos < fExpectedFrameSize) {
-					size_t remaining = fExpectedFrameSize - fFixedBufferPos;
-					size_t toWrite = (remaining < 4) ? remaining : 4;
-					memcpy(fFixedBuffer + fFixedBufferPos, padPattern, toWrite);
-					fFixedBufferPos += toWrite;
-				}
+			// Write padding as 32-bit black words, tail keeps pattern.
+			static const uint8 kPadPattern[4]
+				= {0x00, 0x80, 0x00, 0x80};  // Y U Y V black pixels
+			uint32 padWord;
+			memcpy(&padWord, kPadPattern, sizeof(padWord));
+			uint8* fillAt = fFixedBuffer + fFixedBufferPos;
+			size_t fillCount = fExpectedFrameSize - fFixedBufferPos;
+			size_t words = fillCount / 4;
+			for (size_t i = 0; i < words; i++) {
+				memcpy(fillAt, &padWord, sizeof(padWord));
+				fillAt += 4;
+			}
+			size_t tail = fillCount % 4;
+			if (tail > 0)
+				memcpy(fillAt, kPadPattern, tail);
+			fFixedBufferPos = fExpectedFrameSize;
 			}
 			frameComplete = true;
 			static int32 sEofComplete = 0;

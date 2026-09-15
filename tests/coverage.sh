@@ -57,6 +57,7 @@
 #   FIX-44  english comments only         static: allow larger resolutions
 #   FIX-45  packet counters atomic read   static: read with atomics
 #   FIX-46  batched packet accounting       static: publish once per transfer
+#   FIX-47  hoisted row bounds check        static: last full row once
 set -e
 cd "$(dirname "$0")"
 
@@ -168,6 +169,8 @@ check "FIX-45 packet counters atomic read" \
 	"grep -q 'Read with atomics' $SRC/addons/uvc/UVCCamDevice.cpp"
 check "FIX-46 batched packet accounting" \
 	"grep -q 'Publish once per transfer' $SRC/CamDevice.cpp"
+check "FIX-47 hoisted row bounds check" \
+	"grep -q 'last full row once' $SRC/addons/uvc/UVCCamDevice.cpp"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"

@@ -5992,12 +5992,18 @@ UVCCamDevice::_ConvertYUY2toRGB32(unsigned char* dst, unsigned char* src,
 
 	// Row-by-row conversion for proper stride handling
 	size_t rowDataBytes = (size_t)width * 2;  // bytes of YUY2 data we read per row
-	for (int32 row = 0; row < height; row++) {
+	// Hoist the per-row bounds check: rows past the source end
+	// would break out anyway, compute the last full row once.
+	int32 maxRows = height;
+	if (rowDataBytes > srcSize)
+		maxRows = 0;
+	else {
+		size_t fullRows = (srcSize - rowDataBytes) / srcStride + 1;
+		if (fullRows < (size_t)maxRows)
+			maxRows = (int32)fullRows;
+	}
+	for (int32 row = 0; row < maxRows; row++) {
 		size_t rowOffset = (size_t)row * srcStride;
-		// Need rowDataBytes from source for this row (srcStride may be > rowDataBytes
-		// when padding is present; we still only read rowDataBytes worth)
-		if (rowOffset + rowDataBytes > srcSize)
-			break;
 
 		const unsigned char* srcRow = src + rowOffset;
 		unsigned char* dstRow = dst + row * dstStride;
