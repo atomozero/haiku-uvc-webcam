@@ -244,10 +244,12 @@ static	int32				_audio_generator_(void *data);
 			P_AUTO_GAIN,
 			P_LAST
 		};
-		bool				fMuted;
-		float				fVolume;
-		bool				fAutoGain;
-		float				fAutoGainCurrent;	// runtime gain factor
+		// Audio parameters, set from the looper thread and read
+		// from the realtime generator, keep them atomic.
+		std::atomic<bool>	fMuted;
+		std::atomic<float>	fVolume;
+		std::atomic<bool>	fAutoGain;
+		std::atomic<float>	fAutoGainCurrent;	// runtime gain factor
 		bigtime_t			fLastParamChange;
 
 		// Mono microphone detection state

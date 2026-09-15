@@ -46,6 +46,7 @@
 #   FIX-33  set param NULL guard        static: fail closed when unplugged
 #   FIX-34  config size and FPS guard     static: range test and 64-bit size
 #   FIX-35  fill counters atomic          static: fill counters are atomic
+#   FIX-36  audio params atomic           static: keep them atomic
 set -e
 cd "$(dirname "$0")"
 
@@ -135,6 +136,8 @@ check "FIX-34 config size and FPS guard" \
 	"grep -q 'falls back to the default interval' $SRC/CamConfig.h"
 check "FIX-35 fill counters atomic" \
 	"grep -q 'Fill counters are atomic' $SRC/addons/uvc/UVCCamDevice.h"
+check "FIX-36 audio params atomic" \
+	"grep -q 'keep them atomic' $SRC/AudioProducer.h"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"

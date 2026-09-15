@@ -67,13 +67,13 @@ AudioProducer::AudioProducer(
 	fFramesSent = 0;
 	fStartTime = 0;
 
-	fMuted = false;
-	fVolume = 1.0f;
+	fMuted.store(false);
+	fVolume.store(1.0f);
 	// Enable AGC by default: many webcam mics have a hardware gain that's
 	// too aggressive, causing constant saturation. The AGC attenuates loud
 	// input toward -6 dBFS and amplifies quiet input up to +18 dB.
-	fAutoGain = true;
-	fAutoGainCurrent = 1.0f;
+	fAutoGain.store(true);
+	fAutoGainCurrent.store(1.0f);
 	fLastParamChange = 0;
 
 	// Mono microphone detection
@@ -750,21 +750,21 @@ AudioProducer::GetParameterValue(
 				return B_BAD_VALUE;
 			*last_change = fLastParamChange;
 			*size = sizeof(int32);
-			*((int32 *)value) = fMuted ? 1 : 0;
+			*((int32 *)value) = fMuted.load() ? 1 : 0;
 			return B_OK;
 		case P_VOLUME:
 			if (*size < sizeof(float))
 				return B_BAD_VALUE;
 			*last_change = fLastParamChange;
 			*size = sizeof(float);
-			*((float *)value) = fVolume;
+			*((float *)value) = fVolume.load();
 			return B_OK;
 		case P_AUTO_GAIN:
 			if (*size < sizeof(int32))
 				return B_BAD_VALUE;
 			*last_change = fLastParamChange;
 			*size = sizeof(int32);
-			*((int32 *)value) = fAutoGain ? 1 : 0;
+			*((int32 *)value) = fAutoGain.load() ? 1 : 0;
 			return B_OK;
 	}
 	return B_BAD_VALUE;
@@ -779,24 +779,25 @@ AudioProducer::SetParameterValue(
 		case P_MUTE:
 			if (!value || size != sizeof(int32))
 				return;
-			fMuted = (*((int32 *)value) != 0);
+			fMuted.store((*((int32 *)value) != 0));
 			fLastParamChange = when;
 			BroadcastNewParameterValue(when, id, (void *)value, size);
 			break;
 		case P_VOLUME:
 			if (!value || size != sizeof(float))
 				return;
-			fVolume = *((float *)value);
-			if (fVolume < 0.0f) fVolume = 0.0f;
-			if (fVolume > 4.0f) fVolume = 4.0f;
+			float volume = *((float *)value);
+			if (volume < 0.0f) volume = 0.0f;
+			if (volume > 4.0f) volume = 4.0f;
+			fVolume.store(volume);
 			fLastParamChange = when;
 			BroadcastNewParameterValue(when, id, (void *)value, size);
 			break;
 		case P_AUTO_GAIN:
 			if (!value || size != sizeof(int32))
 				return;
-			fAutoGain = (*((int32 *)value) != 0);
-			fAutoGainCurrent = 1.0f;	// reset when toggled
+			fAutoGain.store((*((int32 *)value) != 0));
+			fAutoGainCurrent.store(1.0f);	// reset when toggled
 			fLastParamChange = when;
 			BroadcastNewParameterValue(when, id, (void *)value, size);
 			break;
@@ -1105,14 +1106,14 @@ AudioProducer::AudioGenerator()
 		// Volume range is 0.0 - 4.0. Below 1.0 attenuates, above 1.0 amplifies
 		// quiet microphones. Saturate to int16 range to prevent wrap-around clipping.
 		size_t samplesToProcess = bytesToFill / sizeof(int16);
-		if (fMuted) {
+		if (fMuted.load()) {
 			memset(audioData, 0, fConnectedFormat.buffer_size);
 		} else {
-			float gain = fVolume;
+			float gain = fVolume.load();
 
 			// Auto gain: measure peak, smoothly adjust gain toward a target
 			// level. Skip below noise floor to avoid amplifying silence.
-			if (fAutoGain && samplesToProcess > 0) {
+			if (fAutoGain.load() && samplesToProcess > 0) {
 				int32 peak = 0;
 				for (size_t i = 0; i < samplesToProcess; i++) {
 					int32 v = audioData[i];
@@ -1129,12 +1130,14 @@ AudioProducer::AudioGenerator()
 				if (peak > kNoiseFloor) {
 					float desired = (float)kTarget / (float)peak;
 					if (desired > kMaxGain) desired = kMaxGain;
-					float blend = (desired < fAutoGainCurrent) ? kAttack : kRelease;
-					fAutoGainCurrent += (desired - fAutoGainCurrent) * blend;
-					if (fAutoGainCurrent < 0.1f) fAutoGainCurrent = 0.1f;
-					if (fAutoGainCurrent > kMaxGain) fAutoGainCurrent = kMaxGain;
+					float current = fAutoGainCurrent.load();
+					float blend = (desired < current) ? kAttack : kRelease;
+					current += (desired - current) * blend;
+					if (current < 0.1f) current = 0.1f;
+					if (current > kMaxGain) current = kMaxGain;
+					fAutoGainCurrent.store(current);
 				}
-				gain *= fAutoGainCurrent;
+				gain *= fAutoGainCurrent.load();
 			}
 
 			if (gain != 1.0f) {
