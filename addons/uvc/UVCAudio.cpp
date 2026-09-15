@@ -64,6 +64,14 @@ UVCCamDevice::StartAudioTransfer()
 		fAudioSubFrameSize = fAudioBitResolution / 8;
 	}
 
+	// Clamp wild descriptor rates, the slot math below assumes
+	// audio-band values and would overflow on garbage rates.
+	if (fAudioSampleRate < 8000 || fAudioSampleRate > 192000) {
+		syslog(LOG_WARNING, "UVCCamDevice: Sample rate %u Hz out of range, "
+			"using 48000 Hz\n", (unsigned)fAudioSampleRate);
+		fAudioSampleRate = 48000;
+	}
+
 	// Select audio alternate with proper bandwidth
 	status_t err = _SelectAudioAlternate();
 	if (err != B_OK) {
@@ -72,22 +80,29 @@ UVCCamDevice::StartAudioTransfer()
 		return err;
 	}
 
+	// Copy device and endpoint under the transfer lock, Unplugged
+	// clears them without locking so check once and use the copy.
+	BUSBDevice* device = fDevice;
+	const BUSBEndpoint* isoIn = fAudioIsoIn;
+	if (device == NULL)
+		return B_DEV_NOT_READY;
+
 	// Set sample rate on the endpoint (required for USB Audio Class 1.0)
-	if (fAudioIsoIn != NULL) {
+	if (isoIn != NULL) {
 		uint32 sampleRate = fAudioSampleRate;
 		uint8 rateData[3];
 		rateData[0] = sampleRate & 0xFF;
 		rateData[1] = (sampleRate >> 8) & 0xFF;
 		rateData[2] = (sampleRate >> 16) & 0xFF;
 
-		uint8 endpointAddr = fAudioIsoIn->Descriptor()->endpoint_address;
+		uint8 endpointAddr = isoIn->Descriptor()->endpoint_address;
 
 		// SET_CUR request to set sampling frequency on endpoint
 		// bmRequestType: 0x22 = Host-to-device, Class, Endpoint
 		// bRequest: 0x01 = SET_CUR
 		// wValue: 0x0100 = SAMPLING_FREQ_CONTROL << 8
 		// wIndex: endpoint address
-		ssize_t transferred = fDevice->ControlTransfer(
+		ssize_t transferred = device->ControlTransfer(
 			USB_REQTYPE_CLASS | USB_REQTYPE_ENDPOINT_OUT,  // 0x22
 			0x01,  // SET_CUR
 			0x0100,  // SAMPLING_FREQ_CONTROL << 8
@@ -101,7 +116,7 @@ UVCCamDevice::StartAudioTransfer()
 		// Verify with GET_CUR that the device accepted the sample rate
 		if (transferred == 3) {
 			uint8 verifyData[3] = {0};
-			ssize_t got = fDevice->ControlTransfer(
+			ssize_t got = device->ControlTransfer(
 				USB_REQTYPE_CLASS | USB_REQTYPE_ENDPOINT_IN,  // 0xA2
 				0x81,  // GET_CUR
 				0x0100,  // SAMPLING_FREQ_CONTROL << 8

@@ -68,6 +68,7 @@
 #   RF-04   fill stages split               static: fill stages split
 #   RF-05   split by area                   static: split from UVCCamDevice
 #   FIX-52  get param NULL guard          static: fail closed on unplug
+#   FIX-53  audio start snapshot            static: check once and use the copy
 set -e
 cd "$(dirname "$0")"
 
@@ -201,6 +202,8 @@ check "RF-05 split by area" \
 	"grep -q 'split from UVCCamDevice' $SRC/addons/uvc/UVCConvert.cpp"
 check "FIX-52 get param NULL guard" \
 	"grep -q 'Fail closed when unplugged' $SRC/addons/uvc/UVCControls.cpp"
+check "FIX-53 audio start snapshot" \
+	"grep -q 'check once and use the copy' $SRC/addons/uvc/UVCAudio.cpp"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"
