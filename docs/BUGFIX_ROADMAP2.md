@@ -14,7 +14,7 @@ Rules:
 | ID | Bug | Files | Severity | Status |
 |----|-----|-------|----------|--------|
 | FIX-11 | GetParameterValue NULL/size deref (P_COLOR/P_INFO/audio) | Producer.cpp, AudioProducer.cpp | Critical | done |
-| FIX-12 | UVCDeframer FID path unbounded queue, OOM on stall | addons/uvc/UVCDeframer.cpp | Critical | todo |
+| FIX-12 | UVCDeframer FID path unbounded queue, OOM on stall | addons/uvc/UVCDeframer.cpp | Critical | done |
 | FIX-13 | fCamDevice unlocked reads, roster snooze delete | Producer.cpp, AudioProducer.cpp, CamRoster.cpp | Critical | todo |
 | FIX-14 | HandleStop abandon strands fLock, kill_thread with lock | Producer.cpp, AudioProducer.cpp | Critical | todo |
 | FIX-15 | Unplugged w/o lock, tjDestroy w/o generator join, reconfig volatile + unbounded join | CamDevice.cpp/.h, UVCCamDevice.cpp | High | todo |

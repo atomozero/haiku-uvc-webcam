@@ -245,6 +245,13 @@ UVCDeframer::Write(const void* buffer, size_t size)
 				if (fFixedBuffer != NULL && fFixedBufferPos > 0)
 					fCurrentFrame->Write(fFixedBuffer, fFixedBufferPos);
 
+				// Bound the queue, drop oldest when full.
+				if (fFrames.CountItems() >= MAXFRAMEBUF) {
+					CamFrame* stale
+						= (CamFrame*)fFrames.RemoveItem((int32)0);
+					if (stale != NULL)
+						RecycleFrame(stale);
+				}
 				fFrames.AddItem(fCurrentFrame);
 				release_sem(fFrameSem);
 				fCurrentFrame = NULL;
