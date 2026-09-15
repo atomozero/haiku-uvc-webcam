@@ -44,7 +44,6 @@ SOURCES = \
 	Producer.cpp \
 	AudioProducer.cpp \
 	CamBufferedFilterInterface.cpp \
-	CamBufferingDeframer.cpp \
 	CamColorSpaceTransform.cpp \
 	CamDebug.cpp \
 	CamDeframer.cpp \
@@ -52,7 +51,6 @@ SOURCES = \
 	CamFilterInterface.cpp \
 	CamRoster.cpp \
 	CamSensor.cpp \
-	CamStreamingDeframer.cpp \
 	addons/uvc/UVCCamDevice.cpp \
 	addons/uvc/UVCDeframer.cpp \
 	addons/uvc/UVCQuirks.cpp \

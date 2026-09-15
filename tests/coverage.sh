@@ -63,6 +63,7 @@
 #   FIX-50  no frame repeat cache           static: cache removed
 #   FIX-51  zero-copy accumulation          static: queued as-is
 #   RF-01   drop-oldest helper              static: drop oldest helper
+#   RF-02   dead deframers removed          static: gone from tree
 set -e
 cd "$(dirname "$0")"
 
@@ -186,6 +187,8 @@ check "FIX-51 zero-copy accumulation" \
 	"grep -q 'queued as-is' $SRC/addons/uvc/UVCDeframer.cpp"
 check "RF-01 drop-oldest helper" \
 	"grep -q '_DropOldestFrame' $SRC/addons/uvc/UVCDeframer.cpp"
+check "RF-02 dead deframers removed" \
+	"! test -e $SRC/CamBufferingDeframer.cpp"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"
