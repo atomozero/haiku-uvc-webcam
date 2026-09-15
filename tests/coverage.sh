@@ -34,6 +34,7 @@
 #   FIX-21  reconfig sem cleanup      static: delete sem after wait
 #   FIX-22  frame sync race           static: copy id under lock
 #   FIX-23  short generator lock      static: copy group under lock
+#   FIX-24  flush under lock          static: lock in UVC Flush
 set -e
 cd "$(dirname "$0")"
 
@@ -97,6 +98,8 @@ check "FIX-22 sync under lock" \
 	"grep -q 'Copy id under lock' $SRC/Producer.cpp $SRC/AudioProducer.cpp"
 check "FIX-23 short lock" \
 	"grep -q 'Copy group and size under lock' $SRC/Producer.cpp"
+check "FIX-24 flush lock" \
+	"grep -q 'Clear local state under lock' $SRC/addons/uvc/UVCDeframer.cpp"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"

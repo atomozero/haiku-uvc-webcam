@@ -104,15 +104,14 @@ UVCDeframer::SetExpectedFrameSize(size_t size)
 status_t
 UVCDeframer::Flush()
 {
-	// First call base class to clear queued frames
+	// Base clears queue under its lock.
 	status_t err = CamDeframer::Flush();
 
-	// Also clear our local input buffer
+	// Clear local state under lock, Write uses same lock.
+	BAutolock lock(fLocker);
 	fInputBuffer.Seek(0, SEEK_SET);
 	fInputBuffer.SetSize(0);
-	fFixedBufferPos = 0;  // Reset fixed buffer too
-
-	// Reset UVC-specific state
+	fFixedBufferPos = 0;
 	fID = 0;
 	fPacketsThisFrame = 0;
 
