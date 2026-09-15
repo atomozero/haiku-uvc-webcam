@@ -87,6 +87,9 @@ WebCamMediaAddOn::WebCamMediaAddOn(image_id imid)
 
 WebCamMediaAddOn::~WebCamMediaAddOn()
 {
+	// Roster can be NULL after an OOM early return in the ctor.
+	if (fRoster == NULL)
+		return;
 	fRoster->Stop();
 	delete fRoster;
 }

@@ -15,6 +15,7 @@ Rules:
 | ID | Bug | Files | Severity | Status |
 |----|-----|-------|----------|--------|
 | FIX-55 | Reselect and Flush race frame accumulation | addons/uvc/UVCDeframer.cpp | High | done |
+| FIX-56 | Addon dtor NULL after OOM early return | AddOn.cpp | High | done |
 
 ## Coverage map
 
