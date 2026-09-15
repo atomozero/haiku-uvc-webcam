@@ -115,7 +115,15 @@ UVCDeframer::_DropOldestFrame()
 
 ssize_t
 UVCDeframer::Write(const void* buffer, size_t size)
-{	const uint8* buf = (const uint8*)buffer;
+{
+	const uint8* buf = (const uint8*)buffer;
+
+	// Hold for the whole Write, reselect and Flush cannot tear a frame.
+	// Write never calls into the device, so this cannot invert
+	// the device to deframer lock order.
+	BAutolock lock(fLocker);
+	if (!lock.IsLocked())
+		return B_ERROR;
 
 	// Track packets for this frame
 	fPacketsThisFrame++;
