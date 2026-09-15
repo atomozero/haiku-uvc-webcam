@@ -29,7 +29,7 @@
 
 #define SINGLE_PARAMETER_GROUP 1
 
-// FIX BUG 2: Disabilitato FORCE_320_240 per permettere risoluzioni maggiori
+// FIX BUG 2: FORCE_320_240 disabled, allow larger resolutions
 //#define FORCE_320_240 1
 //#define FORCE_160_120 1
 //#define FORCE_MAX_FRAME 1
@@ -1103,12 +1103,11 @@ VideoProducer::SetParameterValue(
 			// (inside FillFrameBuffer); grabbing the two in the opposite order
 			// here would deadlock.
 
-			/* FIX BUG 10: Aggiorna fOutput.format quando cambia la risoluzione.
-			 * Senza questo fix, SetParameterValue aggiornava solo lo stato interno
-			 * del device (fVideoFrame) ma non fOutput.format del Producer.
-			 * Questo causava il fallimento di FormatProposal() perché
-			 * format_is_compatible() confrontava la nuova risoluzione richiesta
-			 * con la vecchia fOutput.format ancora impostata alla risoluzione iniziale.
+			/* FIX BUG 10: Update fOutput.format on resolution change.
+			 * Without this fix, SetParameterValue only updated the
+			 * device state (fVideoFrame) but not Producer fOutput.format.
+			 * FormatProposal() then failed because format_is_compatible()
+			 * compared the requested resolution against the stale format.
 			 */
 			if (haveNewDims) {
 				/* fLock is the lock FrameGenerator holds while it dereferences
@@ -1118,7 +1117,7 @@ VideoProducer::SetParameterValue(
 				 */
 				BAutolock plock(fLock);
 
-				/* Aggiorna solo se le dimensioni sono effettivamente cambiate */
+				/* Update only if dims really changed */
 				if (fOutput.format.u.raw_video.display.line_width != newWidth ||
 				    fOutput.format.u.raw_video.display.line_count != newHeight) {
 

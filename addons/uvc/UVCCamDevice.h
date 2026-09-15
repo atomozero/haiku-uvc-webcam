@@ -646,7 +646,7 @@ private:
 			uint8				fFrameBasedBitsPerPixel;
 			BList				fFrameBasedFrames;	// of uvc_frame_based_resolution*
 
-		// FIX BUG 6: Contatori diagnostici per istanza (non statici)
+		// FIX BUG 6: Per-instance diagnostic counters (not static)
 		// Fill counters are atomic, fill and decode run on
 		// several threads and plain ++ would lose updates.
 		int32				fFillFrameCount;
@@ -688,7 +688,7 @@ private:
 			size_t				fAudioBufferLen;
 
 			// Audio ring buffer for data exchange
-			// FIX BUG 4: Usare int32 per operazioni atomiche
+			// FIX BUG 4: Use int32 for atomic ops
 			uint8*				fAudioRingBuffer;
 			size_t				fAudioRingSize;
 			int32				fAudioRingHead;  // Atomico: scritto da producer, letto da consumer

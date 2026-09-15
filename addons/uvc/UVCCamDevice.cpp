@@ -518,7 +518,7 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 	fFrameBasedCodec(UVC_CODEC_UNKNOWN),
 	fFrameBasedFormatIndex(0),
 	fFrameBasedBitsPerPixel(0),
-	// FIX BUG 6: Inizializza contatori diagnostici per istanza
+	// FIX BUG 6: Init per-instance diagnostic counters
 	fFillFrameCount(0),
 	fFillFrameSuccess(0),
 	fFillFrameTimeout(0),
@@ -790,13 +790,13 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 						generic->generic.length);
 				}
 				for (uint32 k = 0; k < interface->CountEndpoints(); k++) {
-					const BUSBEndpoint* e = interface->EndpointAt(k);  // FIX BUG 1: era 'i', corretto in 'k'
+					const BUSBEndpoint* e = interface->EndpointAt(k);  // FIX BUG 1: was 'i', fixed to 'k'
 					if (e && e->IsInterrupt() && e->IsInput()) {
 						fInterruptIn = e;
 						break;
 					}
 				}
-				// FIX BUG 3: fInitStatus spostato dopo parsing completo (vedi fine costruttore)
+				// FIX BUG 3: fInitStatus moved after full parse (see ctor end)
 			} else if (interface->Class() == USB_VIDEO_DEVICE_CLASS && interface->Subclass()
 				== USB_VIDEO_INTERFACE_VIDEOSTREAMING_SUBCLASS) {
 				// P3 Phase A: only parse the winning VS interface; skip
@@ -1217,9 +1217,9 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 		}
 	}
 
-	// FIX BUG 3: Impostare fInitStatus solo dopo parsing completo
-	// Requisito minimo: avere almeno un formato video disponibile
-	// (interfacce possono avere indice 0, quindi non controlliamo > 0)
+	// FIX BUG 3: Set fInitStatus only after full parse
+	// Minimum: at least one video format available
+	// (interfaces can use index 0, so do not check > 0)
 	const bool hasMJPEG = (fMJPEGFrames.CountItems() > 0);
 	const bool hasUncompressed = (fUncompressedFrames.CountItems() > 0);
 	const bool canDecodeMJPEG = (fJpegDecompressor != NULL);
@@ -2472,10 +2472,10 @@ UVCCamDevice::AcceptVideoFrame(uint32& width, uint32& height)
 				}
 			}
 
-			/* FIX BUG 11: Usare descriptor->frame_index invece di i+1.
-			 * Il frame_index nel descrittore USB è il valore che va usato
-			 * nel Probe/Commit, NON la posizione nella lista.
-			 * Se la lista non è ordinata per frame_index, i+1 è sbagliato.
+			/* FIX BUG 11: Use descriptor->frame_index instead of i+1.
+			 * The frame_index in the USB descriptor is the value for
+			 * Probe/Commit, NOT the position in the list.
+			 * If the list is not sorted by frame_index, i+1 is wrong.
 			 */
 			if (fIsMJPEG) {
 				fMJPEGFrameIndex = descriptor->frame_index;
@@ -5163,11 +5163,11 @@ UVCCamDevice::SetParameterValue(int32 id, bigtime_t when, const void* value,
 						fSelectedFrameInterval = frameDesc->default_frame_interval;
 					}
 
-					/* FIX BUG 12: Non chiamare AcceptVideoFrame() perché cerca per
-					 * risoluzione e potrebbe trovare un frame DIVERSO da quello
-					 * selezionato (es. stessa risoluzione ma fps diversi).
-					 * Questo sovrascriveva fMJPEGFrameIndex con il valore sbagliato.
-					 * Invece, aggiorniamo direttamente fVideoFrame.
+					/* FIX BUG 12: Do not call AcceptVideoFrame(), it looks up
+					 * by resolution and could match a DIFFERENT frame than
+					 * the selected one (e.g. same resolution, other fps).
+					 * That overwrote fMJPEGFrameIndex with the wrong value.
+					 * Update fVideoFrame directly instead.
 					 */
 					uint32 newWidth = frameDesc->width;
 					uint32 newHeight = frameDesc->height;
@@ -5458,7 +5458,7 @@ UVCCamDevice::_SetParameterValue(uint16 wValue, int8 setValue)
 }
 
 
-// FIX BUG 6: Contatori ora sono membri di istanza (vedi header)
+// FIX BUG 6: Counters are now instance members (see header)
 
 status_t
 UVCCamDevice::FillFrameBuffer(BBuffer* buffer, bigtime_t* stamp)
@@ -6648,7 +6648,7 @@ UVCCamDevice::_UncompressedFrameSize(uvc_uncompressed_format fmt,
 }
 
 
-// FIX BUG 6: Contatori MJPEG ora sono membri di istanza (vedi header)
+// FIX BUG 6: MJPEG counters are now instance members (see header)
 
 void
 UVCCamDevice::_DecompressMJPEGtoRGB32(unsigned char* dst,

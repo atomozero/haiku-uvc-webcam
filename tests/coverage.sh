@@ -54,6 +54,7 @@
 #   FIX-41  node lookup NULL guard        static: skip before use
 #   FIX-42  no producer libc macros       static: hidden macros make call
 #   FIX-43  no orphan tests               static: simulation tests deleted
+#   FIX-44  english comments only         static: allow larger resolutions
 set -e
 cd "$(dirname "$0")"
 
@@ -159,6 +160,8 @@ check "FIX-42 no producer libc macros" \
 	"! grep -q 'define fopen(path' $SRC/Producer.cpp"
 check "FIX-43 no orphan tests" \
 	"! test -e $SRC/tests/test_deframer.cpp"
+check "FIX-44 english comments only" \
+	"grep -q 'allow larger resolutions' $SRC/Producer.cpp"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"
