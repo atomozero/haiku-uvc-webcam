@@ -3,6 +3,22 @@
 This file summarises notable changes per topic. For the exact commits,
 look up the IDs with `git log` — they are referenced in each entry.
 
+## Sept 2026 — FIX-01..FIX-10 audit batch
+
+Deep bug audit follow-up, see `docs/BUGFIX_ROADMAP.md`.
+Each fix is one commit with `sh tests/coverage.sh --quick` green.
+
+- FIX-01: VC header count read as raw byte, fixes build.
+- FIX-02: NW80x ReadIIC self call fixed, zero count rejected.
+- FIX-03: leak working set when pump is stalled, no free on timeout.
+- FIX-04: fCamDevice set under producer lock, closes hot-unplug race.
+- FIX-05: Connect resets destination on failure, NULL and bounds checks.
+- FIX-06: reserve 20 param IDs for PU/stream, check get buffers.
+- FIX-07: 64-bit size math, zero frame and interval guards.
+- FIX-08: jpeg lock, stop video before destroy, reject bad sizes.
+- FIX-09: subtype length guards, checked interval counts for logs.
+- FIX-10: locked stream switch, audio stop on unplug, tail guard.
+
 ## June 2026 — P1-P40 fix batch
 
 A deep audit of the driver was performed against the goal "many UVC

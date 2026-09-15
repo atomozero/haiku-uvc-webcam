@@ -1601,7 +1601,8 @@ UVCCamDevice::_ParseVideoStreaming(const usbvc_class_descriptor* _descriptor,
 				(descriptor->capabilities & 1) ? "yes" : "no",
 				(descriptor->capabilities & 2) ? "yes" : "no");
 			if (descSane) {
-				printf("\twidth=%u,height=%u,min/max bitrate=%" B_PRIu32 "/%" B_PRIu32 ", maxbuf=%" B_PRIu32 "\n",
+				printf("\twidth=%u,height=%u,min/max bitrate=%" B_PRIu32
+					"/%" B_PRIu32 ", maxbuf=%" B_PRIu32 "\n",
 					descriptor->width, descriptor->height,
 					descriptor->min_bit_rate, descriptor->max_bit_rate,
 					descriptor->max_video_frame_buffer_size);
@@ -2681,8 +2682,9 @@ UVCCamDevice::_ProbeCommitFormat()
 				uint64 bytesPerSecond = (uint64)maxBandwidth * 8000;
 				float maxFps = (float)bytesPerSecond / (float)frameSize;
 
-				syslog(LOG_INFO, "UVCCamDevice: YUY2 bandwidth check: max=%u bytes/uframe (%.1f MB/s), frameSize=%llu, maxFps=%.1f\n",
-					maxBandwidth, bytesPerSecond / 1048576.0f, (unsigned long long)frameSize, maxFps);
+				syslog(LOG_INFO, "UVCCamDevice: YUY2 bandwidth check: "
+					"max=%u bytes/uframe, frameSize=%llu, maxFps=%.1f\n",
+					maxBandwidth, (unsigned long long)frameSize, maxFps);
 
 				// Check if frame descriptor has discrete intervals
 				if (frameDesc->frame_interval_type > 0) {
@@ -2710,8 +2712,11 @@ UVCCamDevice::_ProbeCommitFormat()
 						float fps = 10000000.0f / interval;
 						uint64 requiredBandwidth = (uint64)((double)frameSize * (double)fps);
 
-						syslog(LOG_INFO, "UVCCamDevice: Checking interval %u (%.1f fps): requires %llu bytes/sec, available %llu\n",
-							interval, fps, (unsigned long long)requiredBandwidth, (unsigned long long)bytesPerSecond);
+						syslog(LOG_INFO, "UVCCamDevice: interval %u (%.1f fps): "
+							"need %llu, have %llu\n",
+							interval, fps,
+							(unsigned long long)requiredBandwidth,
+							(unsigned long long)bytesPerSecond);
 
 						// Track slowest valid interval for fallback
 						if (interval > slowestValidInterval)
@@ -2719,7 +2724,8 @@ UVCCamDevice::_ProbeCommitFormat()
 
 						// Select this interval if it fits within bandwidth
 						// Use 90% safety margin
-						if (requiredBandwidth <= (uint32)(bytesPerSecond * 0.9f)) {
+						if ((double)requiredBandwidth
+							<= (double)bytesPerSecond * 0.9) {
 							if (selectedInterval == 0 || interval < selectedInterval) {
 								// Prefer faster (smaller interval)
 								selectedInterval = interval;
