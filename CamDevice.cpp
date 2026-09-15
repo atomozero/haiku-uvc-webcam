@@ -215,16 +215,24 @@ CamDevice::~CamDevice()
 	// (Unplugged() should have been called, but be safe)
 	// FIX-T5: bounded join. wait_for_thread() would hang forever on a pump
 	// wedged in an uninterruptible kernel USB wait; abandon and stall instead.
+	// If stalled the pump still uses fBuffer/fDeframer, so leak them.
+	bool stalled = IsStalled();
 	if (atomic_get(&fTransferEnabled) != 0) {
 		atomic_set(&fTransferEnabled, 0);
 		if (fPumpThread >= 0) {
 			status_t result;
 			status_t waitErr = wait_for_thread_etc(fPumpThread,
 				B_RELATIVE_TIMEOUT, 3000000, &result);
-			if (waitErr == B_TIMED_OUT)
+			if (waitErr == B_TIMED_OUT) {
 				MarkStalled();
+				stalled = true;
+			}
 			fPumpThread = -1;
 		}
+	} else if (stalled) {
+		// Already marked, keep working set alive.
+	} else {
+		// No pump running, safe path below.
 	}
 
 	// Cleanup double buffering resources
@@ -232,6 +240,8 @@ CamDevice::~CamDevice()
 
 	if (fDumpFD >= 0)
 		close(fDumpFD);
+	if (stalled)
+		return;
 	free(fBuffer);
 	delete fDeframer;
 	delete fSensor;

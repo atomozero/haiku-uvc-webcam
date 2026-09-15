@@ -1309,9 +1309,14 @@ UVCCamDevice::~UVCCamDevice()
 	printf("UVCCamDevice::~UVCCamDevice() - Destroying device\n");
 
 	// Stop audio transfer if running
+	// On timeout the pump still runs, skip frees below.
+	bool audioWedged = false;
 	if (fAudioTransferRunning) {
-		StopAudioTransfer();
+		if (StopAudioTransfer() == B_TIMED_OUT)
+			audioWedged = true;
 	}
+	if (audioWedged || IsStalled())
+		return;
 
 	// Cleanup audio resources
 	if (fAudioBuffer) {
@@ -3817,7 +3822,7 @@ UVCCamDevice::StopAudioTransfer()
 			syslog(LOG_ERR, "UVCCamDevice::StopAudioTransfer: audio pump "
 				"wedged — abandoning thread and marking device stalled\n");
 			MarkStalled();
-			_SelectAudioIdleAlternate();
+			// Wedged thread still uses buffers and sem, leak them.
 			return B_TIMED_OUT;
 		}
 	}
