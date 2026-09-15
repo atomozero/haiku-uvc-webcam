@@ -17,6 +17,7 @@
 #include <atomic>
 
 class BString;
+class CamFrame;
 
 
 // Frame validation constants
