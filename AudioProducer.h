@@ -14,6 +14,7 @@
 #include <media/MediaEventLooper.h>
 #include <media/MediaNode.h>
 #include <support/Locker.h>
+#include <support/Autolock.h>
 
 #include <atomic>
 
