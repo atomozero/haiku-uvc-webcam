@@ -29,6 +29,7 @@
 #   FIX-M1  deframer queue cap        static: AddItem guarded on EOF path
 #   FIX-M2  MJPEG trunc / malloc-temp static: realloc-temp + trunc counter
 #   FIX-M7  XU short-transfer         static: ret != length check
+#   FIX-19  Suggest/Accept NULL+wrap   static: NULL skip + 64-bit gap
 set -e
 cd "$(dirname "$0")"
 
@@ -84,6 +85,8 @@ check "FIX-T5 destructor bounded join" "grep -q 'wait_for_thread_etc' $SRC/CamDe
 check "FIX-M1 deframer queue cap" "grep -q 'CAMDEFRAMER_MAX_QUEUED_FRAMES' $SRC/addons/uvc/UVCDeframer.cpp"
 check "FIX-M2 trunc counter" "grep -q 'fFramesTruncated' $SRC/addons/uvc/UVCDeframer.cpp"
 check "FIX-M7 XU length check" "grep -q 'ret != length' $SRC/addons/uvc/UVCCamDevice.cpp"
+check "FIX-19 accept null skip" "grep -q 'if (descriptor == NULL)' $SRC/addons/uvc/UVCCamDevice.cpp"
+check "FIX-19 64-bit gap" "grep -q 'pixels > target' $SRC/addons/uvc/UVCCamDevice.cpp"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"

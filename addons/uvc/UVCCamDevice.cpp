@@ -2278,16 +2278,20 @@ UVCCamDevice::SuggestVideoFrame(uint32& width, uint32& height)
 			for (int32 i = 0; i < count; i++) {
 				const usb_video_frame_descriptor* desc =
 					(const usb_video_frame_descriptor*)frameList->ItemAt(i);
-				// 64-bit math, 16-bit fields can overflow signed int.
-				uint32 pixels = (uint32)desc->width * (uint32)desc->height;
+				if (desc == NULL)
+					continue;
+				// Use 64-bit math, 16-bit fields can wrap signed int.
+				uint64 pixels = (uint64)desc->width * (uint64)desc->height;
 				if (pixels < smallestPixels) {
-					smallestPixels = pixels;
+					smallestPixels = (uint32)pixels;
 					bestIndex = i;
 				}
 			}
 			fSelectedResolutionIndex = bestIndex;
 			const usb_video_frame_descriptor* desc =
 				(const usb_video_frame_descriptor*)frameList->ItemAt(bestIndex);
+			if (desc == NULL)
+				return B_ERROR;
 			width = desc->width;
 			height = desc->height;
 			syslog(LOG_INFO, "UVCCamDevice: SAFE MODE - using lowest resolution %ux%u\n",
@@ -2324,8 +2328,13 @@ UVCCamDevice::SuggestVideoFrame(uint32& width, uint32& height)
 		for (int32 i = 0; i < frameList->CountItems(); i++) {
 			const usb_video_frame_descriptor* desc =
 				(const usb_video_frame_descriptor*)frameList->ItemAt(i);
-			uint32 diff = abs((int)(desc->width * desc->height)
-				- (int)(targetW * targetH));
+			if (desc == NULL)
+				continue;
+			// Use 64-bit math, 16-bit fields can wrap signed int.
+			uint64 pixels = (uint64)desc->width * (uint64)desc->height;
+			uint64 target = (uint64)targetW * (uint64)targetH;
+			uint64 gap = pixels > target ? pixels - target : target - pixels;
+			uint32 diff = gap > UINT32_MAX ? UINT32_MAX : (uint32)gap;
 			if (diff < bestDiff) {
 				bestDiff = diff;
 				bestIndex = i;
@@ -2420,6 +2429,8 @@ UVCCamDevice::AcceptVideoFrame(uint32& width, uint32& height)
 	for (int32 i = 0; i < frameCount; i++) {
 		const usb_video_frame_descriptor* descriptor
 			= (const usb_video_frame_descriptor*)frameList->ItemAt(i);
+		if (descriptor == NULL)
+			continue;
 		if (descriptor->width == width && descriptor->height == height) {
 			// Check if resolution is supportable with available bandwidth
 			// Auto-fallback to lower resolution if bandwidth is insufficient
