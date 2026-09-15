@@ -3,6 +3,15 @@
 This file summarises notable changes per topic. For the exact commits,
 look up the IDs with `git log` — they are referenced in each entry.
 
+## Sept 2026 — FIX-55 phase 9 batch
+
+Follow-up to FIX-52..54, see `docs/BUGFIX_ROADMAP9.md`.
+Deframer exclusion fix, no behaviour change unless noted.
+Each fix is one commit with static coverage guards.
+No full `make` here (needs Haiku host).
+
+- FIX-55: hold deframer lock for the whole Write.
+
 ## Sept 2026 — FIX-52..FIX-54 phase 8 batch
 
 Follow-up to RF-01..05, see `docs/BUGFIX_ROADMAP8.md`.
