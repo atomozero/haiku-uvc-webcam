@@ -137,8 +137,10 @@ CamRoster::DeviceRemoved(BUSBDevice* _device)
 	// InstantiateNodeFor holds fLocker across node creation and looks the
 	// camera up by list membership, so removing it here (under the same lock)
 	// closes the use-after-free window against the Media Kit reader threads.
-	CamDevice* cam = NULL;
+	CamDevice* found = NULL;
 	{
+		// Find under lock, probe outside so USB wait
+		// never blocks reader threads.
 		BAutolock lock(fLocker);
 		for (int32 i = 0; i < fCameras.CountItems(); ++i) {
 			CamDevice* c = (CamDevice *)fCameras.ItemAt(i);
@@ -146,28 +148,37 @@ CamRoster::DeviceRemoved(BUSBDevice* _device)
 				continue;
 			if (!c->Matches(_device))
 				continue;
+			found = c;
+			break;
+		}
+	}
+	if (found == NULL)
+		return;
 
-			// Check if this is a real removal or a spurious re-enumeration.
-			// During SetAlternate(), Haiku may fire DeviceRemoved for devices
-			// still physically connected. Verify with a control transfer.
-			if (_device != NULL) {
-				uint16 status = 0;
-				ssize_t ret = _device->ControlTransfer(
-					USB_REQTYPE_DEVICE_IN | USB_REQTYPE_STANDARD,
-					USB_REQUEST_GET_STATUS, 0, 0, 2, &status);
-				if (ret >= 0) {
-					syslog(LOG_INFO, "CamRoster: DeviceRemoved called but device "
-						"still responds - ignoring spurious removal\n");
-					return;
-				}
-			}
+	// Check spurious re-enumeration outside the lock.
+	// SetAlternate can fire DeviceRemoved while still connected.
+	if (_device != NULL) {
+		uint16 status = 0;
+		ssize_t ret = _device->ControlTransfer(
+			USB_REQTYPE_DEVICE_IN | USB_REQTYPE_STANDARD,
+			USB_REQUEST_GET_STATUS, 0, 0, 2, &status);
+		if (ret >= 0) {
+			syslog(LOG_INFO, "CamRoster: DeviceRemoved called but device "
+				"still responds - ignoring spurious removal\n");
+			return;
+		}
+	}
 
+	CamDevice* cam = NULL;
+	{
+		// Unlink under lock, re-check it is still listed.
+		BAutolock lock(fLocker);
+		for (int32 i = 0; i < fCameras.CountItems(); ++i) {
+			CamDevice* c = (CamDevice *)fCameras.ItemAt(i);
+			if (c != found)
+				continue;
 			PRINT((CH ": camera %s:%s removed" CT, c->BrandName(), c->ModelName()));
-
-			// PHASE 3: Cache device params before cleanup
-			// (device pointer is still valid at this point)
 			CacheDeviceParams(c);
-
 			fCameras.RemoveItem(i);
 			cam = c;
 			break;

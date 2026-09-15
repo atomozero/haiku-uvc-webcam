@@ -40,6 +40,7 @@
 #   FIX-27  addon guards              static: NULL check + return 0
 #   FIX-28  backoff cap               static: attempt cap 32
 #   FIX-29  still NULL guard          static: device NULL check in trigger
+#   FIX-30  unplug probe outside lock static: find then probe then unlink
 set -e
 cd "$(dirname "$0")"
 
@@ -117,6 +118,8 @@ check "FIX-28 backoff cap" \
 	"grep -q 'attempt > 32' $SRC/addons/uvc/UVCSafety.cpp $SRC/CamDevice.cpp"
 check "FIX-29 still guard" \
 	"grep -q 'Device can go NULL on unplug' $SRC/addons/uvc/UVCCamDevice.cpp"
+check "FIX-30 probe outside lock" \
+	"grep -q 'probe outside' $SRC/CamRoster.cpp"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"
