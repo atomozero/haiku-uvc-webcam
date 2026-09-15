@@ -2115,7 +2115,8 @@ CamDevice::StopReconfigThread()
 		release_sem(fReconfigSem);
 
 	// Wait for thread to exit, bounded so a wedged SetAlternate
-	// cannot hang unplug or delete forever. Leak on timeout.
+	// cannot hang unplug or delete forever. Abandon thread on timeout.
+	status_t stopErr = B_OK;
 	if (fReconfigThread >= 0) {
 		status_t result;
 		status_t waitErr = wait_for_thread_etc(fReconfigThread,
@@ -2124,15 +2125,17 @@ CamDevice::StopReconfigThread()
 		if (waitErr == B_TIMED_OUT) {
 			syslog(LOG_ERR, "CamDevice: reconfig thread wedged, leak it\n");
 			MarkStalled();
-			return B_TIMED_OUT;
+			stopErr = B_TIMED_OUT;
 		}
 	}
 
-	// Cleanup semaphore
+	// Free sem even on timeout, waiter exits on BAD_SEM.
 	if (fReconfigSem >= 0) {
 		delete_sem(fReconfigSem);
 		fReconfigSem = -1;
 	}
+	if (stopErr != B_OK)
+		return stopErr;
 
 	syslog(LOG_INFO, "CamDevice: Reconfig thread stopped\n");
 	return B_OK;
