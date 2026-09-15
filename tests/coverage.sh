@@ -66,6 +66,7 @@
 #   RF-02   dead deframers removed          static: gone from tree
 #   RF-03   runtime logs to syslog          static: no printf runtime logs
 #   RF-04   fill stages split               static: fill stages split
+#   RF-05   split by area                   static: split from UVCCamDevice
 set -e
 cd "$(dirname "$0")"
 
@@ -120,7 +121,7 @@ check "FIX-T1 no IsLocked unlock" "! grep -q 'hadLock.*IsLocked' $SRC/CamDevice.
 check "FIX-T5 destructor bounded join" "grep -q 'wait_for_thread_etc' $SRC/CamDevice.cpp"
 check "FIX-M1 deframer queue cap" "grep -q 'CAMDEFRAMER_MAX_QUEUED_FRAMES' $SRC/addons/uvc/UVCDeframer.cpp"
 check "FIX-M2 trunc counter" "grep -q 'fFramesTruncated' $SRC/addons/uvc/UVCDeframer.cpp"
-check "FIX-M7 XU length check" "grep -q 'ret != length' $SRC/addons/uvc/UVCCamDevice.cpp"
+check "FIX-M7 XU length check" "grep -q 'ret != length' $SRC/addons/uvc/UVCControls.cpp"
 check "FIX-19 accept null skip" "grep -q 'if (descriptor == NULL)' $SRC/addons/uvc/UVCCamDevice.cpp"
 check "FIX-19 64-bit gap" "grep -q 'pixels > target' $SRC/addons/uvc/UVCCamDevice.cpp"
 check "FIX-20 multi mic" "grep -q 'allow many mics' $SRC/AudioProducer.cpp"
@@ -142,7 +143,7 @@ check "FIX-27 addon guard" \
 check "FIX-28 backoff cap" \
 	"grep -q 'attempt > 32' $SRC/addons/uvc/UVCSafety.cpp $SRC/CamDevice.cpp"
 check "FIX-29 still guard" \
-	"grep -q 'Device can go NULL on unplug' $SRC/addons/uvc/UVCCamDevice.cpp"
+	"grep -q 'Device can go NULL on unplug' $SRC/addons/uvc/UVCControls.cpp"
 check "FIX-30 probe outside lock" \
 	"grep -q 'probe outside' $SRC/CamRoster.cpp"
 check "FIX-31 bulk outside lock" \
@@ -150,7 +151,7 @@ check "FIX-31 bulk outside lock" \
 check "FIX-32 EHCI cycle outside lock" \
 	"grep -q 'cycle outside' $SRC/addons/uvc/UVCCamDevice.cpp"
 check "FIX-33 set param NULL guard" \
-	"grep -q 'Fail closed when unplugged' $SRC/addons/uvc/UVCCamDevice.cpp"
+	"grep -q 'Fail closed when unplugged' $SRC/addons/uvc/UVCControls.cpp"
 check "FIX-34 config size and FPS guard" \
 	"grep -q 'falls back to the default interval' $SRC/CamConfig.h"
 check "FIX-35 fill counters atomic" \
@@ -174,11 +175,11 @@ check "FIX-43 no orphan tests" \
 check "FIX-44 english comments only" \
 	"grep -q 'allow larger resolutions' $SRC/Producer.cpp"
 check "FIX-45 packet counters atomic read" \
-	"grep -q 'Read with atomics' $SRC/addons/uvc/UVCCamDevice.cpp"
+	"grep -q 'Read with atomics' $SRC/addons/uvc/UVCConvert.cpp"
 check "FIX-46 batched packet accounting" \
 	"grep -q 'Publish once per transfer' $SRC/CamDevice.cpp"
 check "FIX-47 hoisted row bounds check" \
-	"grep -q 'last full row once' $SRC/addons/uvc/UVCCamDevice.cpp"
+	"grep -q 'last full row once' $SRC/addons/uvc/UVCConvert.cpp"
 check "FIX-48 pool byte cap" \
 	"grep -q 'Byte cap for the pool' $SRC/CamDeframer.cpp"
 check "FIX-49 probe size hint" \
@@ -192,9 +193,11 @@ check "RF-01 drop-oldest helper" \
 check "RF-02 dead deframers removed" \
 	"! test -e $SRC/CamBufferingDeframer.cpp"
 check "RF-03 runtime logs to syslog" \
-	"! grep -q 'printf(\"UVCCamDevice' $SRC/addons/uvc/UVCCamDevice.cpp"
+	"! grep -q 'printf(\"UVCCamDevice' $SRC/addons/uvc/UVCCamDevice.cpp $SRC/addons/uvc/UVCAudio.cpp $SRC/addons/uvc/UVCControls.cpp $SRC/addons/uvc/UVCConvert.cpp"
 check "RF-04 fill stages split" \
 	"grep -q 'FillFrameBuffer stages, split' $SRC/addons/uvc/UVCCamDevice.h"
+check "RF-05 split by area" \
+	"grep -q 'split from UVCCamDevice' $SRC/addons/uvc/UVCConvert.cpp"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"

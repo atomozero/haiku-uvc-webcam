@@ -52,6 +52,9 @@ SOURCES = \
 	CamRoster.cpp \
 	CamSensor.cpp \
 	addons/uvc/UVCCamDevice.cpp \
+	addons/uvc/UVCAudio.cpp \
+	addons/uvc/UVCControls.cpp \
+	addons/uvc/UVCConvert.cpp \
 	addons/uvc/UVCDeframer.cpp \
 	addons/uvc/UVCQuirks.cpp \
 	addons/uvc/UVCDescriptors.cpp \
