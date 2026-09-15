@@ -1067,7 +1067,12 @@ VideoProducer::SetParameterValue(
 			return;
 		default:
 		{
-			CamDevice* dev = fCamDevice;
+			// Copy under fLock, SetCamDevice writes under same lock.
+			CamDevice* dev = NULL;
+			{
+				BAutolock lock(fLock);
+				dev = fCamDevice;
+			}
 			if (dev == NULL)
 				return;
 

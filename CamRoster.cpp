@@ -206,7 +206,8 @@ CamRoster::DeviceRemoved(BUSBDevice* _device)
 	// returns. Leak the object instead of freeing it — a small, bounded leak
 	// (reclaimed at reboot) is the accepted trade for not risking a
 	// use-after-free crash. This mirrors BubiCam leaking a wedged node.
-	if (cam->IsStalled()) {
+	// Same if a transfer is still flagged running, teardown raced start.
+	if (cam->IsStalled() || cam->TransferEnabled()) {
 		syslog(LOG_ERR, "CamRoster: camera is stalled (wedged data pump) — "
 			"leaking the CamDevice instead of deleting to avoid a "
 			"use-after-free by the abandoned thread\n");
