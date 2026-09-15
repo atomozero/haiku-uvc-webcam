@@ -3,6 +3,17 @@
 This file summarises notable changes per topic. For the exact commits,
 look up the IDs with `git log` — they are referenced in each entry.
 
+## Sept 2026 — FIX-52..FIX-54 phase 8 batch
+
+Follow-up to RF-01..05, see `docs/BUGFIX_ROADMAP8.md`.
+Residual audit follow-up, no behaviour change unless noted.
+Each fix is one commit with static coverage guards.
+No full `make` here (needs Haiku host).
+
+- FIX-52: guard get param paths against unplug.
+- FIX-53: snapshot audio device plus clamp sample rate.
+- FIX-54: check OOM on web and roster allocation.
+
 ## Sept 2026 — RF-01..RF-05 phase 7 refactor batch
 
 Follow-up to FIX-45..51, see `docs/BUGFIX_ROADMAP7.md`.
