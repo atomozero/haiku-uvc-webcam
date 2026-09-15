@@ -3,6 +3,21 @@
 This file summarises notable changes per topic. For the exact commits,
 look up the IDs with `git log` — they are referenced in each entry.
 
+## Sept 2026 — FIX-45..FIX-51 phase 6 batch
+
+Follow-up to FIX-40..44, see `docs/BUGFIX_ROADMAP6.md`.
+Hot-path optimization: fewer copies, fewer barriers, less pinned memory.
+Each fix is one commit with static coverage guards.
+No full `make` here (needs Haiku host).
+
+- FIX-45: read packet counters with atomics in FillFrameBuffer.
+- FIX-46: batch packet accounting once per transfer.
+- FIX-47: hoist YUY2 row check and word-fill pad.
+- FIX-48: cap deframer pool by bytes, not just count.
+- FIX-49: try last good probe size before version guess.
+- FIX-50: drop dead frame-repeat cache.
+- FIX-51: accumulate frames directly into pooled CamFrame.
+
 ## Sept 2026 — FIX-40..FIX-44 phase 5 batch
 
 Follow-up to FIX-30..39, see `docs/BUGFIX_ROADMAP5.md`.
