@@ -3,6 +3,18 @@
 This file summarises notable changes per topic. For the exact commits,
 look up the IDs with `git log` — they are referenced in each entry.
 
+## Sept 2026 — FIX-40..FIX-44 phase 5 batch
+
+Follow-up to FIX-30..39, see `docs/BUGFIX_ROADMAP5.md`.
+Each fix is one commit with static coverage guards.
+No full `make` here (needs Haiku host).
+
+- FIX-40: make EHCI recovery flag atomic.
+- FIX-41: guard node lookup against NULL camera.
+- FIX-42: drop producer libc macros that hide call sites.
+- FIX-43: delete orphan Haiku-only simulation tests.
+- FIX-44: translate legacy Italian comments to English.
+
 ## Sept 2026 — FIX-30..FIX-39 phase 4 batch
 
 Follow-up to FIX-19..29, see `docs/BUGFIX_ROADMAP4.md`.
