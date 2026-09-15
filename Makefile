@@ -110,7 +110,7 @@ coverage:
 # packaging/aukey_webcam_v4.PackageInfo so a release is reproducible from a
 # clean checkout: `make hpkg` on Haiku (needs the `package` tool). The version
 # lives in the .PackageInfo; keep it in step with the git tag.
-HPKG = aukey_webcam_v4-0.8.0-1-$(ARCH_SUFFIX).hpkg
+HPKG = aukey_webcam_v4-0.8.1-1-$(ARCH_SUFFIX).hpkg
 
 hpkg: $(TARGET)
 	rm -rf pkgroot
