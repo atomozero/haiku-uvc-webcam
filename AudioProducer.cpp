@@ -640,6 +640,12 @@ AudioProducer::Disconnect(const media_source &source,
 	fEnabled = false;
 	fOutput.destination = media_destination::null;
 
+	// If stalled the orphan generator may hold fLock, leak instead.
+	if (fCamDevice != NULL && fCamDevice->IsStalled()) {
+		fConnected = false;
+		return;
+	}
+
 	fLock.Lock();
 	delete fBufferGroup;
 	fBufferGroup = NULL;

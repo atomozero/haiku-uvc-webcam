@@ -930,6 +930,13 @@ VideoProducer::Disconnect(const media_source &source,
 	fEnabled = false;
 	fOutput.destination = media_destination::null;
 
+	// If stalled the orphan generator may still hold fLock and use
+	// the group, so do not lock or free here, leak is safer.
+	if (fCamDevice != NULL && fCamDevice->IsStalled()) {
+		fConnected = false;
+		return;
+	}
+
 	fLock.Lock();
 		delete fBufferGroup;
 		fBufferGroup = NULL;
@@ -1270,10 +1277,16 @@ VideoProducer::HandleStart(bigtime_t performance_time)
 	syslog(LOG_INFO, "Producer: HandleStart - thread resumed\n");
 
 	{
-		BAutolock lock(fCamDevice->Locker());
-		// FIX-T10: honour the stalled refusal instead of leaving fRunning
-		// true on a dead endpoint (busy-loop of fast-failed buffers).
-		if (fCamDevice->StartTransfer() < B_OK) {
+		status_t startErr = B_OK;
+		{
+			BAutolock lock(fCamDevice->Locker());
+			// FIX-T10: honour the stalled refusal instead of leaving fRunning
+			// true on a dead endpoint (busy-loop of fast-failed buffers).
+			startErr = fCamDevice->StartTransfer();
+		}
+		// Kill outside the device lock, the generator may hold fLock
+		// and killing under two locks strands them.
+		if (startErr < B_OK) {
 			syslog(LOG_ERR, "Producer: HandleStart - StartTransfer refused\n");
 			fRunning = false;
 			kill_thread(fThread);

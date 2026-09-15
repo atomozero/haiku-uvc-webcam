@@ -16,7 +16,7 @@ Rules:
 | FIX-11 | GetParameterValue NULL/size deref (P_COLOR/P_INFO/audio) | Producer.cpp, AudioProducer.cpp | Critical | done |
 | FIX-12 | UVCDeframer FID path unbounded queue, OOM on stall | addons/uvc/UVCDeframer.cpp | Critical | done |
 | FIX-13 | fCamDevice unlocked reads, roster snooze delete | Producer.cpp, AudioProducer.cpp, CamRoster.cpp | Critical | done |
-| FIX-14 | HandleStop abandon strands fLock, kill_thread with lock | Producer.cpp, AudioProducer.cpp | Critical | todo |
+| FIX-14 | HandleStop abandon strands fLock, kill_thread with lock | Producer.cpp, AudioProducer.cpp | Critical | done |
 | FIX-15 | Unplugged w/o lock, tjDestroy w/o generator join, reconfig volatile + unbounded join | CamDevice.cpp/.h, UVCCamDevice.cpp | High | todo |
 | FIX-16 | StartTransfer probe outside lock, audio Start/Stop race, ring free vs memcpy | UVCCamDevice.cpp | High | todo |
 | FIX-17 | Deframer Write vs Flush race, sem drain livelock, DropFrame permit | CamDeframer.cpp, CamStreamingDeframer.cpp, UVCDeframer.cpp | Medium | todo |
