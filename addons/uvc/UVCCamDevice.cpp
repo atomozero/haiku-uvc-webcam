@@ -1847,7 +1847,10 @@ UVCCamDevice::_ParseVideoControl(const usbvc_class_descriptor* _descriptor,
 			// the loop below. Reject before malloc/memcpy.
 			if (len < 12)
 				break;
-			uint8 numIf = _descriptor[11];
+			// Read byte 11 as raw data, the struct is 3 bytes long.
+			// Index on the struct type would step by struct size.
+			const uint8* rawBytes = (const uint8*)_descriptor;
+			uint8 numIf = rawBytes[11];
 			if ((size_t)numIf > len - 12)
 				break;
 			fHeaderDescriptor = (usbvc_interface_header_descriptor*)malloc(len);
