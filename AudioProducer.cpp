@@ -789,7 +789,7 @@ AudioProducer::SetParameterValue(
 			fLastParamChange = when;
 			BroadcastNewParameterValue(when, id, (void *)value, size);
 			break;
-		case P_VOLUME:
+		case P_VOLUME: {
 			if (!value || size != sizeof(float))
 				return;
 			float volume = *((float *)value);
@@ -799,6 +799,7 @@ AudioProducer::SetParameterValue(
 			fLastParamChange = when;
 			BroadcastNewParameterValue(when, id, (void *)value, size);
 			break;
+		}
 		case P_AUTO_GAIN:
 			if (!value || size != sizeof(int32))
 				return;
