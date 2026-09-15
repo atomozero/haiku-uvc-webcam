@@ -181,6 +181,9 @@ NW80xCamDevice::WriteIIC(uint8 address, uint8 *data, size_t count)
 	uint8 buffer[0x23];
 	if (count > 16)
 		return EINVAL;
+	// count 0 would wrap count - 1 below.
+	if (count == 0 || data == NULL)
+		return EINVAL;
 	memset(buffer, 0, sizeof(buffer));
 	buffer[0x20] = Sensor() ? Sensor()->IICWriteAddress() : 0;
 	buffer[0x21] = count - 1;
@@ -196,7 +199,11 @@ NW80xCamDevice::WriteIIC(uint8 address, uint8 *data, size_t count)
 ssize_t
 NW80xCamDevice::ReadIIC(uint8 address, uint8 *data)
 {
-	return ReadIIC(address, data);
+	// Single byte read uses the 8-bit helper.
+	// Old code called itself and overflowed the stack.
+	if (data == NULL)
+		return EINVAL;
+	return ReadIIC8(address, data);
 }
 
 

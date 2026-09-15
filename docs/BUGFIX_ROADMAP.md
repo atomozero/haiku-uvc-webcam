@@ -17,7 +17,7 @@ Rules for this batch:
 | ID | Bug | Files | Severity | Commit |
 |----|-----|-------|----------|--------|
 | FIX-01 | `_descriptor[11]` on struct ptr, breaks build | `addons/uvc/UVCCamDevice.cpp:1850` | Critical | done |
-| FIX-02 | `NW80xCamDevice::ReadIIC` calls itself, stack overflow | `addons/NW80xCamDevice.cpp:197` | Critical | todo |
+| FIX-02 | `NW80xCamDevice::ReadIIC` calls itself, stack overflow | `addons/NW80xCamDevice.cpp:197` | Critical | done |
 | FIX-03 | Destructor frees after stall, wedged thread UAF (video + audio) | `CamDevice.cpp:209`, `UVCCamDevice.cpp:1307` | Critical | todo |
 | FIX-04 | `fCamDevice` plain ptr race on hot-unplug (video + audio) | `Producer.h/.cpp`, `AudioProducer.h/.cpp` | Critical | todo |
 | FIX-05 | `Connect` destination leak + missing NULL/format checks | `Producer.cpp:800`, `AudioProducer.cpp:530` | High | todo |
