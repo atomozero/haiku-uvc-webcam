@@ -24,7 +24,7 @@ Rules for this batch:
 | FIX-06 | Param ID collision + missing size/NULL checks | `UVCCamDevice.cpp:4521`, `CamDevice.cpp:587` | High | done |
 | FIX-07 | `w*h*bpp` overflow and div-by-zero in bandwidth math | `UVCCamDevice.cpp:2243,2635,3199` | High | done |
 | FIX-08 | Shared `tjhandle` without lock, destroy while pump runs | `UVCCamDevice.cpp:6579,1331` | High | done |
-| FIX-09 | Descriptor subtype read without length guard, raw counts | `UVCCamDevice.cpp:1828,1537,1601` | Medium | todo |
+| FIX-09 | Descriptor subtype read without length guard, raw counts | `UVCCamDevice.cpp:1828,1537,1601` | Medium | done |
 | FIX-10 | `SelectStream` race, `Unplugged` audio leak, deframer guards | `UVCCamDevice.cpp:6455`, `CamDevice.cpp:335` | Medium | todo |
 
 ## Coverage map

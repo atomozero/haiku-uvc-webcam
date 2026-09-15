@@ -1391,6 +1391,9 @@ void
 UVCCamDevice::_ParseVideoStreaming(const usbvc_class_descriptor* _descriptor,
 	size_t len)
 {
+	// Need at least length, type and subtype to switch.
+	if (_descriptor == NULL || len < 3)
+		return;
 	switch (_descriptor->descriptorSubtype) {
 		case USB_VIDEO_VS_INPUT_HEADER:
 		{
@@ -1597,22 +1600,24 @@ UVCCamDevice::_ParseVideoStreaming(const usbvc_class_descriptor* _descriptor,
 				"fixedframerate=%s\n", descriptor->frame_index,
 				(descriptor->capabilities & 1) ? "yes" : "no",
 				(descriptor->capabilities & 2) ? "yes" : "no");
-			printf("\twidth=%u,height=%u,min/max bitrate=%" B_PRIu32 "/%" B_PRIu32 ", maxbuf=%" B_PRIu32 "\n",
-				descriptor->width, descriptor->height,
-				descriptor->min_bit_rate, descriptor->max_bit_rate,
-				descriptor->max_video_frame_buffer_size);
+			if (descSane) {
+				printf("\twidth=%u,height=%u,min/max bitrate=%" B_PRIu32 "/%" B_PRIu32 ", maxbuf=%" B_PRIu32 "\n",
+					descriptor->width, descriptor->height,
+					descriptor->min_bit_rate, descriptor->max_bit_rate,
+					descriptor->max_video_frame_buffer_size);
+			}
 
 			if (!descSane)
 				break;
 
 			printf("\tdefault frame interval: %" B_PRIu32 ", #intervals(0=cont): %d\n",
-				descriptor->default_frame_interval, descriptor->frame_interval_type);
-			if (descriptor->frame_interval_type == 0) {
+				descriptor->default_frame_interval, frameChk.frameIntervalType);
+			if (frameChk.frameIntervalType == 0) {
 				printf("min/max frame interval=%" B_PRIu32 "/%" B_PRIu32 ", step=%" B_PRIu32 "\n",
 					descriptor->continuous.min_frame_interval,
 					descriptor->continuous.max_frame_interval,
 					descriptor->continuous.frame_interval_step);
-			} else for (uint8 i = 0; i < descriptor->frame_interval_type; i++) {
+			} else for (uint8 i = 0; i < frameChk.frameIntervalType; i++) {
 				printf("\tdiscrete frame interval: %" B_PRIu32 "\n",
 					descriptor->discrete_frame_intervals[i]);
 			}
@@ -1834,6 +1839,9 @@ void
 UVCCamDevice::_ParseVideoControl(const usbvc_class_descriptor* _descriptor,
 	size_t len)
 {
+	// Need at least length, type and subtype to switch.
+	if (_descriptor == NULL || len < 3)
+		return;
 	switch (_descriptor->descriptorSubtype) {
 		case USB_VIDEO_VC_HEADER:
 		{
@@ -2085,6 +2093,9 @@ void
 UVCCamDevice::_ParseAudioControl(const usb_audio_class_descriptor* _descriptor,
 	size_t len)
 {
+	// Need at least length, type and subtype to switch.
+	if (_descriptor == NULL || len < 3)
+		return;
 	switch (_descriptor->descriptorSubtype) {
 		case USB_AUDIO_AC_HEADER:
 			break;
@@ -2125,6 +2136,9 @@ void
 UVCCamDevice::_ParseAudioStreaming(const usb_audio_class_descriptor* _descriptor,
 	size_t len)
 {
+	// Need at least length, type and subtype to switch.
+	if (_descriptor == NULL || len < 3)
+		return;
 	switch (_descriptor->descriptorSubtype) {
 		case USB_AUDIO_AS_GENERAL:
 			break;
@@ -7299,6 +7313,9 @@ void
 UVCCamDevice::_ParseExtensionUnit(
 	const usb_video_extension_unit_descriptor* descriptor)
 {
+	// Descriptor comes from the USB kit, check before use.
+	if (descriptor == NULL || descriptor->length < 8)
+		return;
 	// Bounds-safe extraction (UVCDescriptors). The XU descriptor's variable
 	// arrays and its Extension()/ControlSize() offset math are driven by two
 	// untrusted count bytes; validate first and read via the checked view so a
