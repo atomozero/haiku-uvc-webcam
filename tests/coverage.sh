@@ -67,6 +67,7 @@
 #   RF-03   runtime logs to syslog          static: no printf runtime logs
 #   RF-04   fill stages split               static: fill stages split
 #   RF-05   split by area                   static: split from UVCCamDevice
+#   FIX-52  get param NULL guard          static: fail closed on unplug
 set -e
 cd "$(dirname "$0")"
 
@@ -198,6 +199,8 @@ check "RF-04 fill stages split" \
 	"grep -q 'FillFrameBuffer stages, split' $SRC/addons/uvc/UVCCamDevice.h"
 check "RF-05 split by area" \
 	"grep -q 'split from UVCCamDevice' $SRC/addons/uvc/UVCConvert.cpp"
+check "FIX-52 get param NULL guard" \
+	"grep -q 'Fail closed when unplugged' $SRC/addons/uvc/UVCControls.cpp"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"

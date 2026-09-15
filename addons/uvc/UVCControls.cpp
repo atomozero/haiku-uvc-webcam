@@ -1213,6 +1213,9 @@ UVCCamDevice::_GetControlValue(uint16 selector, int16* value)
 	if (value == NULL || fProcessingUnitID == 0) {
 		return B_BAD_VALUE;
 	}
+	// Fail closed when unplugged, device goes NULL.
+	if (fDevice == NULL)
+		return B_DEV_NOT_READY;
 
 	ssize_t result = fDevice->ControlTransfer(
 		USB_REQTYPE_INTERFACE_IN | USB_REQTYPE_CLASS,
@@ -1256,6 +1259,9 @@ UVCCamDevice::_GetCTControlValue(uint16 selector, void* value, size_t size)
 	if (value == NULL || !fHasCameraTerminal || fCameraTerminalID == 0) {
 		return B_BAD_VALUE;
 	}
+	// Fail closed when unplugged, device goes NULL.
+	if (fDevice == NULL)
+		return B_DEV_NOT_READY;
 
 	ssize_t result = fDevice->ControlTransfer(
 		USB_REQTYPE_INTERFACE_IN | USB_REQTYPE_CLASS,
