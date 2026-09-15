@@ -275,9 +275,12 @@ WebCamMediaAddOn::InstantiateNodeFor(
 
 	for (uint32 i = 0; i < camCount; i++) {
 		CamDevice *c = fRoster->CameraAt(i);
+		// CameraAt returns NULL past the end, skip before use.
+		if (c == NULL || c->FlavorInfo() == NULL)
+			continue;
 		PRINT((CH ": cam[%d]: %d, %s" CT, i, c->FlavorInfo()->internal_id, c->BrandName()));
 
-		if (c && ((c->FlavorInfo()->internal_id & 0x00FFFFFF) == cameraId)) {
+		if ((c->FlavorInfo()->internal_id & 0x00FFFFFF) == cameraId) {
 			cam = c;
 			break;
 		}

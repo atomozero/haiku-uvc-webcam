@@ -15,7 +15,7 @@ Rules:
 | ID | Bug | Files | Severity | Status |
 |----|-----|-------|----------|--------|
 | FIX-40 | EHCI recovery flag torn across threads | addons/uvc/UVCCamDevice.h,.cpp | Medium | done |
-| FIX-41 | InstantiateNodeFor derefs camera before NULL check | AddOn.cpp | Medium | todo |
+| FIX-41 | InstantiateNodeFor derefs camera before NULL check | AddOn.cpp | Medium | done |
 | FIX-42 | Producer libc macros hide call sites | Producer.cpp | Low | todo |
 | FIX-43 | Orphan Haiku-only tests unwired and stale | tests/ | Low | todo |
 | FIX-44 | Legacy Italian comments | addons/uvc/UVCCamDevice.cpp,.h, Producer.cpp | Low | todo |
