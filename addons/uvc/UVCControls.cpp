@@ -735,10 +735,8 @@ UVCCamDevice::SetParameterValue(int32 id, bigtime_t when, const void* value,
 				const usb_video_frame_descriptor* frameDesc =
 					(const usb_video_frame_descriptor*)frameList->ItemAt(newIndex);
 				if (frameDesc != NULL) {
-					syslog(LOG_INFO, "UVCCamDevice: Resolution changed to %ux%u (index %d)\n",
-						frameDesc->width, frameDesc->height, (int)newIndex);
-					syslog(LOG_INFO, "UVCCamDevice: Resolution changed to %ux%u (index %d, frame_index %u)\n",
-						frameDesc->width, frameDesc->height, (int)newIndex, frameDesc->frame_index);
+					syslog(LOG_INFO, "UVCCamDevice[%s]: Resolution changed to %ux%u (index %d, frame_index %u)\n",
+						LogTag(), frameDesc->width, frameDesc->height, (int)newIndex, frameDesc->frame_index);
 
 					fSelectedResolutionIndex = newIndex;
 

@@ -553,6 +553,10 @@ class CamDevice {
 		// Multi-camera unique identification
 		int32			fInstanceNumber;		// Unique instance number for this camera
 static	int32			sInstanceCounter;		// Global counter for unique IDs
+		// Short per-device log tag ("cam2 0c45:6409"), filled once at
+		// construction so multi-camera logs say WHICH camera struggles.
+		char			fLogTag[24];
+		const char*		LogTag() const { return fLogTag; };
 
 	protected:
 		friend class CamDeviceAddon;

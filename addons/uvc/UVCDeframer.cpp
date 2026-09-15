@@ -10,6 +10,7 @@
 #include "CamDevice.h"
 
 #include <Autolock.h>
+#include <string.h>
 #include <syslog.h>
 
 #define MAX_TAG_LEN CAMDEFRAMER_MAX_TAG_LEN
@@ -31,11 +32,20 @@ UVCDeframer::UVCDeframer(CamDevice* device)
 	fLastDiagReport(0)
 {
 	// Frames come from the pool, buffers grow on demand.
+	strlcpy(fLogTag, "cam?", sizeof(fLogTag));
 }
 
 
 UVCDeframer::~UVCDeframer()
 {
+}
+
+
+void
+UVCDeframer::SetLogTag(const char* tag)
+{
+	if (tag != NULL)
+		strlcpy(fLogTag, tag, sizeof(fLogTag));
 }
 
 
@@ -451,7 +461,8 @@ UVCDeframer::Write(const void* buffer, size_t size)
 			float incompleteRate = fFramesCompleted > 0
 				? 100.0f * fFramesIncomplete / (fFramesCompleted + fFramesIncomplete)
 				: 0.0f;
-			syslog(LOG_INFO, "UVCDeframer stats: completed=%d incomplete=%d (%.1f%%) FID=%d overflow=%d\n",
+			syslog(LOG_INFO, "UVCDeframer[%s] stats: completed=%d incomplete=%d (%.1f%%) FID=%d overflow=%d\n",
+				fLogTag,
 				(int)fFramesCompleted, (int)fFramesIncomplete, incompleteRate,
 				(int)fFIDChanges, (int)fQueueOverflows);
 		}

@@ -16,6 +16,7 @@
 #include <Autolock.h>
 #include <MediaRoster.h>
 #include <syslog.h>
+#include <stdio.h>
 
 /* File I/O stays disabled by leaving the DEBUG_* dump flags
  * below undefined. Do not redefine fopen here, hidden macros
@@ -98,6 +99,16 @@ CamDevice::CamDevice(CamDeviceAddon &_addon, BUSBDevice* _device)
 
 	// Multi-camera support: Assign unique instance number (atomic increment)
 	fInstanceNumber = atomic_add(&sInstanceCounter, 1) + 1;
+
+	// Per-device log tag, immutable after this (thread-safe to read).
+	if (_device != NULL) {
+		snprintf(fLogTag, sizeof(fLogTag), "cam%u %04x:%04x",
+			(unsigned)fInstanceNumber,
+			_device->VendorID(), _device->ProductID());
+	} else {
+		snprintf(fLogTag, sizeof(fLogTag), "cam%u ????",
+			(unsigned)fInstanceNumber);
+	}
 
 	// fill in the generic flavor
 	_addon.WebCamAddOn()->FillDefaultFlavorInfo(&fFlavorInfo);
@@ -1364,8 +1375,8 @@ CamDevice::DataPumpThread()
 					float elapsedSec = elapsed / 1000000.0f;
 					float packetsPerSec = elapsedSec > 0 ? totalPackets / elapsedSec : 0;
 
-					syslog(LOG_INFO, "USB Stats: success=%d errors=%d loss=%.1f%% rate=%.0f pkt/s\n",
-						success, errors, lossPercent, packetsPerSec);
+					syslog(LOG_INFO, "USB Stats[%s]: success=%d errors=%d loss=%.1f%% rate=%.0f pkt/s\n",
+						LogTag(), success, errors, lossPercent, packetsPerSec);
 
 					// Warn if packet loss is high (>5% is concerning for video)
 					if (lossPercent > 5.0f) {

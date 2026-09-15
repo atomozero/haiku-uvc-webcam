@@ -54,6 +54,11 @@ public:
 			deframer_stats		GetStats() const;
 			void				ResetStats();
 
+					// Per-device log tag ("cam2 0c45:6409"), copied from the
+					// owning CamDevice so multi-camera logs are attributable.
+			void				SetLogTag(const char* tag);
+			const char*			LogTag() const { return fLogTag; };
+
 private:
 	void						_DropOldestFrame();
 	void						_PrintBuffer(const void* buffer, size_t size);
@@ -77,6 +82,7 @@ private:
 	// Surfaced in syslog with the same throttling as the other counters.
 	int32						fFramesTruncated;
 	bigtime_t					fLastDiagReport;
+	char						fLogTag[24];
 };
 
 #endif /* _UVC_DEFRAMER_H */

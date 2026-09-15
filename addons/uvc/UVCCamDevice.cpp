@@ -663,6 +663,8 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 	gYuvRgbTables.Initialize();
 
 	fDeframer = new UVCDeframer(this);
+	if (fDeframer != NULL)
+		static_cast<UVCDeframer*>(fDeframer)->SetLogTag(LogTag());
 	SetDataInput(fDeframer);
 
 	const BUSBConfiguration* config;
@@ -1272,7 +1274,8 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 
 		const char* uncompressedName
 			= _UncompressedFormatName(fUncompressedPixelFormat);
-		syslog(LOG_INFO, "UVCCamDevice: Init OK - ctrl=%u stream=%u frames=%d+%d format=%s\n",
+		syslog(LOG_INFO, "UVCCamDevice[%s]: Init OK - ctrl=%u stream=%u frames=%d+%d format=%s\n",
+			LogTag(),
 			fControlIndex, fStreamingIndex,
 			(int)fUncompressedFrames.CountItems(), (int)fMJPEGFrames.CountItems(),
 			fIsMJPEG ? "MJPEG" : uncompressedName);
@@ -2504,8 +2507,8 @@ UVCCamDevice::AcceptVideoFrame(uint32& width, uint32& height)
 			int32 level = _FindResolutionLevel(width, height);
 			if (level >= 0) {
 				fCurrentResolutionLevel = level;
-				syslog(LOG_DEBUG, "UVCCamDevice: Set resolution level to %d for %ux%u\n",
-					level, width, height);
+				syslog(LOG_DEBUG, "UVCCamDevice[%s]: Set resolution level to %d for %ux%u\n",
+					LogTag(), level, width, height);
 			}
 
 			SetVideoFrame(BRect(0, 0, width - 1, height - 1));
@@ -2794,7 +2797,8 @@ UVCCamDevice::_ProbeCommitFormat()
 
 					// Use selected interval if it's slower than what was originally requested
 					if (selectedInterval > frameInterval) {
-						syslog(LOG_INFO, "UVCCamDevice: Bandwidth limit: adapting FPS %.1f -> %.1f (interval %u -> %u)\n",
+						syslog(LOG_INFO, "UVCCamDevice[%s]: Bandwidth limit: adapting FPS %.1f -> %.1f (interval %u -> %u)\n",
+							LogTag(),
 							10000000.0f / frameInterval, selectedFps, frameInterval, selectedInterval);
 						frameInterval = selectedInterval;
 					}
@@ -2814,7 +2818,8 @@ UVCCamDevice::_ProbeCommitFormat()
 					}
 
 					if (adaptedInterval > frameInterval) {
-						syslog(LOG_INFO, "UVCCamDevice: Bandwidth limit (continuous): adapting FPS %.1f -> %.1f (interval %u -> %u)\n",
+						syslog(LOG_INFO, "UVCCamDevice[%s]: Bandwidth limit (continuous): adapting FPS %.1f -> %.1f (interval %u -> %u)\n",
+							LogTag(),
 							10000000.0f / frameInterval, 10000000.0f / adaptedInterval, frameInterval, adaptedInterval);
 						frameInterval = adaptedInterval;
 					} else {
@@ -3145,7 +3150,8 @@ UVCCamDevice::_ProbeCommitFormat()
 	usb_video_probe_and_commit_controls& response = responseBuf.fields;
 
 	// Log negotiated values for debugging
-	syslog(LOG_INFO, "UVC Probe negotiated: format=%d frame=%d interval=%u\n",
+	syslog(LOG_INFO, "UVC Probe[%s] negotiated: format=%d frame=%d interval=%u\n",
+		LogTag(),
 		response.format_index, response.frame_index, response.frame_interval);
 	syslog(LOG_INFO, "UVC Probe: maxVideoFrameSize=%u maxPayloadTransfer=%u\n",
 		response.max_video_frame_size, response.max_payload_transfer_size);
@@ -3197,7 +3203,7 @@ UVCCamDevice::_ProbeCommitFormat()
 	fMaxVideoFrameSize = sane.maxVideoFrameSize;
 	fMaxPayloadTransferSize = sane.maxPayloadTransferSize;
 
-	syslog(LOG_INFO, "UVC Commit successful: maxPayload=%u\n", fMaxPayloadTransferSize);
+	syslog(LOG_INFO, "UVC Commit[%s] successful: maxPayload=%u\n", LogTag(), fMaxPayloadTransferSize);
 	return B_OK;
 }
 
@@ -3335,7 +3341,8 @@ UVCCamDevice::_SelectBestAlternate()
 	if (fMaxPayloadTransferSize > 0) {
 		/* Use the negotiated max payload from Probe/Commit */
 		requiredBandwidth = fMaxPayloadTransferSize;
-		syslog(LOG_INFO, "UVCCamDevice: Required bandwidth from probe: %u bytes\n",
+		syslog(LOG_INFO, "UVCCamDevice[%s]: Required bandwidth from probe: %u bytes\n",
+			LogTag(),
 			requiredBandwidth);
 	}
 
@@ -3451,9 +3458,9 @@ UVCCamDevice::_SelectBestAlternate()
 					endpointIndex = j;
 					alternateIndex = i;
 					selectedHighBandwidth = true;
-					syslog(LOG_INFO, "UVCCamDevice: Pass 1.5 promoted to alt %u, "
+					syslog(LOG_INFO, "UVCCamDevice[%s]: Pass 1.5 promoted to alt %u, "
 						"%u bytes/uframe (mult=%u)\n",
-						i, totalBandwidth, transactions);
+						LogTag(), i, totalBandwidth, transactions);
 				}
 			}
 		}
@@ -3518,22 +3525,22 @@ UVCCamDevice::_SelectBestAlternate()
 			/* MJPEG: bandwidth estimate based on uncompressed size is meaningless.
 			 * MJPEG typically compresses 10-50x, so real throughput is much higher
 			 * than the uncompressed calculation suggests. */
-			syslog(LOG_INFO, "UVCCamDevice: Selected bandwidth %u bytes (~%.1f MB/s) for MJPEG stream\n",
-				bestBandwidth, bytesPerSecond / 1048576.0f);
+			syslog(LOG_INFO, "UVCCamDevice[%s]: Selected bandwidth %u bytes (~%.1f MB/s) for MJPEG stream\n",
+				LogTag(), bestBandwidth, bytesPerSecond / 1048576.0f);
 		} else {
 			float maxFps = (float)bytesPerSecond / fMaxVideoFrameSize;
-			syslog(LOG_INFO, "UVCCamDevice: Selected bandwidth %u bytes (~%.1f MB/s, max %.1f fps for frame size %u)\n",
-				bestBandwidth, bytesPerSecond / 1048576.0f, maxFps, fMaxVideoFrameSize);
+			syslog(LOG_INFO, "UVCCamDevice[%s]: Selected bandwidth %u bytes (~%.1f MB/s, max %.1f fps for frame size %u)\n",
+				LogTag(), bestBandwidth, bytesPerSecond / 1048576.0f, maxFps, fMaxVideoFrameSize);
 
 			if (maxFps < 5.0f) {
-				syslog(LOG_WARNING, "UVCCamDevice: Bandwidth may be insufficient (max %.1f fps)\n",
-					maxFps);
+				syslog(LOG_WARNING, "UVCCamDevice[%s]: Bandwidth may be insufficient (max %.1f fps)\n",
+					LogTag(), maxFps);
 			}
 		}
 	}
 
-	syslog(LOG_INFO, "UVCCamDevice: Using alternate %u with endpoint %u (bandwidth %u bytes)\n",
-		alternateIndex, endpointIndex, bestBandwidth);
+	syslog(LOG_INFO, "UVCCamDevice[%s]: Using alternate %u with endpoint %u (bandwidth %u bytes)\n",
+		LogTag(), alternateIndex, endpointIndex, bestBandwidth);
 
 	// WARNING: Haiku's BUSBInterface::SetAlternate() has a bug that causes
 	// double-free/memory corruption when switching between alternates with
@@ -3909,8 +3916,8 @@ UVCCamDevice::_AttemptResolutionRecovery()
 	uint32 newWidth, newHeight;
 	_GetResolutionAtLevel(fTargetResolutionLevel, &newWidth, &newHeight);
 
-	syslog(LOG_INFO, "UVCCamDevice: Connection stable, attempting recovery to level %d (%ux%u)\n",
-		(int)fTargetResolutionLevel, newWidth, newHeight);
+	syslog(LOG_INFO, "UVCCamDevice[%s]: Connection stable, attempting recovery to level %d (%ux%u)\n",
+		LogTag(), (int)fTargetResolutionLevel, newWidth, newHeight);
 
 	// FIX: Actually apply the resolution change
 	if (TransferEnabled()) {
@@ -3920,8 +3927,8 @@ UVCCamDevice::_AttemptResolutionRecovery()
 
 	status_t result = AcceptVideoFrame(newWidth, newHeight);
 	if (result != B_OK) {
-		syslog(LOG_ERR, "UVCCamDevice: Failed to set recovery resolution: %s\n",
-			strerror(result));
+		syslog(LOG_ERR, "UVCCamDevice[%s]: Failed to set recovery resolution: %s\n",
+			LogTag(), strerror(result));
 		fStableStartTime = 0;
 		return result;
 	}
@@ -3930,8 +3937,8 @@ UVCCamDevice::_AttemptResolutionRecovery()
 
 	result = StartTransfer();
 	if (result != B_OK) {
-		syslog(LOG_ERR, "UVCCamDevice: Failed to restart transfer after recovery: %s\n",
-			strerror(result));
+		syslog(LOG_ERR, "UVCCamDevice[%s]: Failed to restart transfer after recovery: %s\n",
+			LogTag(), strerror(result));
 		fStableStartTime = 0;
 		return result;
 	}
@@ -3942,7 +3949,7 @@ UVCCamDevice::_AttemptResolutionRecovery()
 	}
 
 	fStableStartTime = 0;  // Reset for next recovery attempt
-	syslog(LOG_INFO, "UVCCamDevice: Resolution recovery applied successfully\n");
+	syslog(LOG_INFO, "UVCCamDevice[%s]: Resolution recovery applied successfully\n", LogTag());
 
 	return B_OK;
 }
@@ -4275,8 +4282,8 @@ UVCCamDevice::OnConsecutiveTransferFailures(uint32 count)
 	// endpoint without requiring a full controller reset.
 	if (count == 300 && !fEHCIRecoveryInProgress.load()) {
 		fEHCIRecoveryInProgress.store(true);
-		syslog(LOG_ERR, "UVCCamDevice: 300+ consecutive failures - "
-			"attempting EHCI recovery via alternate cycle\n");
+		syslog(LOG_ERR, "UVCCamDevice[%s]: 300+ consecutive failures - "
+			"attempting EHCI recovery via alternate cycle\n", LogTag());
 
 		// Snapshot under lock, cycle outside so the USB
 		// wait never blocks reader threads.
@@ -4307,8 +4314,8 @@ UVCCamDevice::OnConsecutiveTransferFailures(uint32 count)
 					cfg->InterfaceAt(streamingIndex));
 				if (iface != NULL) {
 					iface->SetAlternate(streamAlt);
-					syslog(LOG_INFO, "UVCCamDevice: EHCI recovery alt cycle "
-						"complete (alt %u -> 0 -> %u)\n", streamAlt, streamAlt);
+					syslog(LOG_INFO, "UVCCamDevice[%s]: EHCI recovery alt cycle "
+						"complete (alt %u -> 0 -> %u)\n", LogTag(), streamAlt, streamAlt);
 				}
 			}
 			// Refresh endpoint, SetAlternate recreates it.

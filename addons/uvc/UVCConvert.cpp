@@ -235,14 +235,14 @@ UVCCamDevice::_ValidateFrame(CamFrame* f, int32 w, int32 h)
 			int32 targetLevel = fCurrentResolutionLevel + 1;
 			uint32 newWidth, newHeight;
 			_GetResolutionAtLevel(targetLevel, &newWidth, &newHeight);
-			syslog(LOG_WARNING, "UVCCamDevice: %u consecutive bad frames, "
+			syslog(LOG_WARNING, "UVCCamDevice[%s]: %u consecutive bad frames, "
 				"auto-downgrading to %ux%u\n",
-				fConsecutiveBadFrames, newWidth, newHeight);
+				LogTag(), fConsecutiveBadFrames, newWidth, newHeight);
 			RequestResolutionChange(newWidth, newHeight);
 			fCurrentResolutionLevel = targetLevel;
 		} else if (fCurrentResolutionLevel >= maxLevel) {
-			syslog(LOG_WARNING, "UVCCamDevice: %u consecutive bad frames at "
-				"minimum resolution\n", fConsecutiveBadFrames);
+			syslog(LOG_WARNING, "UVCCamDevice[%s]: %u consecutive bad frames at "
+				"minimum resolution\n", LogTag(), fConsecutiveBadFrames);
 		}
 		fConsecutiveBadFrames = 0;  // Reset to allow retry
 	}
@@ -260,8 +260,8 @@ UVCCamDevice::_HandleFillTimeout(status_t err)
 	// Log only first 5 and every 50th to reduce spam during EHCI errors
 	int32 timeouts = atomic_get(&fFillFrameTimeout);
 	if (timeouts <= 5 || (timeouts % 50) == 0) {
-		syslog(LOG_WARNING, "UVCCamDevice::FillFrameBuffer: WaitFrame TIMEOUT #%d (err=%s)\n",
-			(int)timeouts, strerror(err));
+		syslog(LOG_WARNING, "UVCCamDevice[%s]::FillFrameBuffer: WaitFrame TIMEOUT #%d (err=%s)\n",
+			LogTag(), (int)timeouts, strerror(err));
 	}
 
 	// After 10 consecutive timeouts, attempt automatic recovery.
@@ -271,8 +271,8 @@ UVCCamDevice::_HandleFillTimeout(status_t err)
 	if (atomic_get(&fFillFrameTimeout) == 10
 		&& !fEHCIRecoveryInProgress.load()) {
 		fEHCIRecoveryInProgress.store(true);
-		syslog(LOG_WARNING, "UVCCamDevice: 10 consecutive frame timeouts - "
-			"attempting recovery via alternate cycle\n");
+		syslog(LOG_WARNING, "UVCCamDevice[%s]: 10 consecutive frame timeouts - "
+			"attempting recovery via alternate cycle\n", LogTag());
 
 		// Snapshot under lock, cycle outside so the USB
 		// wait never blocks reader threads.
