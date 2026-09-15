@@ -2248,7 +2248,8 @@ UVCCamDevice::SuggestVideoFrame(uint32& width, uint32& height)
 			for (int32 i = 0; i < count; i++) {
 				const usb_video_frame_descriptor* desc =
 					(const usb_video_frame_descriptor*)frameList->ItemAt(i);
-				uint32 pixels = desc->width * desc->height;
+				// 64-bit math, 16-bit fields can overflow signed int.
+				uint32 pixels = (uint32)desc->width * (uint32)desc->height;
 				if (pixels < smallestPixels) {
 					smallestPixels = pixels;
 					bestIndex = i;
@@ -2627,9 +2628,12 @@ UVCCamDevice::_ProbeCommitFormat()
 			(const usb_video_frame_descriptor*)frameList->ItemAt(frameIndex - 1);
 		if (frameDesc != NULL) {
 			/* Fall back to default_frame_interval from descriptor */
-			frameInterval = frameDesc->default_frame_interval;
-			syslog(LOG_INFO, "UVCCamDevice: Using device default frame interval %u (%.1f fps)\n",
-				frameInterval, 10000000.0f / frameInterval);
+			/* Zero means broken firmware, keep the 30 fps default. */
+			if (frameDesc->default_frame_interval != 0) {
+				frameInterval = frameDesc->default_frame_interval;
+				syslog(LOG_INFO, "UVCCamDevice: Using device default frame interval %u (%.1f fps)\n",
+					frameInterval, 10000000.0f / frameInterval);
+			}
 		}
 	}
 
@@ -2640,13 +2644,16 @@ UVCCamDevice::_ProbeCommitFormat()
 		if (frameDesc != NULL) {
 			uint32 maxBandwidth = _GetMaxAvailableBandwidth();
 			if (maxBandwidth > 0) {
-				uint32 frameSize = frameDesc->width * frameDesc->height * 2;
-				// USB 2.0 high-speed: 8000 microframes/second
-				uint32 bytesPerSecond = maxBandwidth * 8000;
-				float maxFps = (float)bytesPerSecond / frameSize;
+				// 64-bit math, reject empty frames first.
+				uint64 frameSize = (uint64)frameDesc->width
+					* (uint64)frameDesc->height * 2;
+				if (frameSize == 0)
+					return B_ERROR;
+				uint64 bytesPerSecond = (uint64)maxBandwidth * 8000;
+				float maxFps = (float)bytesPerSecond / (float)frameSize;
 
-				syslog(LOG_INFO, "UVCCamDevice: YUY2 bandwidth check: max=%u bytes/uframe (%.1f MB/s), frameSize=%u, maxFps=%.1f\n",
-					maxBandwidth, bytesPerSecond / 1048576.0f, frameSize, maxFps);
+				syslog(LOG_INFO, "UVCCamDevice: YUY2 bandwidth check: max=%u bytes/uframe (%.1f MB/s), frameSize=%llu, maxFps=%.1f\n",
+					maxBandwidth, bytesPerSecond / 1048576.0f, (unsigned long long)frameSize, maxFps);
 
 				// Check if frame descriptor has discrete intervals
 				if (frameDesc->frame_interval_type > 0) {
@@ -2672,10 +2679,10 @@ UVCCamDevice::_ProbeCommitFormat()
 						}
 
 						float fps = 10000000.0f / interval;
-						uint32 requiredBandwidth = (uint32)(frameSize * fps);
+						uint64 requiredBandwidth = (uint64)((double)frameSize * (double)fps);
 
-						syslog(LOG_INFO, "UVCCamDevice: Checking interval %u (%.1f fps): requires %u bytes/sec, available %u\n",
-							interval, fps, requiredBandwidth, bytesPerSecond);
+						syslog(LOG_INFO, "UVCCamDevice: Checking interval %u (%.1f fps): requires %llu bytes/sec, available %llu\n",
+							interval, fps, (unsigned long long)requiredBandwidth, (unsigned long long)bytesPerSecond);
 
 						// Track slowest valid interval for fallback
 						if (interval > slowestValidInterval)
@@ -3199,17 +3206,25 @@ UVCCamDevice::_EstimateMaxFps(uint32 width, uint32 height, bool isMJPEG)
 	if (bandwidth == 0)
 		return 0.0f;
 
-	uint32 bytesPerSecond = bandwidth * 8000;
+	// 64-bit math, zero size means no valid estimate.
+	uint64 pixels = (uint64)width * (uint64)height;
+	if (pixels == 0)
+		return 0.0f;
+	uint64 bytesPerSecond = (uint64)bandwidth * 8000;
 
 	if (isMJPEG) {
 		// MJPEG is compressed, typically 1/10 to 1/20 of raw YUY2 size
 		// Use conservative estimate of 1/8 compression ratio
-		uint32 estimatedFrameSize = (width * height * 2) / 8;
-		return (float)bytesPerSecond / estimatedFrameSize;
+		uint64 estimatedFrameSize = (pixels * 2) / 8;
+		if (estimatedFrameSize == 0)
+			return 0.0f;
+		return (float)bytesPerSecond / (float)estimatedFrameSize;
 	} else {
 		// YUY2 uncompressed: 2 bytes per pixel
-		uint32 frameSize = width * height * 2;
-		return (float)bytesPerSecond / frameSize;
+		uint64 frameSize = pixels * 2;
+		if (frameSize == 0)
+			return 0.0f;
+		return (float)bytesPerSecond / (float)frameSize;
 	}
 }
 
