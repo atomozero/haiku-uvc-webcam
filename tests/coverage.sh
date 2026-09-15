@@ -42,6 +42,7 @@
 #   FIX-29  still NULL guard          static: device NULL check in trigger
 #   FIX-30  unplug probe outside lock static: find then probe then unlink
 #   FIX-31  bulk pump outside lock      static: copy then transfer outside
+#   FIX-32  EHCI cycle outside lock     static: snapshot then cycle outside
 set -e
 cd "$(dirname "$0")"
 
@@ -123,6 +124,8 @@ check "FIX-30 probe outside lock" \
 	"grep -q 'probe outside' $SRC/CamRoster.cpp"
 check "FIX-31 bulk outside lock" \
 	"grep -q 'transfer outside' $SRC/CamDevice.cpp"
+check "FIX-32 EHCI cycle outside lock" \
+	"grep -q 'cycle outside' $SRC/addons/uvc/UVCCamDevice.cpp"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"

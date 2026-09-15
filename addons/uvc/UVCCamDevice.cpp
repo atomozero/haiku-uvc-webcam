@@ -5495,41 +5495,54 @@ UVCCamDevice::FillFrameBuffer(BBuffer* buffer, bigtime_t* stamp)
 			syslog(LOG_WARNING, "UVCCamDevice: 10 consecutive frame timeouts - "
 				"attempting recovery via alternate cycle\n");
 
-			uint8 streamAlt = fCurrentVideoAlternate;
-			if (streamAlt > 0) {
+			// Snapshot under lock, cycle outside so the USB
+			// wait never blocks reader threads.
+			uint8 streamAlt = 0;
+			BUSBDevice* device = NULL;
+			uint32 streamingIndex = 0;
+			{
 				BAutolock lock(Locker());
-				const BUSBConfiguration* cfg = fDevice
-					? fDevice->ActiveConfiguration() : NULL;
+				if (lock.IsLocked() && fDevice != NULL) {
+					streamAlt = (uint8)fCurrentVideoAlternate;
+					device = fDevice;
+					streamingIndex = fStreamingIndex;
+					// Park endpoint before cycling, pump pauses
+					// instead of using a freed endpoint.
+					fIsoIn = NULL;
+					fCurrentVideoAlternate = 0;
+				}
+			}
+			if (streamAlt > 0 && device != NULL) {
+				const BUSBConfiguration* cfg
+					= device->ActiveConfiguration();
 				if (cfg != NULL) {
 					BUSBInterface* iface = const_cast<BUSBInterface*>(
-						cfg->InterfaceAt(fStreamingIndex));
+						cfg->InterfaceAt(streamingIndex));
 					if (iface != NULL) {
 						// Bring the interface down to alt 0. Going N->0 is safe:
 						// only the 0->N direction trips Haiku's SetAlternate
-						// double-free. SetAlternate() destroys and recreates the
-						// BUSBEndpoint objects, so fIsoIn is now dangling — drop
-						// it immediately, before the pump thread can dereference
-						// it (this was a use-after-free).
+						// double-free.
 						iface->SetAlternate(0);
-						fIsoIn = NULL;
-						fCurrentVideoAlternate = 0;
-						snooze(100000);
+					}
+				}
+				snooze(100000);
 
-						// Re-select the streaming alternate through the normal
-						// path. _SelectBestAlternate() applies the 0->N
-						// double-free workaround AND re-fetches fIsoIn /
-						// fIsoMaxPacketSize / fBuffer. A raw SetAlternate(streamAlt)
-						// here would skip the workaround and leave fIsoIn pointing
-						// at freed memory.
-						status_t rs = _SelectBestAlternate();
-						if (rs != B_OK) {
-							syslog(LOG_ERR, "UVCCamDevice: recovery re-select "
-								"failed: %s\n", strerror(rs));
-						} else {
-							syslog(LOG_INFO, "UVCCamDevice: recovery alt cycle "
-								"complete (%u -> 0 -> %u)\n", streamAlt,
-								fCurrentVideoAlternate);
-						}
+				// Re-select the streaming alternate through the normal
+				// path. _SelectBestAlternate() applies the 0->N
+				// double-free workaround AND re-fetches fIsoIn /
+				// fIsoMaxPacketSize / fBuffer. A raw SetAlternate(streamAlt)
+				// here would skip the workaround and leave fIsoIn pointing
+				// at freed memory.
+				BAutolock relock(Locker());
+				if (relock.IsLocked() && fDevice != NULL) {
+					status_t rs = _SelectBestAlternate();
+					if (rs != B_OK) {
+						syslog(LOG_ERR, "UVCCamDevice: recovery re-select "
+							"failed: %s\n", strerror(rs));
+					} else {
+						syslog(LOG_INFO, "UVCCamDevice: recovery alt cycle "
+							"complete (%u -> 0 -> %u)\n", streamAlt,
+							fCurrentVideoAlternate);
 					}
 				}
 			}
@@ -8473,20 +8486,64 @@ UVCCamDevice::OnConsecutiveTransferFailures(uint32 count)
 		syslog(LOG_ERR, "UVCCamDevice: 300+ consecutive failures - "
 			"attempting EHCI recovery via alternate cycle\n");
 
-		uint8 streamAlt = fCurrentVideoAlternate;
-		if (streamAlt > 0) {
+		// Snapshot under lock, cycle outside so the USB
+		// wait never blocks reader threads.
+		uint8 streamAlt = 0;
+		BUSBDevice* device = NULL;
+		uint32 streamingIndex = 0;
+		{
 			BAutolock lock(Locker());
-			const BUSBConfiguration* cfg = fDevice
-				? fDevice->ActiveConfiguration() : NULL;
+			if (lock.IsLocked() && fDevice != NULL) {
+				streamAlt = (uint8)fCurrentVideoAlternate;
+				device = fDevice;
+				streamingIndex = fStreamingIndex;
+			}
+		}
+		if (streamAlt > 0 && device != NULL) {
+			const BUSBConfiguration* cfg = device->ActiveConfiguration();
 			if (cfg != NULL) {
 				BUSBInterface* iface = const_cast<BUSBInterface*>(
-					cfg->InterfaceAt(fStreamingIndex));
-				if (iface != NULL) {
+					cfg->InterfaceAt(streamingIndex));
+				if (iface != NULL)
 					iface->SetAlternate(0);
-					snooze(100000);
+			}
+			snooze(100000);
+			// Re-fetch after SetAlternate, old pointers dangle.
+			cfg = device->ActiveConfiguration();
+			if (cfg != NULL) {
+				BUSBInterface* iface = const_cast<BUSBInterface*>(
+					cfg->InterfaceAt(streamingIndex));
+				if (iface != NULL) {
 					iface->SetAlternate(streamAlt);
 					syslog(LOG_INFO, "UVCCamDevice: EHCI recovery alt cycle "
 						"complete (alt %u -> 0 -> %u)\n", streamAlt, streamAlt);
+				}
+			}
+			// Refresh endpoint, SetAlternate recreates it.
+			BAutolock relock(Locker());
+			if (relock.IsLocked() && fDevice != NULL) {
+				const BUSBConfiguration* freshCfg
+					= fDevice->ActiveConfiguration();
+				if (freshCfg != NULL) {
+					const BUSBInterface* freshIface
+						= freshCfg->InterfaceAt(streamingIndex);
+					const BUSBInterface* activeAlt = freshIface != NULL
+						? freshIface->AlternateAt(streamAlt) : NULL;
+					if (activeAlt != NULL) {
+						for (uint32 i = 0;
+							i < activeAlt->CountEndpoints(); i++) {
+							const BUSBEndpoint* endpoint
+								= activeAlt->EndpointAt(i);
+							if (endpoint != NULL
+								&& endpoint->IsIsochronous()
+								&& endpoint->IsInput()) {
+								fIsoIn = endpoint;
+								fIsoMaxPacketSize
+									= endpoint->MaxPacketSize() & 0x7FF;
+								break;
+							}
+						}
+					}
 				}
 			}
 		}
