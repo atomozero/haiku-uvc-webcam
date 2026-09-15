@@ -1308,6 +1308,10 @@ UVCCamDevice::~UVCCamDevice()
 {
 	printf("UVCCamDevice::~UVCCamDevice() - Destroying device\n");
 
+	// Stop video first so the pump cannot use the jpeg handle below.
+	// Bounded join, on timeout the device is stalled and we leak.
+	StopTransfer();
+
 	// Stop audio transfer if running
 	// On timeout the pump still runs, skip frees below.
 	bool audioWedged = false;
@@ -6550,6 +6554,9 @@ size_t
 UVCCamDevice::_UncompressedFrameSize(uvc_uncompressed_format fmt,
 	int32 width, int32 height) const
 {
+	// Reject bad sizes, negative would wrap as huge size_t.
+	if (width <= 0 || height <= 0)
+		return 0;
 	switch (fmt) {
 		case UVC_FMT_YUY2:
 		case UVC_FMT_UYVY:
@@ -6580,6 +6587,9 @@ UVCCamDevice::_DecompressMJPEGtoRGB32(unsigned char* dst,
 	// FIX: a 1-byte frame reached jpegStart[1] out of bounds below.
 	if (!fJpegDecompressor || !dst || !src || srcSize < 2 || width <= 0 || height <= 0)
 		return;
+
+	// Shared handle is not thread safe, hold the lock for decode.
+	BAutolock jpegLock(fJpegLock);
 
 	// Find JPEG SOI marker (0xFF 0xD8) - UVC may have header before JPEG data
 	const unsigned char* jpegStart = src;

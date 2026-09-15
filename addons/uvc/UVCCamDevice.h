@@ -627,8 +627,10 @@ private:
 			int					fWBCompAuto;
 			int					fHueAuto;
 
-			// MJPEG decompression support
-			tjhandle			fJpegDecompressor;
+		// MJPEG decompression support
+		tjhandle			fJpegDecompressor;
+		// Serialise turbojpeg use, the handle is shared.
+		BLocker				fJpegLock;
 			bool				fIsMJPEG;
 			bool				fIsNV12;		// Back-compat: true when fUncompressedPixelFormat == UVC_FMT_NV12
 			uvc_uncompressed_format fUncompressedPixelFormat;
