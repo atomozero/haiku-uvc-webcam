@@ -283,6 +283,25 @@ WebCamMediaAddOn::InstantiateNodeFor(
 		}
 	}
 
+	// One node of each kind per camera, flavors stay unlimited
+	// (possible_count 0) so enforce the cap here explicitly.
+	if (cam != NULL) {
+		if (isAudioFlavor && cam->AudioNode() != NULL) {
+			syslog(LOG_WARNING, "WebCamMediaAddOn: camera %d already "
+				"has an audio node, refusing second node\n",
+				(int)cameraId);
+			fRoster->Unlock();
+			return NULL;
+		}
+		if (!isAudioFlavor && cam->VideoNode() != NULL) {
+			syslog(LOG_WARNING, "WebCamMediaAddOn: camera %d already "
+				"has a video node, refusing second node\n",
+				(int)cameraId);
+			fRoster->Unlock();
+			return NULL;
+		}
+	}
+
 	// P3 fase B: switch the camera to the requested VS interface BEFORE the
 	// VideoProducer is created. SelectStream refuses while streaming, but at
 	// this point the producer hasn't started a transfer yet so the switch
