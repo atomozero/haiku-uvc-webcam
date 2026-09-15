@@ -30,7 +30,12 @@ public:
 virtual					~VideoProducer();
 
 virtual	status_t		InitCheck() const { return fInitStatus; }
-		void			SetCamDevice(CamDevice* dev) { fCamDevice = dev; }
+		void			SetCamDevice(CamDevice* dev)
+							{
+								// Generator reads under fLock, take it here too.
+								BAutolock _lock(fLock);
+								fCamDevice = dev;
+							}
 		// FIX-C1: bounded join of the frame generator so the roster can
 		// make sure no FillFrameBuffer is in flight before the CamDevice
 		// is deleted on hot-unplug. Returns B_TIMED_OUT when the thread
