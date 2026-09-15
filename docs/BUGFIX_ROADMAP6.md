@@ -20,7 +20,7 @@ Rules:
 | FIX-48 | Adaptive deframer pool and queue byte cap | CamDeframer.cpp,.h | Medium | done |
 | FIX-49 | Probe size hint fast-path | addons/uvc/UVCCamDevice.h,.cpp | Medium | done |
 | FIX-50 | Dead frame-repeat cache copies every frame | addons/uvc/UVCCamDevice.h,.cpp | Medium | done |
-| FIX-51 | Zero-copy frame accumulation into CamFrame | addons/uvc/UVCDeframer.h,.cpp | High | todo |
+| FIX-51 | Zero-copy frame accumulation into CamFrame | addons/uvc/UVCDeframer.h,.cpp | High | done |
 
 ## Coverage map
 

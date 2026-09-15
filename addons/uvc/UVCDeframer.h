@@ -59,13 +59,11 @@ private:
 
 	int32						fFrameCount;
 	int32						fID;
-	BMallocIO					fInputBuffer;
 	size_t						fExpectedFrameSize;  // Expected size for complete frame
 
-	// FIX: Simple fixed buffer to bypass potential BMallocIO issues
-	uint8*						fFixedBuffer;
-	size_t						fFixedBufferSize;
-	size_t						fFixedBufferPos;
+	// Payload accumulates directly into the pooled CamFrame,
+	// completed frames are queued without an extra copy.
+	// The pool keeps buffers warm so growth rarely reallocates.
 
 	// Frame quality diagnostics
 	int32						fFramesCompleted;
@@ -74,7 +72,7 @@ private:
 	int32						fQueueOverflows;
 	int32						fPacketsThisFrame;
 	size_t						fTotalBytesThisFrame;  // Total payload bytes (including truncated)
-	// FIX-M2: payload bytes dropped because fFixedBuffer was full.
+	// FIX-M2: payload bytes dropped past the accumulation cap.
 	// Surfaced in syslog with the same throttling as the other counters.
 	int32						fFramesTruncated;
 	bigtime_t					fLastDiagReport;
