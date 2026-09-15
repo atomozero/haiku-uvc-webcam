@@ -69,6 +69,7 @@
 #   RF-05   split by area                   static: split from UVCCamDevice
 #   FIX-52  get param NULL guard          static: fail closed on unplug
 #   FIX-53  audio start snapshot            static: check once and use the copy
+#   FIX-54  nothrow web and roster          static: fail closed on OOM
 set -e
 cd "$(dirname "$0")"
 
@@ -204,6 +205,8 @@ check "FIX-52 get param NULL guard" \
 	"grep -q 'Fail closed when unplugged' $SRC/addons/uvc/UVCControls.cpp"
 check "FIX-53 audio start snapshot" \
 	"grep -q 'check once and use the copy' $SRC/addons/uvc/UVCAudio.cpp"
+check "FIX-54 nothrow web and roster" \
+	"grep -q 'Fail closed on OOM' $SRC/Producer.cpp && grep -q 'Fail closed on OOM' $SRC/AudioProducer.cpp && grep -q 'Fail closed on OOM' $SRC/AddOn.cpp"
 
 echo ""
 echo "coverage: $PASS passed, $FAIL failed"

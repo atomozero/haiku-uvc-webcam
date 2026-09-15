@@ -201,7 +201,13 @@ VideoProducer::NodeRegistered()
 	/* Set up the parameter web */
 
 	//TODO: remove and put sensible stuff there
-	BParameterWeb *web = new BParameterWeb();
+	BParameterWeb *web = new (std::nothrow) BParameterWeb();
+	// Fail closed on OOM instead of derefing NULL below.
+	if (web == NULL) {
+		syslog(LOG_ERR, "Producer: NodeRegistered - no memory for web\n");
+		ReportError(B_NODE_IN_DISTRESS);
+		return;
+	}
 	BParameterGroup *main = web->MakeGroup(Name());
 	BParameterGroup *g;
 

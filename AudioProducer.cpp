@@ -166,7 +166,13 @@ AudioProducer::NodeRegistered()
 	}
 
 	// Set up parameter web for audio controls
-	BParameterWeb* web = new BParameterWeb();
+	BParameterWeb* web = new (std::nothrow) BParameterWeb();
+	// Fail closed on OOM instead of derefing NULL below.
+	if (web == NULL) {
+		syslog(LOG_ERR, "AudioProducer: NodeRegistered - no memory\n");
+		ReportError(B_NODE_IN_DISTRESS);
+		return;
+	}
 	BParameterGroup* main = web->MakeGroup(Name());
 
 	// Mute control

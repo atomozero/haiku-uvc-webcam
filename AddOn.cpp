@@ -8,6 +8,7 @@
 #include <Notification.h>
 #include <String.h>
 
+#include <new>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -75,7 +76,10 @@ WebCamMediaAddOn::WebCamMediaAddOn(image_id imid)
 	fDefaultAudioFlavorInfo.out_format_flags = 0;
 	fDefaultAudioFlavorInfo.out_formats = &fAudioMediaFormat;
 
-	fRoster = new CamRoster(this);
+	fRoster = new (std::nothrow) CamRoster(this);
+	// Fail closed on OOM, fInitStatus stays B_NO_INIT.
+	if (fRoster == NULL)
+		return;
 	fRoster->Start();
 	fInitStatus = B_OK;
 }

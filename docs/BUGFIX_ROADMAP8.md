@@ -16,7 +16,7 @@ Rules:
 |----|-----|-------|----------|--------|
 | FIX-52 | Get param derefs device without NULL check | addons/uvc/UVCControls.cpp | High | done |
 | FIX-53 | Audio start TOCTOU on device plus rate clamp | addons/uvc/UVCAudio.cpp | Medium | done |
-| FIX-54 | Throwing new without OOM check | Producer.cpp, AudioProducer.cpp, AddOn.cpp | Low | todo |
+| FIX-54 | Throwing new without OOM check | Producer.cpp, AudioProducer.cpp, AddOn.cpp | Low | done |
 
 ## Coverage map
 
