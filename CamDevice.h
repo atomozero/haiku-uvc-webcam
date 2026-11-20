@@ -215,6 +215,7 @@ enum reconfig_request_type {
 	RECONFIG_NONE = 0,
 	RECONFIG_RESOLUTION_CHANGE,
 	RECONFIG_FORMAT_CHANGE,
+	RECONFIG_RESTART_STREAM,
 	RECONFIG_SHUTDOWN
 };
 
@@ -235,6 +236,14 @@ struct reconfig_request {
 		width = w;
 		height = h;
 		type = RECONFIG_RESOLUTION_CHANGE;
+		pending = true;
+	}
+
+	void RequestRestart() {
+		// A pending resolution change restarts the stream too: keep it.
+		if (pending && type == RECONFIG_RESOLUTION_CHANGE)
+			return;
+		type = RECONFIG_RESTART_STREAM;
 		pending = true;
 	}
 };
@@ -444,6 +453,10 @@ class CamDevice {
 
 	// Safe resolution change (via worker thread to avoid kernel panic)
 			status_t	RequestResolutionChange(uint32 width, uint32 height);
+	// Stop and restart the stream from the worker thread (recovery). The
+	// pump is joined before the alternate changes, so no SetAlternate runs
+	// during a transfer.
+			status_t	RequestStreamRestart();
 			// FIX: locked read — the writer holds fReconfigLock and the
 			// flag is polled from pump/fallback paths (TOCTOU otherwise).
 			bool		HasPendingReconfigRequest();
@@ -514,6 +527,7 @@ class CamDevice {
 			status_t	StartReconfigThread();
 			status_t	StopReconfigThread();
 	virtual status_t	_HandleResolutionChange(uint32 width, uint32 height);
+	virtual status_t	_HandleStreamRestart();
 
 	virtual void		DumpRegs();
 	
@@ -628,6 +642,16 @@ static	int32			sInstanceCounter;		// Global counter for unique IDs
 		BLocker			fReconfigLock;
 
 		status_t		_StopTransferInternal(bool callerHoldsLock);
+
+		// Called by _StopTransferInternal once the pump thread has exited
+		// (never when it was abandoned as wedged), with fLocker held: the
+		// streaming interface can be changed safely here.
+	virtual void		_TransferStopped() {}
+
+		// Set when the device goes away or is destroyed: no new reconfig
+		// request is accepted, so the worker thread is not respawned while
+		// the object is torn down.
+		int32			fShuttingDown;
 };
 
 // the addon itself, that instanciate

@@ -155,19 +155,10 @@ CamRoster::DeviceRemoved(BUSBDevice* _device)
 	if (found == NULL)
 		return;
 
-	// Check spurious re-enumeration outside the lock.
-	// SetAlternate can fire DeviceRemoved while still connected.
-	if (_device != NULL) {
-		uint16 status = 0;
-		ssize_t ret = _device->ControlTransfer(
-			USB_REQTYPE_DEVICE_IN | USB_REQTYPE_STANDARD,
-			USB_REQUEST_GET_STATUS, 0, 0, 2, &status);
-		if (ret >= 0) {
-			syslog(LOG_INFO, "CamRoster: DeviceRemoved called but device "
-				"still responds - ignoring spurious removal\n");
-			return;
-		}
-	}
+	// Always tear the camera down: BUSBRoster deletes the BUSBDevice right
+	// after this returns, so a camera kept here would point at a freed
+	// device. If the device was only re-enumerated, DeviceAdded() creates
+	// a new camera for it.
 
 	CamDevice* cam = NULL;
 	{
@@ -192,17 +183,19 @@ CamRoster::DeviceRemoved(BUSBDevice* _device)
 	// seconds and we must not stall the Media Kit reader threads that long.
 	// This is safe because `cam` is already unlinked from fCameras.
 
-	// Stop all USB transfers and wait for threads to finish
-	cam->Unplugged();
-
-	// Invalidate the VideoProducer's device pointer and stop it.
-	// The Media Kit may still send messages to the node after
-	// StopNode returns, so we must NOT delete the CamDevice here.
+	// Stop the nodes first: their stop joins the frame and audio generator
+	// threads and stops the transfers while the camera's buffers (the audio
+	// ring, the deframer) still exist. Unplugged() frees the audio ring, so
+	// running it first let the audio generator read freed memory, and left
+	// the video generator looping until its join timed out (and the camera
+	// was leaked as stalled). The Media Kit may still send messages to the
+	// nodes after StopNode returns, so we must NOT delete the CamDevice
+	// before the snooze below.
 	cam->QuitVideoNode();
-
-	// Same for the AudioProducer: without this its real-time generator thread
-	// keeps calling into the CamDevice and would use-after-free once we delete.
 	cam->QuitAudioNode();
+
+	// Then stop whatever still runs and drop the USB pointers.
+	cam->Unplugged();
 
 	// Notify Media Kit that the flavor is no longer available
 	fAddon->CameraRemoved(cam);

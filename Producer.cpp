@@ -429,6 +429,14 @@ VideoProducer::DeleteHook(BMediaNode * node)
 	// this, closing the consumer without unplugging the camera (e.g. a
 	// resolution change that recreates the node, or an app crash) blocks
 	// every reconnect until media_addon_server restarts.
+	//
+	// A node deleted while it streams (the consumer quit without stopping
+	// it) must stop first: the destructor's HandleStop runs after the
+	// pointer below is cleared and could not stop the USB transfer, which
+	// then kept running and made the next node's StartTransfer fail.
+	if (fRunning)
+		HandleStop();
+
 	CamDevice* dev = NULL;
 	{
 		BAutolock lock(fLock);
@@ -1255,6 +1263,28 @@ VideoProducer::HandleStart(bigtime_t performance_time)
 	}
 	syslog(LOG_INFO, "Producer: HandleStart - sem created: %d\n", fFrameSync);
 
+	// Start the USB transfer before the frame generator exists: if the device
+	// refuses, there is no running thread to get rid of (kill_thread could
+	// strand fLock or the deframer lock it holds). EALREADY means a transfer
+	// is already running (a previous node, or the reconfig worker), which is
+	// what we want.
+	bool startedTransfer = false;
+	{
+		status_t startErr;
+		{
+			BAutolock lock(fCamDevice->Locker());
+			startErr = fCamDevice->StartTransfer();
+		}
+		startedTransfer = startErr == B_OK;
+		if (startErr < B_OK && startErr != EALREADY) {
+			syslog(LOG_ERR, "Producer: HandleStart - StartTransfer refused: "
+				"%s\n", strerror(startErr));
+			delete_sem(fFrameSync);
+			fFrameSync = -1;
+			return;
+		}
+	}
+
 	// CRITICAL: Set fRunning BEFORE spawning thread to avoid race condition
 	// The thread checks fRunning in its loop condition
 	fRunning = true;
@@ -1267,40 +1297,23 @@ VideoProducer::HandleStart(bigtime_t performance_time)
 		delete_sem(fFrameSync);
 		fFrameSync = -1;	// FIX: do not leave a deleted id for the guards
 		fThread = -1;
+		if (startedTransfer)
+			fCamDevice->StopTransfer();
 		return;
 	}
 	syslog(LOG_INFO, "Producer: HandleStart - thread spawned: %d\n", fThread);
 
 	if (resume_thread(fThread) < B_OK) {
+		// The thread never ran, so it holds nothing: killing it is safe.
 		syslog(LOG_ERR, "Producer: HandleStart - resume_thread failed\n");
 		fRunning = false;
 		kill_thread(fThread);
 		fThread = -1;
 		delete_sem(fFrameSync);
 		fFrameSync = -1;
+		if (startedTransfer)
+			fCamDevice->StopTransfer();
 		return;
-	}
-	syslog(LOG_INFO, "Producer: HandleStart - thread resumed\n");
-
-	{
-		status_t startErr = B_OK;
-		{
-			BAutolock lock(fCamDevice->Locker());
-			// FIX-T10: honour the stalled refusal instead of leaving fRunning
-			// true on a dead endpoint (busy-loop of fast-failed buffers).
-			startErr = fCamDevice->StartTransfer();
-		}
-		// Kill outside the device lock, the generator may hold fLock
-		// and killing under two locks strands them.
-		if (startErr < B_OK) {
-			syslog(LOG_ERR, "Producer: HandleStart - StartTransfer refused\n");
-			fRunning = false;
-			kill_thread(fThread);
-			fThread = -1;
-			delete_sem(fFrameSync);
-			fFrameSync = -1;
-			return;
-		}
 	}
 	syslog(LOG_INFO, "Producer: HandleStart COMPLETE! fRunning=true\n");
 }

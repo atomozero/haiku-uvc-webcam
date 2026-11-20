@@ -266,66 +266,15 @@ UVCCamDevice::_HandleFillTimeout(status_t err)
 
 	// After 10 consecutive timeouts, attempt automatic recovery.
 	// This is typical of EHCI "host system error" on Intel controllers
-	// after sustained isochronous streaming. Cycle the streaming alternate
-	// (down to 0, back to streaming) to re-initialize the endpoint.
-	if (atomic_get(&fFillFrameTimeout) == 10
-		&& !fEHCIRecoveryInProgress.load()) {
-		fEHCIRecoveryInProgress.store(true);
+	// after sustained isochronous streaming. Restart the stream from the
+	// reconfig worker: it joins the pump, idles the streaming interface
+	// (alternate 0) and selects the streaming alternate again. Cycling the
+	// alternate here, on the frame generator thread, ran SetAlternate while
+	// the pump could be inside a transfer and freed fBuffer under it.
+	if (atomic_get(&fFillFrameTimeout) == 10) {
 		syslog(LOG_WARNING, "UVCCamDevice[%s]: 10 consecutive frame timeouts - "
-			"attempting recovery via alternate cycle\n", LogTag());
-
-		// Snapshot under lock, cycle outside so the USB
-		// wait never blocks reader threads.
-		uint8 streamAlt = 0;
-		BUSBDevice* device = NULL;
-		uint32 streamingIndex = 0;
-		{
-			BAutolock lock(Locker());
-			if (lock.IsLocked() && fDevice != NULL) {
-				streamAlt = (uint8)fCurrentVideoAlternate;
-				device = fDevice;
-				streamingIndex = fStreamingIndex;
-				// Park endpoint before cycling, pump pauses
-				// instead of using a freed endpoint.
-				fIsoIn = NULL;
-				fCurrentVideoAlternate = 0;
-			}
-		}
-		if (streamAlt > 0 && device != NULL) {
-			const BUSBConfiguration* cfg
-				= device->ActiveConfiguration();
-			if (cfg != NULL) {
-				BUSBInterface* iface = const_cast<BUSBInterface*>(
-					cfg->InterfaceAt(streamingIndex));
-				if (iface != NULL) {
-					// Bring the interface down to alt 0. Going N->0 is safe:
-					// only the 0->N direction trips Haiku's SetAlternate
-					// double-free.
-					iface->SetAlternate(0);
-				}
-			}
-			snooze(100000);
-
-			// Re-select the streaming alternate through the normal
-			// path. _SelectBestAlternate() applies the 0->N
-			// double-free workaround AND re-fetches fIsoIn /
-			// fIsoMaxPacketSize / fBuffer. A raw SetAlternate(streamAlt)
-			// here would skip the workaround and leave fIsoIn pointing
-			// at freed memory.
-			BAutolock relock(Locker());
-			if (relock.IsLocked() && fDevice != NULL) {
-				status_t rs = _SelectBestAlternate();
-				if (rs != B_OK) {
-					syslog(LOG_ERR, "UVCCamDevice: recovery re-select "
-						"failed: %s\n", strerror(rs));
-				} else {
-					syslog(LOG_INFO, "UVCCamDevice: recovery alt cycle "
-						"complete (%u -> 0 -> %u)\n", streamAlt,
-						fCurrentVideoAlternate);
-				}
-			}
-		}
-		fEHCIRecoveryInProgress.store(false);
+			"restarting the stream\n", LogTag());
+		RequestStreamRestart();
 	}
 
 	// If recovery didn't help by 30 timeouts, give up and stop the pump.

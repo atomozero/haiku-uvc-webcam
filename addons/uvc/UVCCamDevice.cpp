@@ -1322,6 +1322,12 @@ UVCCamDevice::~UVCCamDevice()
 {
 	syslog(LOG_INFO, "UVCCamDevice::~UVCCamDevice() - Destroying device\n");
 
+	// The reconfig worker runs _HandleResolutionChange() on this object:
+	// stop it before anything below is freed (~CamDevice runs too late), and
+	// refuse new requests from the pump or the frame generator.
+	atomic_set(&fShuttingDown, 1);
+	StopReconfigThread();
+
 	// Stop video first so the pump cannot use the jpeg handle below.
 	// Bounded join, on timeout the device is stalled and we leak.
 	StopTransfer();
@@ -2227,6 +2233,16 @@ UVCCamDevice::StartTransfer()
 	syslog(LOG_INFO, "UVCCamDevice: StartTransfer requested (ctrlIf=%d streamIf=%d)\n",
 		fControlIndex, fStreamingIndex);
 
+	// Probe/commit and the alternate selection change the streaming
+	// interface and free fBuffer: never while a pump runs. Two starters
+	// (HandleStart and the reconfig worker) are serialized by fLocker,
+	// which is recursive, so the base class can take it again below.
+	BAutolock lock(Locker());
+	if (TransferEnabled())
+		return EALREADY;
+	if (IsStalled())
+		return B_DEVICE_NOT_FOUND;
+
 	status_t err = _ProbeCommitFormat();
 	if (err != B_OK) {
 		syslog(LOG_ERR, "UVCCamDevice: StartTransfer aborted - Probe/Commit failed (%s)\n",
@@ -2246,24 +2262,16 @@ UVCCamDevice::StartTransfer()
 }
 
 
-status_t
-UVCCamDevice::StopTransfer()
+void
+UVCCamDevice::_TransferStopped()
 {
-	// CRITICAL FIX: Stop the data pump thread FIRST, before changing USB interface.
-	// Previous code called _SelectIdleAlternate() before CamDevice::StopTransfer(),
-	// which caused KDL panic "USB object did not become idle!" because SetAlternate()
-	// was called while the pump thread was still performing IsochronousTransfer().
-	//
-	// Correct sequence:
-	// 1. Stop the pump thread and wait for it to exit (CamDevice::StopTransfer)
-	// 2. Then switch to alternate 0 to turn off LED (_SelectIdleAlternate)
-
-	status_t result = CamDevice::StopTransfer();
-
-	// Now that pump thread is stopped, it's safe to change USB interface
+	// Called by CamDevice once the pump thread has exited, on every stop
+	// (Producer::HandleStop goes through StopTransferLocked, which a
+	// StopTransfer override missed): alternate 0 turns the LED off and frees
+	// the bus bandwidth. Never called for an abandoned (wedged) pump, where
+	// SetAlternate would run during its transfer ("USB object did not become
+	// idle" panic).
 	_SelectIdleAlternate();
-
-	return result;
 }
 
 

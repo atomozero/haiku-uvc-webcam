@@ -80,7 +80,8 @@ CamDevice::CamDevice(CamDeviceAddon &_addon, BUSBDevice* _device)
 	  fReconfigThread(-1),
 	  fReconfigSem(-1),
 	  fReconfigThreadRunning(0),
-	  fReconfigLock("ReconfigLock")
+	  fReconfigLock("ReconfigLock"),
+	  fShuttingDown(0)
 {
 	// Initialize reconfig request
 	fReconfigRequest.Reset();
@@ -210,7 +211,9 @@ CamDevice::CamDevice(CamDeviceAddon &_addon, BUSBDevice* _device)
 
 CamDevice::~CamDevice()
 {
-	// Stop reconfig thread first (it may try to control transfers)
+	// Refuse new reconfig requests, then stop the worker (it may try to
+	// control transfers).
+	atomic_set(&fShuttingDown, 1);
 	StopReconfigThread();
 
 	// Ensure transfers are stopped before cleanup
@@ -286,11 +289,15 @@ CamDevice::QuitVideoNode()
 		media_node node = fVideoNode->Node();
 		syslog(LOG_INFO, "CamDevice: Stopping and releasing video node %d\n",
 			(int)node.node);
+		// Stop synchronously first: HandleStop sets fRunning to false and
+		// joins the frame generator (bounded), then stops the transfer.
+		// Joining before the stop could only time out, the generator keeps
+		// running until it is told to stop.
+		roster->StopNode(node, 0, true);	// synchronous stop
+
 		// FIX-C1: make sure the frame generator is not inside FillFrameBuffer
-		// before the back-pointer is cleared and the device deleted.
-		// HandleStop (via synchronous StopNode below) already joins it;
-		// this extra bounded join closes the load-then-use race where the
-		// generator copied fCamDevice just before SetCamDevice(NULL).
+		// before the back-pointer is cleared and the device deleted. After
+		// the stop this returns at once unless the generator was abandoned.
 		VideoProducer* vp = dynamic_cast<VideoProducer*>(fVideoNode);
 		if (vp != NULL) {
 			status_t joinErr = vp->JoinFrameGenerator(2000000);
@@ -301,8 +308,6 @@ CamDevice::QuitVideoNode()
 			}
 			vp->SetCamDevice(NULL);
 		}
-
-		roster->StopNode(node, 0, true);	// synchronous stop
 
 		// Give the event loop time to process pending messages
 		snooze(50000);
@@ -349,6 +354,10 @@ CamDevice::Unplugged()
 	// FIX-C4: the reconfig worker drives Stop/StartTransfer on fDevice/fIsoIn.
 	// Stop it and drop any pending request first so it cannot run a
 	// SetAlternate on a dead device while the nodes are torn down below.
+	// The pump and the frame generator may still ask for a resolution change
+	// or a restart: fShuttingDown makes those requests fail instead of
+	// starting the worker again.
+	atomic_set(&fShuttingDown, 1);
 	StopReconfigThread();
 	CancelPendingReconfigRequest();
 
@@ -540,6 +549,17 @@ CamDevice::_StopTransferInternal(bool callerHoldsLock)
 		atomic_set(&fStalled, 1);
 	}
 	fPumpThread = -1;
+
+	// The pump has exited: let the subclass idle the streaming interface.
+	// Not when it was abandoned, it may still be inside a transfer.
+	if (!IsStalled()) {
+		if (callerHoldsLock)
+			_TransferStopped();
+		else {
+			BAutolock lock(fLocker);
+			_TransferStopped();
+		}
+	}
 
 	// Log error statistics summary on stream stop
 	LogErrorStatistics();
@@ -1192,27 +1212,37 @@ CamDevice::DataPumpThread()
 		while (atomic_get(&fTransferEnabled)) {
 			ssize_t len = -1;
 
-			// Minimize lock scope: only lock during USB transfer
-			// Processing happens outside the lock
+			// Take the endpoint and buffer under the lock, transfer without
+			// it. The endpoint and the buffer only change on this thread
+			// (recovery in OnConsecutiveTransferFailures) or while the pump
+			// is stopped (Start/StopTransfer, the reconfig worker), so they
+			// stay valid during the transfer. Holding fLocker across the
+			// blocking transfer made every stop wait for it, forever when
+			// the camera wedged.
+			const BUSBEndpoint* endpoint = NULL;
+			uint8* buffer = NULL;
+			size_t bufferLen = 0;
 			{
 				BAutolock lock(fLocker);
 				if (!lock.IsLocked())
 					break;
-				if (fIsoIn == NULL)
-					break;
-
-				// OPTIMIZATION: Removed memset() from hot path
-				// Pre-filling buffer is unnecessary because:
-				// 1. We track actual_length for each packet
-				// 2. Only valid data is written to the deframer
-				// 3. Invalid packets are skipped entirely
-				// The deframer handles incomplete frames with its own validation
-
-				// Isochronous transfer
-				len = fIsoIn->IsochronousTransfer(fBuffer, fBufferLen,
-					packetDescriptors, numPacketDescriptors);
+				endpoint = fIsoIn;
+				buffer = fBuffer;
+				bufferLen = fBufferLen;
 			}
-			// Lock released here - processing happens unlocked
+			if (endpoint == NULL || buffer == NULL || bufferLen == 0)
+				break;
+
+			// The kernel does not write the descriptors back when it cannot
+			// queue the transfer: start from failed, empty packets so the
+			// previous transfer's data is never handed on twice.
+			for (int i = 0; i < numPacketDescriptors; i++) {
+				packetDescriptors[i].actual_length = 0;
+				packetDescriptors[i].status = B_ERROR;
+			}
+
+			len = endpoint->IsochronousTransfer(buffer, bufferLen,
+				packetDescriptors, numPacketDescriptors);
 
 			// Throttled logging: first 5, then based on time/count threshold
 			transferAttempts++;
@@ -1230,6 +1260,12 @@ CamDevice::DataPumpThread()
 			}
 
 			// Handle transfer errors
+			if (len < 0 && ClassifyUSBError(len) == USB_ERROR_DISCONNECTED) {
+				// The camera is gone: stop instead of failing ~500 more times.
+				syslog(LOG_INFO, "CamDevice[%s]: device disconnected, "
+					"stopping the data pump\n", LogTag());
+				break;
+			}
 			if (len < 0) {
 				consecutiveFailures++;
 				// The subclass may run its own recovery as the count climbs
@@ -1309,7 +1345,7 @@ CamDevice::DataPumpThread()
 				// We must ensure: fBufferLen = slotSize * numPacketDescriptors
 				// So: slotSize = fBufferLen / numPacketDescriptors
 				// This MUST match request_length if buffer was properly sized
-				size_t slotSize = fBufferLen / numPacketDescriptors;
+				size_t slotSize = bufferLen / numPacketDescriptors;
 
 				// Verify alignment and log packet info (first few times)
 				static int logCount = 0;
@@ -1317,7 +1353,7 @@ CamDevice::DataPumpThread()
 					logCount++;
 					size_t reqLen = packetDescriptors[0].request_length;
 					syslog(LOG_INFO, "ISO #%d: bufLen=%zu, slots=%d, slotSize=%zu, reqLen=%zu\n",
-						logCount, fBufferLen, numPacketDescriptors, slotSize, reqLen);
+						logCount, bufferLen, numPacketDescriptors, slotSize, reqLen);
 
 					// Log first few packet actual_lengths
 					syslog(LOG_INFO, "  actual_len: [%d, %d, %d, %d, %d, %d, %d, %d]\n",
@@ -1349,8 +1385,8 @@ CamDevice::DataPumpThread()
 				int actual_length = packetDescriptors[i].actual_length;
 
 				// Bounds check
-				if (actual_length > 0 && packetOffset + actual_length <= fBufferLen) {
-					fDataInput->Write(&fBuffer[packetOffset], actual_length);
+				if (actual_length > 0 && packetOffset + actual_length <= bufferLen) {
+					fDataInput->Write(&buffer[packetOffset], actual_length);
 					packetSuccess++;
 				}
 			}
@@ -2192,6 +2228,10 @@ CamDevice::ReconfigThread()
 				_HandleResolutionChange(request.width, request.height);
 				break;
 
+			case RECONFIG_RESTART_STREAM:
+				_HandleStreamRestart();
+				break;
+
 			case RECONFIG_FORMAT_CHANGE:
 				// Future: handle format changes
 				syslog(LOG_WARNING, "CamDevice: Format change not yet implemented\n");
@@ -2212,6 +2252,9 @@ CamDevice::ReconfigThread()
 status_t
 CamDevice::RequestResolutionChange(uint32 width, uint32 height)
 {
+	if (atomic_get(&fShuttingDown) != 0)
+		return B_NOT_ALLOWED;
+
 	// Start reconfig thread if not running
 	if (atomic_get((int32*)&fReconfigThreadRunning) == 0) {
 		status_t err = StartReconfigThread();
@@ -2238,6 +2281,55 @@ CamDevice::RequestResolutionChange(uint32 width, uint32 height)
 	syslog(LOG_INFO, "CamDevice: Requested resolution change to %ux%u\n",
 		width, height);
 	return B_OK;
+}
+
+
+status_t
+CamDevice::RequestStreamRestart()
+{
+	if (atomic_get(&fShuttingDown) != 0)
+		return B_NOT_ALLOWED;
+
+	if (atomic_get((int32*)&fReconfigThreadRunning) == 0) {
+		status_t err = StartReconfigThread();
+		if (err != B_OK) {
+			syslog(LOG_ERR, "CamDevice: Cannot request a stream restart: "
+				"reconfig thread failed to start (%s)\n", strerror(err));
+			return err;
+		}
+	}
+
+	{
+		BAutolock lock(fReconfigLock);
+		fReconfigRequest.RequestRestart();
+	}
+	release_sem(fReconfigSem);
+
+	syslog(LOG_INFO, "CamDevice[%s]: Requested a stream restart\n", LogTag());
+	return B_OK;
+}
+
+
+status_t
+CamDevice::_HandleStreamRestart()
+{
+	// Runs on the reconfig worker: the pump is joined by StopTransfer before
+	// the subclass idles the interface, and StartTransfer selects the
+	// streaming alternate again.
+	if (!TransferEnabled())
+		return B_OK;
+
+	status_t result = StopTransfer();
+	if (result != B_OK || IsStalled())
+		return result != B_OK ? result : B_DEVICE_NOT_FOUND;
+
+	snooze(100000);
+
+	result = StartTransfer();
+	syslog(result == B_OK ? LOG_INFO : LOG_ERR,
+		"CamDevice[%s]: stream restart %s\n", LogTag(),
+		result == B_OK ? "done" : strerror(result));
+	return result;
 }
 
 
