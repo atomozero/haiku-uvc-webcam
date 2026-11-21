@@ -515,6 +515,70 @@ print_guid(const usbvc_guid guid)
 }
 
 
+// #pragma mark - libturbojpeg on threads of its own
+
+
+/*	libturbojpeg keeps an error string per thread, in thread-local storage
+	that ARM emulates (emutls): the first use in a thread registers a pthread
+	key destructor that lives in the library. tjDestroy() always uses it, and
+	the decoder was created and destroyed on whatever thread made or deleted
+	the camera (an application's instantiating thread, the media add-on
+	server's control thread). Those threads outlive the library when the
+	team quits (BMediaRoster unloads every add-on) and crashed at their exit
+	in the destructor. Creation and destruction run on a short thread of
+	their own, joined here, so the destructor runs while the library is
+	loaded. Decoding happens on the frame generator, which is joined when
+	the node stops.
+*/
+static status_t
+turbojpeg_init_thread(void* data)
+{
+	*(tjhandle*)data = tjInitDecompress();
+	return B_OK;
+}
+
+
+static status_t
+turbojpeg_destroy_thread(void* data)
+{
+	tjDestroy((tjhandle)data);
+	return B_OK;
+}
+
+
+static void
+run_turbojpeg_thread(thread_func function, void* data)
+{
+	thread_id thread = spawn_thread(function, "turbojpeg", B_NORMAL_PRIORITY,
+		data);
+	if (thread < B_OK) {
+		// Better a thread that may crash at its exit than no decoder.
+		function(data);
+		return;
+	}
+	status_t result;
+	resume_thread(thread);
+	wait_for_thread(thread, &result);
+}
+
+
+tjhandle
+UVCCamDevice::_TurboJPEGInit()
+{
+	tjhandle handle = NULL;
+	run_turbojpeg_thread(turbojpeg_init_thread, &handle);
+	return handle;
+}
+
+
+void
+UVCCamDevice::_TurboJPEGDestroy(tjhandle handle)
+{
+	if (handle != NULL)
+		run_turbojpeg_thread(turbojpeg_destroy_thread, handle);
+}
+
+
 UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 	: CamDevice(_addon, _device),
 	fHeaderDescriptor(NULL),
@@ -1200,7 +1264,7 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 	}
 
 	// Initialize TurboJPEG decompressor
-	fJpegDecompressor = tjInitDecompress();
+	fJpegDecompressor = _TurboJPEGInit();
 	/* FIX: Check if TurboJPEG initialization failed */
 	if (fJpegDecompressor == NULL) {
 		syslog(LOG_WARNING, "UVCCamDevice: tjInitDecompress failed - MJPEG disabled\n");
@@ -1364,7 +1428,7 @@ UVCCamDevice::~UVCCamDevice()
 
 	// Cleanup TurboJPEG decompressor
 	if (fJpegDecompressor) {
-		tjDestroy(fJpegDecompressor);
+		_TurboJPEGDestroy(fJpegDecompressor);
 		fJpegDecompressor = NULL;
 		syslog(LOG_INFO, "UVCCamDevice: TurboJPEG decompressor destroyed\n");
 	}

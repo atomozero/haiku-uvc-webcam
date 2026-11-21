@@ -635,6 +635,8 @@ private:
 			int					fHueAuto;
 
 		// MJPEG decompression support
+	static	tjhandle			_TurboJPEGInit();
+	static	void				_TurboJPEGDestroy(tjhandle handle);
 		tjhandle			fJpegDecompressor;
 		// Serialise turbojpeg use, the handle is shared.
 		BLocker				fJpegLock;
