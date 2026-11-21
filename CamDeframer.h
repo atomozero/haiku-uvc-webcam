@@ -30,13 +30,36 @@ ST_FRAME
 };
 
 
-/* should have a real Frame class someday */
-class CamFrame : public BMallocIO {
+class CamFrame : public BPositionIO {
 public:
-			CamFrame() : BMallocIO() { fStamp = system_time(); };
-virtual		~CamFrame() {};
-bigtime_t			Stamp() const { return fStamp; };
-bigtime_t			fStamp;
+			CamFrame();
+virtual		~CamFrame();
+
+virtual	ssize_t		ReadAt(off_t position, void* buffer, size_t size);
+virtual	ssize_t		WriteAt(off_t position, const void* buffer, size_t size);
+virtual	off_t		Seek(off_t position, uint32 seekMode);
+virtual	off_t		Position() const { return fPosition; }
+		// Unlike BMallocIO, a smaller size (0 included) keeps the memory:
+		// pooled frames are refilled without a malloc, and growing goes by
+		// doubling instead of 256-byte steps that copied a whole frame
+		// again for almost every packet.
+virtual	status_t	SetSize(off_t size);
+virtual	status_t	GetSize(off_t* size) const;
+
+		const void*	Buffer() const { return fData; }
+		size_t		BufferLength() const { return fLength; }
+		size_t		Capacity() const { return fCapacity; }
+		bigtime_t	Stamp() const { return fStamp; }
+
+		bigtime_t	fStamp;
+
+private:
+		status_t	_Reserve(size_t size);
+
+		uint8*		fData;
+		size_t		fLength;
+		size_t		fCapacity;
+		off_t		fPosition;
 };
 
 class CamDeframer : public CamFilterInterface {

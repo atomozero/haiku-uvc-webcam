@@ -659,7 +659,7 @@ UVCCamDevice::AudioPumpThread()
 		bigtime_t now = system_time();
 		if (now - lastLogTime > 30000000) {
 			if (errorCount > 0) {
-				syslog(LOG_INFO,
+				WEBCAM_VERBOSE(
 					"UVCCamDevice: Audio stats: %u transfers, %u errors (%.1f%%)\n",
 					(unsigned)transferCount, (unsigned)errorCount,
 					100.0f * errorCount / transferCount);

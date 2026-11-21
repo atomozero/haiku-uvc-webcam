@@ -5,12 +5,141 @@
 
 #define CD_COL "31"
 #include "CamDeframer.h"
+
+#include <new>
+#include <stdlib.h>
+#include <string.h>
 #include "CamDevice.h"
 #include "CamDebug.h"
 #include <Autolock.h>
 #include <syslog.h>
 #define MAX_TAG_LEN CAMDEFRAMER_MAX_TAG_LEN
 #define MAXFRAMEBUF CAMDEFRAMER_MAX_QUEUED_FRAMES
+
+
+// Frames bigger than this are refused: a broken stream must not make the
+// pump take all the memory.
+static const size_t kMaxCamFrameSize = 64u * 1024 * 1024;
+
+
+CamFrame::CamFrame()
+	:
+	fStamp(system_time()),
+	fData(NULL),
+	fLength(0),
+	fCapacity(0),
+	fPosition(0)
+{
+}
+
+
+CamFrame::~CamFrame()
+{
+	free(fData);
+}
+
+
+status_t
+CamFrame::_Reserve(size_t size)
+{
+	if (size <= fCapacity)
+		return B_OK;
+	if (size > kMaxCamFrameSize)
+		return B_NO_MEMORY;
+	size_t newCapacity = fCapacity > 0 ? fCapacity : 64 * 1024;
+	while (newCapacity < size)
+		newCapacity *= 2;
+	if (newCapacity > kMaxCamFrameSize)
+		newCapacity = kMaxCamFrameSize;
+	uint8* data = (uint8*)realloc(fData, newCapacity);
+	if (data == NULL)
+		return B_NO_MEMORY;
+	fData = data;
+	fCapacity = newCapacity;
+	return B_OK;
+}
+
+
+ssize_t
+CamFrame::ReadAt(off_t position, void* buffer, size_t size)
+{
+	if (buffer == NULL || position < 0)
+		return B_BAD_VALUE;
+	if ((uint64)position >= fLength)
+		return 0;
+	size_t available = fLength - (size_t)position;
+	if (size > available)
+		size = available;
+	memcpy(buffer, fData + position, size);
+	return size;
+}
+
+
+ssize_t
+CamFrame::WriteAt(off_t position, const void* buffer, size_t size)
+{
+	if (buffer == NULL || position < 0
+		|| (uint64)position + size > kMaxCamFrameSize)
+		return B_BAD_VALUE;
+	size_t end = (size_t)position + size;
+	if (_Reserve(end) != B_OK)
+		return B_NO_MEMORY;
+	if ((size_t)position > fLength)
+		memset(fData + fLength, 0, (size_t)position - fLength);
+	memcpy(fData + position, buffer, size);
+	if (end > fLength)
+		fLength = end;
+	return size;
+}
+
+
+off_t
+CamFrame::Seek(off_t position, uint32 seekMode)
+{
+	off_t newPosition;
+	switch (seekMode) {
+		case SEEK_SET:
+			newPosition = position;
+			break;
+		case SEEK_CUR:
+			newPosition = fPosition + position;
+			break;
+		case SEEK_END:
+			newPosition = (off_t)fLength + position;
+			break;
+		default:
+			return B_BAD_VALUE;
+	}
+	if (newPosition < 0)
+		return B_BAD_VALUE;
+	fPosition = newPosition;
+	return fPosition;
+}
+
+
+status_t
+CamFrame::SetSize(off_t size)
+{
+	if (size < 0 || (uint64)size > kMaxCamFrameSize)
+		return B_BAD_VALUE;
+	if (_Reserve((size_t)size) != B_OK)
+		return B_NO_MEMORY;
+	// New bytes read as zero, as with BMallocIO.
+	if ((size_t)size > fLength)
+		memset(fData + fLength, 0, (size_t)size - fLength);
+	fLength = (size_t)size;
+	return B_OK;
+}
+
+
+status_t
+CamFrame::GetSize(off_t* size) const
+{
+	if (size == NULL)
+		return B_BAD_VALUE;
+	*size = fLength;
+	return B_OK;
+}
 
 
 CamDeframer::CamDeframer(CamDevice *device)
@@ -321,7 +450,8 @@ CamDeframer::AllocFrame()
 
 	// No pooled frame available, allocate new one
 	fPoolMisses++;
-	return new CamFrame();
+	// The pump thread must not throw: return NULL, the callers cope.
+	return new(std::nothrow) CamFrame();
 }
 
 
@@ -337,7 +467,7 @@ CamDeframer::RecycleFrame(CamFrame* frame)
 	// tens of megabytes while pooled. Small frames keep the
 	// full count cap, large ones keep fewer entries.
 	static const size_t kMaxPoolBytes = 16u * 1024 * 1024;
-	size_t frameBytes = frame->BufferLength();
+	size_t frameBytes = frame->Capacity();
 	if (frameBytes == 0)
 		frameBytes = 1;
 	size_t maxPooled = kMaxPoolBytes / frameBytes;

@@ -628,7 +628,7 @@ UVCCamDevice::SetParameterValue(int32 id, bigtime_t when, const void* value,
 {
 	// See GetParameterValue().
 	BAutolock lock(Locker());
-	syslog(LOG_INFO, "UVCCamDevice::SetParameterValue(%" B_PRId32 ")\n", id - fFirstParameterID);
+	WEBCAM_VERBOSE("UVCCamDevice::SetParameterValue(%" B_PRId32 ")\n", id - fFirstParameterID);
 	switch (id - fFirstParameterID) {
 		case 0:
 			// debug_printf("\tBrightness:\n");

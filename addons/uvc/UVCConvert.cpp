@@ -1152,8 +1152,10 @@ size_t
 UVCCamDevice::_UncompressedFrameSize(uvc_uncompressed_format fmt,
 	int32 width, int32 height) const
 {
-	// Reject bad sizes, negative would wrap as huge size_t.
-	if (width <= 0 || height <= 0)
+	// Reject bad sizes, negative would wrap as huge size_t, and sizes from
+	// a broken descriptor (up to 65535) whose product overflows a 32-bit
+	// size_t.
+	if (width <= 0 || height <= 0 || width > 8192 || height > 8192)
 		return 0;
 	switch (fmt) {
 		case UVC_FMT_YUY2:

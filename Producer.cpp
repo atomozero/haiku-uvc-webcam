@@ -822,10 +822,15 @@ VideoProducer::Connect(status_t error, const media_source &source,
 		return;
 	}
 
+	// PrepareToConnect() reserved the output for this destination. A
+	// connection that fails here must give it back, or every later
+	// PrepareToConnect() found it taken and refused with "already
+	// connected" until the node was deleted.
 	if (!camDevice) {
 		PRINTF(0, ("Connect: No camera device\n"));
 	fprintf(stderr, "ERROR: No camera device\n");
 	fprintf(stderr, "=== Connect END (no device) ===\n\n");
+		fOutput.destination = media_destination::null;
 		return;
 	}
 
@@ -834,6 +839,7 @@ VideoProducer::Connect(status_t error, const media_source &source,
 		PRINTF(0, ("Connect: Device unplugged\n"));
 	fprintf(stderr, "ERROR: Device unplugged\n");
 	fprintf(stderr, "=== Connect END (unplugged) ===\n\n");
+		fOutput.destination = media_destination::null;
 		return;
 	}
 
@@ -844,6 +850,8 @@ VideoProducer::Connect(status_t error, const media_source &source,
 	fprintf(stderr, "  source match: %s\n", source == fOutput.source ? "YES" : "NO");
 	fprintf(stderr, "  error < B_OK: %s\n", error < B_OK ? "YES" : "NO");
 	fprintf(stderr, "=== Connect END (validation failed) ===\n\n");
+		if (source == fOutput.source)
+			fOutput.destination = media_destination::null;
 		return;
 	}
 

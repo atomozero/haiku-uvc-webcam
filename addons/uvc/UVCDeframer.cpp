@@ -77,10 +77,12 @@ UVCDeframer::ResetStats()
 void
 UVCDeframer::SetExpectedFrameSize(size_t size)
 {
+	// Under the lock Write() holds for a whole packet: changed in the middle
+	// of one, the size checks of that packet disagreed with each other.
+	BAutolock lock(fLocker);
 	fExpectedFrameSize = size;
 
 	// Drop partial data, the new size makes it stale.
-	BAutolock lock(fLocker);
 	if (fCurrentFrame != NULL) {
 		fCurrentFrame->Seek(0, SEEK_SET);
 		fCurrentFrame->SetSize(0);
@@ -112,8 +114,13 @@ void
 UVCDeframer::_DropOldestFrame()
 {
 	CamFrame* stale = (CamFrame*)fFrames.RemoveItem((int32)0);
-	if (stale != NULL)
+	if (stale != NULL) {
 		RecycleFrame(stale);
+		// Take back the permit released when it was queued: the count
+		// grew with every drop, and the reader then woke up for frames
+		// that were no longer there.
+		acquire_sem_etc(fFrameSem, 1, B_RELATIVE_TIMEOUT, 0);
+	}
 	fQueueOverflows++;
 	if (fQueueOverflows <= 10 || (fQueueOverflows % 100) == 0) {
 		syslog(LOG_WARNING, "UVCDeframer: Queue full (%d), dropped oldest "
@@ -461,7 +468,7 @@ UVCDeframer::Write(const void* buffer, size_t size)
 			float incompleteRate = fFramesCompleted > 0
 				? 100.0f * fFramesIncomplete / (fFramesCompleted + fFramesIncomplete)
 				: 0.0f;
-			syslog(LOG_INFO, "UVCDeframer[%s] stats: completed=%d incomplete=%d (%.1f%%) FID=%d overflow=%d\n",
+			WEBCAM_VERBOSE("UVCDeframer[%s] stats: completed=%d incomplete=%d (%.1f%%) FID=%d overflow=%d\n",
 				fLogTag,
 				(int)fFramesCompleted, (int)fFramesIncomplete, incompleteRate,
 				(int)fFIDChanges, (int)fQueueOverflows);

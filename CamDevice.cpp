@@ -1418,7 +1418,7 @@ CamDevice::DataPumpThread()
 					float elapsedSec = elapsed / 1000000.0f;
 					float packetsPerSec = elapsedSec > 0 ? totalPackets / elapsedSec : 0;
 
-					syslog(LOG_INFO, "USB Stats[%s]: success=%d errors=%d loss=%.1f%% rate=%.0f pkt/s\n",
+					WEBCAM_VERBOSE("USB Stats[%s]: success=%d errors=%d loss=%.1f%% rate=%.0f pkt/s\n",
 						LogTag(), success, errors, lossPercent, packetsPerSec);
 
 					// Warn if packet loss is high (>5% is concerning for video)
@@ -1513,7 +1513,8 @@ CamDeviceAddon::Sniff(BUSBDevice *device)
 	// syslog on every probe.
 	const bool verbose = (getenv("WEBCAM_DEBUG") != NULL);
 
-	syslog(LOG_INFO, "CamDeviceAddon::Sniff[%s]: device VID=0x%04x PID=0x%04x "
+	// For every USB device, hubs included: VERBOSE only.
+	WEBCAM_VERBOSE("CamDeviceAddon::Sniff[%s]: device VID=0x%04x PID=0x%04x "
 		"Class=0x%02x Subclass=0x%02x Protocol=0x%02x configs=%u\n",
 		BrandName() ? BrandName() : "?",
 		device->VendorID(), device->ProductID(),

@@ -25,6 +25,7 @@
 #include "CamDevice.h"
 #include "addons/uvc/UVCCamDevice.h"
 #include "AudioProducer.h"
+#include "CamDebug.h"
 
 #define TOUCH(x) ((void)(x))
 
@@ -564,8 +565,13 @@ AudioProducer::Connect(status_t error, const media_source &source,
 		return;
 
 	if (source != fOutput.source || error < B_OK
-		|| !const_cast<media_format *>(&format)->Matches(&fOutput.format))
+		|| !const_cast<media_format *>(&format)->Matches(&fOutput.format)) {
+		// Give back the output PrepareToConnect() reserved, see
+		// VideoProducer::Connect().
+		if (source == fOutput.source)
+			fOutput.destination = media_destination::null;
 		return;
+	}
 
 	fOutput.destination = destination;
 	strlcpy(io_name, fOutput.name, B_MEDIA_NAME_LENGTH);
@@ -1282,11 +1288,11 @@ AudioProducer::LogAudioStats()
 	float bufferRate = fAudioStats.GetAverageBufferRate();
 	float dropRate = fAudioStats.GetDropRate();
 
-	syslog(LOG_INFO, "AudioProducer stats: sent=%u dropped=%u (%.1f%%) underruns=%u overruns=%u\n",
+	WEBCAM_VERBOSE("AudioProducer stats: sent=%u dropped=%u (%.1f%%) underruns=%u overruns=%u\n",
 		fAudioStats.buffers_sent, fAudioStats.buffers_dropped, dropRate,
 		fAudioStats.underruns, fAudioStats.overruns);
 
-	syslog(LOG_INFO, "AudioProducer timing: rate=%.1f buf/s interval min=%lld max=%lld us\n",
+	WEBCAM_VERBOSE("AudioProducer timing: rate=%.1f buf/s interval min=%lld max=%lld us\n",
 		bufferRate, fAudioStats.buffer_interval_min, fAudioStats.buffer_interval_max);
 
 	syslog(LOG_INFO, "AudioProducer levels: peak=%.3f rms=%.3f samples=%llu\n",

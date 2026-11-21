@@ -233,8 +233,12 @@ usb_webcam_support_descriptor kSupportedDevices[] = {
 	// descriptor. Any interface that exposes Class=0x0E (USB Video) is
 	// treated as a candidate UVC device; per-format validation happens in
 	// UVCCamDevice::Init.
+	// No entry for Class=0xEF/Subclass=0x02 alone: every device with an
+	// interface association matches it (USB headsets, some Bluetooth
+	// adapters), and the add-on then took them for cameras. A composite
+	// camera is found by the entry above, which also looks at the
+	// interfaces.
 	{{ USB_VIDEO_DEVICE_CLASS, 0, 0, 0, 0 }, "Generic UVC", "Video Class", "??" },
-	{{ 0xEF, 0x02, 0, 0, 0 }, "Miscellaneous device", "Interface association", "??" },
 	{{ 0, 0, 0, 0, 0}, NULL, NULL, NULL }
 };
 
