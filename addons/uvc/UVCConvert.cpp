@@ -181,27 +181,28 @@ UVCCamDevice::_ValidateFrame(CamFrame* f, int32 w, int32 h)
 		case FRAME_VALID:
 			fValidationStats.frames_valid++;
 			fValidationStats.last_valid_frame_time = system_time();
-			// An MJPEG frame with its markers can still be broken inside
-			// (data lost in the middle): the decoder tells, see
-			// _MJPEGDecoded().
-			if (!fIsMJPEG)
-				fConsecutiveBadFrames = 0;
 			break;
 		case FRAME_INCOMPLETE:
 			fValidationStats.frames_incomplete++;
-			fConsecutiveBadFrames++;
 			break;
 		case FRAME_CORRUPTED_NO_SOI:
 			fValidationStats.frames_no_soi++;
-			fConsecutiveBadFrames++;
 			break;
 		case FRAME_CORRUPTED_NO_EOI:
 			fValidationStats.frames_no_eoi++;
-			fConsecutiveBadFrames++;
 			break;
 		default:
-			fConsecutiveBadFrames++;
 			break;
+	}
+	// An MJPEG frame is decoded even when its markers are missing, and the
+	// decoder tells whether it was usable (_MJPEGDecoded()): counted here
+	// too, every broken frame counted twice and the fallback ran at half
+	// the bad frames it allows.
+	if (!fIsMJPEG) {
+		if (validation == FRAME_VALID)
+			fConsecutiveBadFrames = 0;
+		else
+			fConsecutiveBadFrames++;
 	}
 
 	// Report validation stats periodically
@@ -1258,6 +1259,19 @@ UVCCamDevice::_DecompressMJPEGtoRGB32(unsigned char* dst,
 		if (headerErrors <= 5 || (headerErrors % 100) == 0) {
 			syslog(LOG_WARNING, "MJPEG: Header decode failed #%d: %s\n",
 				(int)headerErrors, tjGetErrorStr2(fJpegDecompressor));
+		}
+		// What the camera sent, for the first few: a decoder refusing
+		// whole frames with their markers in place is the camera's header.
+		static int32 sHeaderDumps = 0;
+		if (sHeaderDumps < 4) {
+			sHeaderDumps++;
+			char hex[3 * 96 + 1];
+			size_t dump = jpegSize < 96 ? jpegSize : 96;
+			for (size_t k = 0; k < dump; k++)
+				snprintf(hex + 3 * k, 4, "%02x ", jpegStart[k]);
+			hex[3 * dump] = '\0';
+			syslog(LOG_WARNING, "MJPEG: refused header (%zu bytes): %s\n",
+				jpegSize, hex);
 		}
 		_MJPEGDecoded(false);
 		return;
