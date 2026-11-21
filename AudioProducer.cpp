@@ -900,6 +900,23 @@ AudioProducer::HandleStart(bigtime_t performance_time)
 			// the ring buffer. Done here, before the generator thread is
 			// spawned below, so there is no race with it.
 			fConnectedFormat.frame_rate = (float)actualRate;
+
+			// The consumer agreed to the old rate: tell it, or it plays
+			// the samples at the wrong speed (48 kHz announced, 16 kHz
+			// delivered played three times too fast).
+			if (fConnected) {
+				media_format newFormat = fOutput.format;
+				static_cast<media_raw_audio_format&>(newFormat.u.raw_audio)
+					= fConnectedFormat;
+				status_t changeErr = ChangeFormat(fOutput.source,
+					fOutput.destination, &newFormat);
+				if (changeErr != B_OK) {
+					syslog(LOG_ERR, "AudioProducer: the consumer refused "
+						"the rate of the device (%u Hz): %s\n",
+						(unsigned)actualRate, strerror(changeErr));
+				} else
+					fOutput.format = newFormat;
+			}
 		}
 	} else {
 		syslog(LOG_WARNING, "AudioProducer: Device has no audio support\n");
@@ -1043,8 +1060,13 @@ AudioProducer::AudioGenerator()
 
 		BAutolock _(fLock);
 
-		if (!fBufferGroup)
+		if (!fBufferGroup) {
+			// Enabled but not connected (yet): wait, this thread runs at
+			// real time priority and spinning here stops the machine.
+			_.Unlock();
+			snooze(bufferDuration);
 			continue;
+		}
 
 		BBuffer *buffer = fBufferGroup->RequestBuffer(fConnectedFormat.buffer_size,
 			bufferDuration);
@@ -1204,13 +1226,18 @@ AudioProducer::AudioGenerator()
 		media_header *h = buffer->Header();
 		h->type = B_MEDIA_RAW_AUDIO;
 		h->size_used = bytesToFill;
-		h->time_source = TimeSource()->ID();
-
+		// The buffer is played the event latency (the consumer's latency and
+		// ours, set in Connect()) after it was captured: stamped at the
+		// capture time it reached the consumer late, every time.
+		bigtime_t playTime = targetTime + EventLatency();
 		BTimeSource* ts = TimeSource();
-		if (ts != NULL)
-			h->start_time = ts->PerformanceTimeFor(targetTime);
-		else
-			h->start_time = targetTime;
+		if (ts != NULL) {
+			h->time_source = ts->ID();
+			h->start_time = ts->PerformanceTimeFor(playTime);
+		} else {
+			h->time_source = -1;
+			h->start_time = playTime;
+		}
 
 		if (SendBuffer(buffer, fOutput.source, fOutput.destination) != B_OK) {
 			syslog(LOG_WARNING, "AudioProducer: SendBuffer failed\n");

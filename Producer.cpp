@@ -557,6 +557,17 @@ VideoProducer::FormatProposal(const media_source &output, media_format *format)
 	// Copy our output format as base, then adjust resolution
 	*format = fOutput.format;
 
+	// While connected, AcceptVideoFrame() would change the geometry of the
+	// running stream under its consumer (a second application asking for
+	// another size broke the first one's picture). Only the format in use
+	// can be offered then.
+	if (err == B_OK && fConnected) {
+		if (width != fOutput.format.u.raw_video.display.line_width
+			|| height != fOutput.format.u.raw_video.display.line_count)
+			err = B_MEDIA_BAD_FORMAT;
+		return err;
+	}
+
 	if (err == B_OK && camDevice) {
 	fprintf(stderr, "Calling AcceptVideoFrame(%u, %u)\n", width, height);
 		err = camDevice->AcceptVideoFrame(width, height);
@@ -922,6 +933,8 @@ VideoProducer::Connect(status_t error, const media_source &source,
 
 	fConnected = true;
 	fEnabled = true;
+	if (camDevice != NULL)
+		camDevice->SetConsumerConnected(true);
 
 	syslog(LOG_INFO, "Producer: Connect SUCCESS! fConnected=true fEnabled=true bufferGroup=%p\n", fBufferGroup);
 	fprintf(stderr, "Connection established successfully!\n");
@@ -963,6 +976,8 @@ VideoProducer::Disconnect(const media_source &source,
 
 	fEnabled = false;
 	fOutput.destination = media_destination::null;
+	if (camDevice != NULL)
+		camDevice->SetConsumerConnected(false);
 
 	// If stalled the orphan generator may still hold fLock and use
 	// the group, so do not lock or free here, leak is safer.

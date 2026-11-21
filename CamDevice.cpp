@@ -81,7 +81,8 @@ CamDevice::CamDevice(CamDeviceAddon &_addon, BUSBDevice* _device)
 	  fReconfigSem(-1),
 	  fReconfigThreadRunning(0),
 	  fReconfigLock("ReconfigLock"),
-	  fShuttingDown(0)
+	  fShuttingDown(0),
+	  fConsumerConnected(0)
 {
 	// Initialize reconfig request
 	fReconfigRequest.Reset();

@@ -1360,7 +1360,12 @@ UVCCamDevice::_ValidateYUY2Frame(const uint8* data, size_t size,
 	int32 width, int32 height)
 {
 	(void)data;  // Unused for now, just size check
-	size_t expectedSize = (size_t)width * height * 2;  // YUY2 is 2 bytes per pixel
+	// The size of the format in use: 2 bytes a pixel for YUY2/UYVY, 1.5 for
+	// the 4:2:0 formats, 1 for GREY. Always taking 2 made every NV12, I420,
+	// YV12 or GREY frame look incomplete, and the fallback then lowered the
+	// resolution down to the smallest one.
+	size_t expectedSize = _UncompressedFrameSize(fUncompressedPixelFormat,
+		width, height);
 
 	if (size < (expectedSize * kMinYUY2FramePercent / 100)) {
 		return FRAME_INCOMPLETE;

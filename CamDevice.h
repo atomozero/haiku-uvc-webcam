@@ -461,6 +461,12 @@ class CamDevice : public BReferenceable {
 	// pump is joined before the alternate changes, so no SetAlternate runs
 	// during a transfer.
 			status_t	RequestStreamRestart();
+	// Set by the video node while a consumer is connected: its buffers have
+	// the agreed geometry, so the resolution must not change under it.
+			void		SetConsumerConnected(bool connected)
+							{ atomic_set(&fConsumerConnected, connected ? 1 : 0); }
+			bool		IsConsumerConnected()
+							{ return atomic_get(&fConsumerConnected) != 0; }
 			// FIX: locked read — the writer holds fReconfigLock and the
 			// flag is polled from pump/fallback paths (TOCTOU otherwise).
 			bool		HasPendingReconfigRequest();
@@ -656,6 +662,7 @@ static	int32			sInstanceCounter;		// Global counter for unique IDs
 		// request is accepted, so the worker thread is not respawned while
 		// the object is torn down.
 		int32			fShuttingDown;
+		int32			fConsumerConnected;
 };
 
 // the addon itself, that instanciate

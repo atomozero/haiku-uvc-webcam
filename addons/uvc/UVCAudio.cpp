@@ -558,7 +558,8 @@ UVCCamDevice::AudioPumpThread()
 	// Using maxPacketSize ensures no data gets truncated.
 	uint32 bytesPerPacket = fAudioMaxPacketSize;
 	if (bytesPerPacket == 0) {
-		bytesPerPacket = (fAudioSampleRate * fAudioChannels * 2) / 1000;
+		bytesPerPacket = (fAudioSampleRate * fAudioChannels
+			* (fAudioSubFrameSize > 0 ? fAudioSubFrameSize : 2)) / 1000;
 		if (bytesPerPacket == 0)
 			bytesPerPacket = 192;
 	}
@@ -690,10 +691,26 @@ UVCCamDevice::AudioPumpThread()
 				packetLen = bytesPerPacket;
 
 			// Ensure packet length is aligned to sample frame boundary
-			// (channels * 2 bytes per sample). Unaligned data causes distortion.
-			uint32 frameSize = fAudioChannels * 2;
+			// (channels * bytes per sample). Unaligned data causes distortion.
+			uint32 subFrame = fAudioSubFrameSize >= 2 && fAudioSubFrameSize <= 4
+				? fAudioSubFrameSize : 2;
+			uint32 frameSize = fAudioChannels * subFrame;
 			if (frameSize > 0)
 				packetLen -= packetLen % frameSize;
+
+			// The node delivers 16-bit samples. Microphones with 24 or 32 bit
+			// subframes (little endian) keep their 16 most significant bits;
+			// reading them as 16-bit samples gave noise. In place: each
+			// sample moves down, never over one still to be read.
+			if (subFrame > 2) {
+				size_t samples = packetLen / subFrame;
+				for (size_t s = 0; s < samples; s++) {
+					const uint8* in = packetData + s * subFrame + subFrame - 2;
+					packetData[s * 2] = in[0];
+					packetData[s * 2 + 1] = in[1];
+				}
+				packetLen = samples * 2;
+			}
 
 			// Calculate space in ring buffer
 			int32 head = atomic_get(&fAudioRingHead);

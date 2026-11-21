@@ -2702,8 +2702,9 @@ UVCCamDevice::_ProbeCommitFormat()
 			uint32 maxBandwidth = _GetMaxAvailableBandwidth();
 			if (maxBandwidth > 0) {
 				// 64-bit math, reject empty frames first.
-				uint64 frameSize = (uint64)frameDesc->width
-					* (uint64)frameDesc->height * 2;
+				uint64 frameSize = _UncompressedFrameSize(
+					fUncompressedPixelFormat, frameDesc->width,
+					frameDesc->height);
 				if (frameSize == 0)
 					return B_ERROR;
 				uint64 bytesPerSecond = (uint64)maxBandwidth * 8000;
@@ -4037,6 +4038,45 @@ UVCCamDevice::_HandleResolutionChange(uint32 width, uint32 height)
 
 	status_t result = B_OK;
 	bool wasTransferring = TransferEnabled();
+
+	// A connected consumer has buffers of the geometry it agreed to: a new
+	// resolution under it corrupts its picture. Take bandwidth back by a
+	// lower frame rate at the same resolution instead, or at least restart
+	// the stream.
+	BRect current = VideoFrame();
+	if (IsConsumerConnected()
+		&& (width != (uint32)(current.Width() + 1)
+			|| height != (uint32)(current.Height() + 1))) {
+		bool slower = false;
+		{
+			BAutolock lock(Locker());
+			// The intervals are in 100 ns units, the list goes from the
+			// fastest: take the next slower one.
+			uint32 next = fSelectedFrameIntervalIndex + 1;
+			if (next < fNumFrameIntervals && fCurrentFrameIntervals[next] > 0) {
+				fSelectedFrameIntervalIndex = next;
+				fSelectedFrameInterval = fCurrentFrameIntervals[next];
+				slower = true;
+			}
+			// The resolution stays: keep the fallback level in step.
+			fCurrentResolutionLevel = _FindResolutionLevel(
+				(uint32)(current.Width() + 1), (uint32)(current.Height() + 1));
+		}
+		if (slower) {
+			syslog(LOG_WARNING, "UVCCamDevice[%s]: %ux%u asked while an "
+				"application is connected: lowering the frame rate to %.1f "
+				"fps instead\n", LogTag(), width, height,
+				10000000.0f / fSelectedFrameInterval);
+		} else {
+			syslog(LOG_WARNING, "UVCCamDevice[%s]: %ux%u asked while an "
+				"application is connected, already at the lowest frame "
+				"rate: restarting the stream only\n", LogTag(), width,
+				height);
+		}
+		if (!wasTransferring)
+			return B_OK;
+		return _HandleStreamRestart();
+	}
 
 	// Step 1: Stop transfer if running
 	// Use full StopTransfer (including idle alternate) to cleanly reset
