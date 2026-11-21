@@ -477,7 +477,9 @@ UVCCamDevice::GetParameterValue(int32 id, bigtime_t* last_change, void* value,
 			*size = sizeof(float);
 			currValue = (float*)value;
 			wValue = USB_VIDEO_PU_WHITE_BALANCE_TEMPERATURE_CONTROL << 8;
-			if (fDevice->ControlTransfer(USB_REQTYPE_CLASS | USB_REQTYPE_INTERFACE_IN,
+			// fDevice is NULL once unplugged: report the last value read.
+			if (fDevice != NULL
+				&& fDevice->ControlTransfer(USB_REQTYPE_CLASS | USB_REQTYPE_INTERFACE_IN,
 				USB_VIDEO_RC_GET_CUR, wValue, fControlRequestIndex, sizeof(data), &data)
 				== sizeof(data)) {
 				fWBTemp = (float)data;
@@ -862,6 +864,8 @@ UVCCamDevice::SetParameterValue(int32 id, bigtime_t when, const void* value,
 			/* Only change if different */
 			if (newIndex != fSelectedFrameIntervalIndex) {
 				fSelectedFrameIntervalIndex = newIndex;
+				// The user's choice: the fallback has nothing to give back.
+				fFallbackFpsSteps = 0;
 				fSelectedFrameInterval = fCurrentFrameIntervals[newIndex];
 
 				float fps = 10000000.0f / fSelectedFrameInterval;

@@ -580,6 +580,7 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 	fPanRelID(-1),
 	fTiltRelID(-1),
 	fNumFrameIntervals(0),
+	fFallbackFpsSteps(0),
 	fSelectedFrameInterval(333333),  // Default 30fps (10000000/30)
 	fAudioRingSem(-1),
 	// Frame validation state (Feature 1)
@@ -4044,38 +4045,57 @@ UVCCamDevice::_HandleResolutionChange(uint32 width, uint32 height)
 	bool wasTransferring = TransferEnabled();
 
 	// A connected consumer has buffers of the geometry it agreed to: a new
-	// resolution under it corrupts its picture. Take bandwidth back by a
-	// lower frame rate at the same resolution instead, or at least restart
-	// the stream.
+	// resolution under it corrupts its picture. The resolution stays; a
+	// lower one asked by the fallback becomes the next slower frame
+	// interval, a higher one asked by the recovery gives back a frame rate
+	// the fallback took (never more than that, the user may have chosen a
+	// slow one).
 	BRect current = VideoFrame();
-	if (IsConsumerConnected()
-		&& (width != (uint32)(current.Width() + 1)
-			|| height != (uint32)(current.Height() + 1))) {
-		bool slower = false;
+	uint32 curWidth = (uint32)(current.Width() + 1);
+	uint32 curHeight = (uint32)(current.Height() + 1);
+	if (IsConsumerConnected() && (width != curWidth || height != curHeight)) {
+		bool lower = (uint64)width * height < (uint64)curWidth * curHeight;
+		bool changed = false;
 		{
 			BAutolock lock(Locker());
-			// The intervals are in 100 ns units, the list goes from the
-			// fastest: take the next slower one.
-			uint32 next = fSelectedFrameIntervalIndex + 1;
-			if (next < fNumFrameIntervals && fCurrentFrameIntervals[next] > 0) {
-				fSelectedFrameIntervalIndex = next;
-				fSelectedFrameInterval = fCurrentFrameIntervals[next];
-				slower = true;
+			// The intervals are in 100 ns units: pick by value, the list
+			// order is the device's.
+			uint32 now = fSelectedFrameInterval;
+			int32 pick = -1;
+			for (uint8 k = 0; k < fNumFrameIntervals; k++) {
+				uint32 v = fCurrentFrameIntervals[k];
+				if (v == 0)
+					continue;
+				if (lower ? (v > now && (pick < 0
+						|| v < fCurrentFrameIntervals[pick]))
+					: (v < now && (pick < 0
+						|| v > fCurrentFrameIntervals[pick]))) {
+					pick = k;
+				}
+			}
+			if (pick >= 0 && (lower || fFallbackFpsSteps > 0)) {
+				fSelectedFrameIntervalIndex = pick;
+				fSelectedFrameInterval = fCurrentFrameIntervals[pick];
+				fFallbackFpsSteps += lower ? 1 : -1;
+				changed = true;
 			}
 			// The resolution stays: keep the fallback level in step.
-			fCurrentResolutionLevel = _FindResolutionLevel(
-				(uint32)(current.Width() + 1), (uint32)(current.Height() + 1));
+			fCurrentResolutionLevel = _FindResolutionLevel(curWidth,
+				curHeight);
 		}
-		if (slower) {
-			syslog(LOG_WARNING, "UVCCamDevice[%s]: %ux%u asked while an "
-				"application is connected: lowering the frame rate to %.1f "
-				"fps instead\n", LogTag(), width, height,
-				10000000.0f / fSelectedFrameInterval);
-		} else {
+		if (!changed) {
+			if (!lower)
+				return B_OK;
 			syslog(LOG_WARNING, "UVCCamDevice[%s]: %ux%u asked while an "
 				"application is connected, already at the lowest frame "
 				"rate: restarting the stream only\n", LogTag(), width,
 				height);
+		} else {
+			syslog(LOG_WARNING, "UVCCamDevice[%s]: %ux%u asked while an "
+				"application is connected: frame rate %s to %.1f fps "
+				"instead\n", LogTag(), width, height,
+				lower ? "lowered" : "raised back",
+				10000000.0f / fSelectedFrameInterval);
 		}
 		if (!wasTransferring)
 			return B_OK;

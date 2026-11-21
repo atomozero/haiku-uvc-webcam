@@ -715,6 +715,7 @@ private:
 			static const uint32 kMaxFrameIntervals = 32;
 			uint32				fCurrentFrameIntervals[kMaxFrameIntervals];
 			uint8				fNumFrameIntervals;           // Number of intervals available
+			int32				fFallbackFpsSteps;	// slower intervals taken by the fallback while connected
 			uint32				fSelectedFrameInterval;       // Actual interval value in 100ns units
 
 			// Extension Unit controls

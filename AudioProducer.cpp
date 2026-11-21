@@ -1038,7 +1038,6 @@ AudioProducer::_audio_generator_(void *data)
 int32
 AudioProducer::AudioGenerator()
 {
-	CamDevice* camDevice = _CamDevice();
 	size_t sampleSize = fConnectedFormat.format
 		& media_raw_audio_format::B_AUDIO_SIZE_MASK;
 	if (sampleSize == 0)
@@ -1089,8 +1088,10 @@ AudioProducer::AudioGenerator()
 		int16 *audioData = (int16 *)buffer->Data();
 		size_t bytesToFill = fConnectedFormat.buffer_size;
 
-		// Read audio data from device
-		UVCCamDevice* uvcDev = dynamic_cast<UVCCamDevice*>(camDevice);
+		// Read audio data from device. The pointer is read again for every
+		// buffer (under fLock, held here): once SetCamDevice(NULL) ran, the
+		// ring of an unplugged camera is not read any more.
+		UVCCamDevice* uvcDev = dynamic_cast<UVCCamDevice*>(fCamDevice);
 		size_t bytesRead = 0;
 		if (uvcDev != NULL && uvcDev->HasAudio()) {
 			bytesRead = uvcDev->ReadAudioData(audioData, bytesToFill);
