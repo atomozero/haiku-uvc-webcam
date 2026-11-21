@@ -547,6 +547,19 @@ AudioProducer::PrepareToConnect(const media_source &source,
 		return B_MEDIA_BAD_FORMAT;
 	}
 
+	// The device has one rate, one channel count and one sample format:
+	// give them to the consumer instead of letting it fill the wildcards
+	// (a mixer chose 48 kHz for a 32 kHz microphone, and the generator then
+	// asked for samples faster than they came).
+	media_raw_audio_format& raw = format->u.raw_audio;
+	const media_raw_audio_format& ours = fOutput.format.u.raw_audio;
+	raw.frame_rate = ours.frame_rate;
+	raw.channel_count = ours.channel_count;
+	raw.format = ours.format;
+	raw.byte_order = ours.byte_order;
+	if (raw.buffer_size == media_raw_audio_format::wildcard.buffer_size)
+		raw.buffer_size = ours.buffer_size;
+
 	*out_source = fOutput.source;
 	strlcpy(out_name, fOutput.name, B_MEDIA_NAME_LENGTH);
 
@@ -577,6 +590,17 @@ AudioProducer::Connect(status_t error, const media_source &source,
 	strlcpy(io_name, fOutput.name, B_MEDIA_NAME_LENGTH);
 
 	fConnectedFormat = format.u.raw_audio;
+
+	// PrepareToConnect() gave the rate of the device; a consumer that
+	// changed it still gets the samples at the rate of the device.
+	if (fOutput.format.u.raw_audio.frame_rate > 0
+		&& fConnectedFormat.frame_rate
+			!= fOutput.format.u.raw_audio.frame_rate) {
+		syslog(LOG_WARNING, "AudioProducer: the consumer asked for %.0f Hz, "
+			"the device gives %.0f Hz\n", fConnectedFormat.frame_rate,
+			fOutput.format.u.raw_audio.frame_rate);
+		fConnectedFormat.frame_rate = fOutput.format.u.raw_audio.frame_rate;
+	}
 
 	// Validate and fix format fields that may come as wildcards (0)
 	if ((fConnectedFormat.format
@@ -1102,7 +1126,7 @@ AudioProducer::AudioGenerator()
 		bool wasUnderrun = (fLastBytesRead == 0);
 		bool isUnderrun = (bytesRead == 0);
 		if (fLastBytesRead < 0 || wasUnderrun != isUnderrun) {
-			syslog(LOG_INFO, "AudioProducer: read %zu/%zu bytes%s\n",
+			WEBCAM_VERBOSE("AudioProducer: read %zu/%zu bytes%s\n",
 				bytesRead, bytesToFill,
 				isUnderrun ? " (UNDERRUN)" : "");
 			fLastBytesRead = (int)bytesRead;

@@ -66,7 +66,9 @@ WebCamMediaAddOn::WebCamMediaAddOn(image_id imid)
 	fDefaultAudioFlavorInfo.name = (char *)"USB Web Camera Audio";
 	fDefaultAudioFlavorInfo.info = (char *)"USB Web Camera Microphone";
 	fDefaultAudioFlavorInfo.kinds = B_BUFFER_PRODUCER | B_CONTROLLABLE | B_PHYSICAL_INPUT;
-	fDefaultAudioFlavorInfo.flavor_flags = 0;
+	// Global: the node lives in media_addon_server, never in the team of
+	// the application (see the video flavor below).
+	fDefaultAudioFlavorInfo.flavor_flags = B_FLAVOR_IS_GLOBAL;
 	fDefaultAudioFlavorInfo.internal_id = 0;  // Set per-device
 	fDefaultAudioFlavorInfo.possible_count = 0;
 	fDefaultAudioFlavorInfo.in_format_count = 0;
@@ -408,7 +410,13 @@ WebCamMediaAddOn::FillDefaultFlavorInfo(flavor_info* info)
 	info->name = (char *)"USB Web Camera";
 	info->info = (char *)"USB Web Camera";
 	info->kinds = B_BUFFER_PRODUCER | B_CONTROLLABLE | B_PHYSICAL_INPUT;
-	info->flavor_flags = 0;//B_FLAVOR_IS_GLOBAL;
+	// Global: a camera has one owner, media_addon_server. Instantiated
+	// in the team of an application (BMediaRoster::InstantiateDormantNode()
+	// without B_FLAVOR_IS_GLOBAL), the add-on built a second camera there
+	// that could not open the device, and was unloaded with libturbojpeg
+	// while the instantiating thread still had a TLS destructor of that
+	// library to run at its exit: the application crashed.
+	info->flavor_flags = B_FLAVOR_IS_GLOBAL;
 	info->internal_id = atomic_add((int32*)&fInternalIDCounter, 1);
 	/* FIX BUG 8: Set possible_count = 0 (unlimited) to bypass Media Kit's
 	 * stale in_use_count tracking. The Media Kit increments in_use_count when
