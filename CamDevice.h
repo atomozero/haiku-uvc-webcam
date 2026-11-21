@@ -368,6 +368,8 @@ typedef struct {
 // Reference counted: the roster holds the first reference, and each media
 // node holds one for as long as it exists, so a node that is still handling
 // a message after an unplug never touches a deleted camera.
+class BMediaRoster;
+
 class CamDevice : public BReferenceable {
 	public: 
 						CamDevice(CamDeviceAddon &_addon, BUSBDevice* _device);
@@ -489,6 +491,10 @@ class CamDevice : public BReferenceable {
 	void				SetAudioNode(BMediaNode* node) { fAudioNode = node; }
 	BMediaNode*			AudioNode() const { return fAudioNode; }
 	void				QuitAudioNode();
+private:
+	void				_ReleaseServerReference(BMediaRoster* roster,
+							const media_node& node, const char* what);
+public:
 
 	// Media parameter id of the discrete "Resolution" control, or 0 if the
 	// device exposes none. The producer uses it to refuse live resolution

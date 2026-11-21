@@ -312,6 +312,8 @@ CamDevice::QuitVideoNode()
 
 		// Give the event loop time to process pending messages
 		snooze(50000);
+
+		_ReleaseServerReference(roster, node, "video");
 	}
 	fVideoNode = NULL;
 }
@@ -344,8 +346,31 @@ CamDevice::QuitAudioNode()
 
 		// Give the event loop time to process pending messages
 		snooze(50000);
+
+		_ReleaseServerReference(roster, node, "audio");
 	}
 	fAudioNode = NULL;
+}
+
+
+/*!	The media_addon_server instantiates the nodes of a physical input when
+	the camera appears, and keeps their reference until it quits: nothing
+	gives it back when the flavor goes away. Released here, once the camera
+	is gone, or every unplug left two nodes with their threads, and this
+	camera, which their BReference keeps, until the server quit (where a
+	reload of the add-on then ran into them).
+	The add-on runs in the team of the server, so this is the reference of
+	the server. A node that an application holds stays until it releases it;
+	a node an application instantiated itself has no reference of the server,
+	and the release just fails.
+*/
+void
+CamDevice::_ReleaseServerReference(BMediaRoster* roster,
+	const media_node& node, const char* what)
+{
+	status_t status = roster->ReleaseNode(node);
+	syslog(LOG_INFO, "CamDevice[%s]: released the %s node %d: %s\n",
+		LogTag(), what, (int)node.node, strerror(status));
 }
 
 
