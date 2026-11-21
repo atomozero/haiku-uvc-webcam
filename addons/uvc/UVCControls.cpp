@@ -218,6 +218,10 @@ UVCCamDevice::_AddAutoParameter(BParameterGroup* subgroup, int32 index,
 void
 UVCCamDevice::AddParameters(BParameterGroup* group, int32& index)
 {
+	// The node builds its parameter web on its own thread: hold the device
+	// lock, Unplugged() clears fDevice under it.
+	BAutolock lock(Locker());
+
 	fFirstParameterID = index;
 	CamDevice::AddParameters(group, index);
 
@@ -293,11 +297,11 @@ UVCCamDevice::AddParameters(BParameterGroup* group, int32& index)
 	uint8 buffer[1024];
 	usb_descriptor* generic = (usb_descriptor*)buffer;
 
-	for (uint32 i = 0; i < fDevice->CountConfigurations(); i++) {
-		config = fDevice->ConfigurationAt(i);
-		if (config == NULL)
-			continue;
-		fDevice->SetConfiguration(config);
+	// Only the active configuration: selecting each configuration in turn
+	// to read its descriptors reset the device (and any stream) under the
+	// other users of the camera, and left the last one selected.
+	config = fDevice != NULL ? fDevice->ActiveConfiguration() : NULL;
+	if (config != NULL) {
 		for (uint32 j = 0; j < config->CountInterfaces(); j++) {
 			interface = config->InterfaceAt(j);
 			if (interface == NULL)
@@ -413,6 +417,9 @@ UVCCamDevice::GetParameterValue(int32 id, bigtime_t* last_change, void* value,
 	// All cases below write 4 bytes, reject small buffers.
 	if (*size < sizeof(float))
 		return B_BAD_VALUE;
+	// Unplugged() clears fDevice under this lock (recursive: the producer
+	// already holds it).
+	BAutolock lock(Locker());
 	float* currValue;
 	int* currValueInt;
 	int16 data;
@@ -619,6 +626,8 @@ status_t
 UVCCamDevice::SetParameterValue(int32 id, bigtime_t when, const void* value,
 	size_t size)
 {
+	// See GetParameterValue().
+	BAutolock lock(Locker());
 	syslog(LOG_INFO, "UVCCamDevice::SetParameterValue(%" B_PRId32 ")\n", id - fFirstParameterID);
 	switch (id - fFirstParameterID) {
 		case 0:
@@ -2004,6 +2013,10 @@ UVCCamDevice::TriggerStillCapture(uint8* buffer, size_t bufferSize,
 		return B_BAD_VALUE;
 
 	*bytesWritten = 0;
+
+	BAutolock lock(Locker());
+	if (fDevice == NULL)
+		return B_DEV_NOT_READY;
 
 	// Method 2: Host software triggered via VS_STILL_IMAGE_TRIGGER_CONTROL
 	if (fStillCaptureMethod == STILL_CAPTURE_METHOD_2) {

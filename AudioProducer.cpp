@@ -53,6 +53,7 @@ AudioProducer::AudioProducer(
 	fInternalID = internal_id;
 	fAddOn = addon;
 	fCamDevice = dev;
+	fDeviceReference.SetTo(dev);
 
 	fBufferGroup = NULL;
 
@@ -160,6 +161,7 @@ AudioProducer::RequestCompleted(const media_request_info &info)
 void
 AudioProducer::NodeRegistered()
 {
+	CamDevice* camDevice = _CamDevice();
 	if (fInitStatus != B_OK) {
 		ReportError(B_NODE_IN_DISTRESS);
 		return;
@@ -206,7 +208,7 @@ AudioProducer::NodeRegistered()
 	fOutput.format.u.raw_audio.byte_order = B_MEDIA_LITTLE_ENDIAN;
 
 	// Get audio parameters from device
-	UVCCamDevice* uvcDev = dynamic_cast<UVCCamDevice*>(fCamDevice);
+	UVCCamDevice* uvcDev = dynamic_cast<UVCCamDevice*>(camDevice);
 	if (uvcDev != NULL && uvcDev->HasAudio()) {
 		uint8 channels = uvcDev->AudioChannels();
 		uint32 sampleRate = uvcDev->AudioSampleRate();
@@ -323,6 +325,19 @@ AudioProducer::OfflineTime()
 }
 
 
+void
+AudioProducer::SetCamDevice(CamDevice* dev)
+{
+	// The generator reads the pointer under fLock, take it here too. Only
+	// the pointer is cleared: the reference stays until the node is deleted,
+	// as a node thread may still be using the camera it copied.
+	BAutolock _lock(fLock);
+	__atomic_store_n(&fCamDevice, dev, __ATOMIC_RELEASE);
+	if (dev != NULL)
+		fDeviceReference.SetTo(dev);
+}
+
+
 status_t
 AudioProducer::DeleteHook(BMediaNode *node)
 {
@@ -333,7 +348,7 @@ AudioProducer::DeleteHook(BMediaNode *node)
 	{
 		BAutolock lock(fLock);
 		dev = fCamDevice;
-		fCamDevice = NULL;
+		__atomic_store_n(&fCamDevice, (CamDevice*)NULL, __ATOMIC_RELEASE);
 	}
 	if (dev != NULL && dev->AudioNode() == node)
 		dev->SetAudioNode(NULL);
@@ -655,6 +670,7 @@ void
 AudioProducer::Disconnect(const media_source &source,
 		const media_destination &destination)
 {
+	CamDevice* camDevice = _CamDevice();
 	if (!fConnected)
 		return;
 
@@ -668,7 +684,7 @@ AudioProducer::Disconnect(const media_source &source,
 	fOutput.destination = media_destination::null;
 
 	// If stalled the orphan generator may hold fLock, leak instead.
-	if (fCamDevice != NULL && fCamDevice->IsStalled()) {
+	if (camDevice != NULL && camDevice->IsStalled()) {
 		fConnected = false;
 		return;
 	}
@@ -835,10 +851,11 @@ AudioProducer::StartControlPanel(BMessenger *out_messenger)
 void
 AudioProducer::HandleStart(bigtime_t performance_time)
 {
+	CamDevice* camDevice = _CamDevice();
 	if (fRunning)
 		return;
 
-	if (!fCamDevice) {
+	if (!camDevice) {
 		syslog(LOG_ERR, "AudioProducer: HandleStart - no device!\n");
 		return;
 	}
@@ -854,7 +871,7 @@ AudioProducer::HandleStart(bigtime_t performance_time)
 	}
 
 	// Start USB audio transfer on device
-	UVCCamDevice* uvcDev = dynamic_cast<UVCCamDevice*>(fCamDevice);
+	UVCCamDevice* uvcDev = dynamic_cast<UVCCamDevice*>(camDevice);
 	if (uvcDev && uvcDev->HasAudio()) {
 		status_t err = uvcDev->StartAudioTransfer();
 		if (err != B_OK) {
@@ -920,6 +937,7 @@ AudioProducer::HandleStart(bigtime_t performance_time)
 void
 AudioProducer::HandleStop(void)
 {
+	CamDevice* camDevice = _CamDevice();
 	if (!fRunning)
 		return;
 
@@ -943,16 +961,16 @@ AudioProducer::HandleStop(void)
 		// kill_thread) and mark the device stalled so it isn't reused.
 		syslog(LOG_ERR, "AudioProducer: HandleStop - generator wedged, "
 			"abandoning thread and marking device stalled\n");
-		if (fCamDevice != NULL)
-			fCamDevice->MarkStalled();
+		if (camDevice != NULL)
+			camDevice->MarkStalled();
 	}
 	// FIX-T8: invalidate the handle either way so a later Start cannot
 	// spawn a second generator over the orphan.
 	fThread = -1;
 
 	// Stop USB audio transfer on device
-	if (fCamDevice != NULL) {
-		UVCCamDevice* uvcDev = dynamic_cast<UVCCamDevice*>(fCamDevice);
+	if (camDevice != NULL) {
+		UVCCamDevice* uvcDev = dynamic_cast<UVCCamDevice*>(camDevice);
 		if (uvcDev != NULL && uvcDev->HasAudio())
 			uvcDev->StopAudioTransfer();
 	}
@@ -997,6 +1015,7 @@ AudioProducer::_audio_generator_(void *data)
 int32
 AudioProducer::AudioGenerator()
 {
+	CamDevice* camDevice = _CamDevice();
 	size_t sampleSize = fConnectedFormat.format
 		& media_raw_audio_format::B_AUDIO_SIZE_MASK;
 	if (sampleSize == 0)
@@ -1043,7 +1062,7 @@ AudioProducer::AudioGenerator()
 		size_t bytesToFill = fConnectedFormat.buffer_size;
 
 		// Read audio data from device
-		UVCCamDevice* uvcDev = dynamic_cast<UVCCamDevice*>(fCamDevice);
+		UVCCamDevice* uvcDev = dynamic_cast<UVCCamDevice*>(camDevice);
 		size_t bytesRead = 0;
 		if (uvcDev != NULL && uvcDev->HasAudio()) {
 			bytesRead = uvcDev->ReadAudioData(audioData, bytesToFill);

@@ -20,6 +20,7 @@
 #	include <usb/USBKit.h>
 #endif
 #include <Locker.h>
+#include <Referenceable.h>
 #include <MediaAddOn.h>
 #include <String.h>
 #include <Rect.h>
@@ -363,8 +364,11 @@ typedef struct {
 	                     // table rows default it to 0 via aggregate init.
 } usb_webcam_support_descriptor;
 
-// This class represents each webcam
-class CamDevice {
+// This class represents each webcam.
+// Reference counted: the roster holds the first reference, and each media
+// node holds one for as long as it exists, so a node that is still handling
+// a message after an unplug never touches a deleted camera.
+class CamDevice : public BReferenceable {
 	public: 
 						CamDevice(CamDeviceAddon &_addon, BUSBDevice* _device);
 	virtual				~CamDevice();

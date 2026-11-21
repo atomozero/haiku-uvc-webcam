@@ -12,6 +12,7 @@
 #include <media/MediaEventLooper.h>
 #include <media/MediaNode.h>
 #include <support/Locker.h>
+#include <support/Referenceable.h>
 #include <support/Autolock.h>
 #include <support/String.h>
 
@@ -31,12 +32,7 @@ public:
 virtual					~VideoProducer();
 
 virtual	status_t		InitCheck() const { return fInitStatus; }
-		void			SetCamDevice(CamDevice* dev)
-							{
-								// Generator reads under fLock, take it here too.
-								BAutolock _lock(fLock);
-								fCamDevice = dev;
-							}
+		void			SetCamDevice(CamDevice* dev);
 		// FIX-C1: bounded join of the frame generator so the roster can
 		// make sure no FillFrameBuffer is in flight before the CamDevice
 		// is deleted on hot-unplug. Returns B_TIMED_OUT when the thread
@@ -134,6 +130,19 @@ static	int32				fInstances;
 		int32				fInternalID;
 		BMediaAddOn			*fAddOn;
 		CamDevice			*fCamDevice;
+			// Keeps the camera alive until the node is deleted, also after
+			// SetCamDevice(NULL): node threads may still hold the pointer.
+		BReference<BReferenceable>	fDeviceReference;
+
+			// The camera pointer, read once. Not under fLock: a wedged
+			// generator may hold that lock forever, and HandleStop() and
+			// Disconnect() must still get through. fDeviceReference keeps
+			// what this returns alive.
+		CamDevice*			_CamDevice() const
+								{
+									return __atomic_load_n(&fCamDevice,
+										__ATOMIC_ACQUIRE);
+								}
 
 		BLocker				fLock;
 			BBufferGroup	*fBufferGroup;

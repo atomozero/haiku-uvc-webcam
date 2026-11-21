@@ -121,7 +121,7 @@ CamRoster::DeviceAdded(BUSBDevice* _device)
 		PRINT((CH " error 0x%08" B_PRIx32 CT, err));
 
 		// CLEANUP: Delete failed camera instance to prevent memory leak
-		delete cam;
+		cam->ReleaseReference();
 	}
 	return B_ERROR;
 }
@@ -218,7 +218,7 @@ CamRoster::DeviceRemoved(BUSBDevice* _device)
 		return;
 	}
 
-	delete cam;
+	cam->ReleaseReference();
 }
 
 

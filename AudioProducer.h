@@ -14,6 +14,7 @@
 #include <media/MediaEventLooper.h>
 #include <media/MediaNode.h>
 #include <support/Locker.h>
+#include <support/Referenceable.h>
 #include <support/Autolock.h>
 
 #include <atomic>
@@ -122,12 +123,7 @@ virtual	status_t		InitCheck() const { return fInitStatus; }
 		// Invalidate the back-pointer to the CamDevice before it is destroyed.
 		// Called (with NULL) from CamDevice::QuitAudioNode() after the audio
 		// generator thread has been stopped and joined.
-		void			SetCamDevice(CamDevice *dev)
-							{
-								// Generator reads under fLock, take it here too.
-								BAutolock _lock(fLock);
-								fCamDevice = dev;
-							}
+		void			SetCamDevice(CamDevice *dev);
 
 
 /* BMediaNode */
@@ -214,6 +210,18 @@ static	int32				fInstances;
 		int32				fInternalID;
 		BMediaAddOn			*fAddOn;
 		CamDevice			*fCamDevice;
+			// See VideoProducer::fDeviceReference.
+		BReference<BReferenceable>	fDeviceReference;
+
+			// The camera pointer, read once. Not under fLock: a wedged
+			// generator may hold that lock forever, and HandleStop() and
+			// Disconnect() must still get through. fDeviceReference keeps
+			// what this returns alive.
+		CamDevice*			_CamDevice() const
+								{
+									return __atomic_load_n(&fCamDevice,
+										__ATOMIC_ACQUIRE);
+								}
 
 		BLocker				fLock;
 		BBufferGroup		*fBufferGroup;

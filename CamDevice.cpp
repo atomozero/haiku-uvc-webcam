@@ -393,6 +393,12 @@ CamDevice::Unplugged()
 	// A stalled pump holds fIsoIn/fDevice, keep them alive.
 	if (IsStalled())
 		return;
+
+	// Under the device lock: a control request of a media node (a parameter
+	// change) runs with it held, and must be done with the BUSBDevice before
+	// it goes, as BUSBRoster deletes it once DeviceRemoved() returns. The
+	// controls check fDevice for NULL under the same lock.
+	BAutolock lock(fLocker);
 	fDevice = NULL;
 	fBulkIn = NULL;
 	fIsoIn = NULL;

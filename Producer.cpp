@@ -81,6 +81,7 @@ VideoProducer::VideoProducer(
 	fInternalID = internal_id;
 	fAddOn = addon;
 	fCamDevice = dev;
+	fDeviceReference.SetTo(dev);
 
 	fBufferGroup = NULL;
 
@@ -191,6 +192,7 @@ VideoProducer::RequestCompleted(const media_request_info &info)
 void
 VideoProducer::NodeRegistered()
 {
+	CamDevice* camDevice = _CamDevice();
 	syslog(LOG_INFO, "Producer: NodeRegistered called! fInitStatus=%d\n", fInitStatus);
 
 	if (fInitStatus != B_OK) {
@@ -222,16 +224,16 @@ VideoProducer::NodeRegistered()
 	*/
 
 	int32 id = P_LAST;
-	if (fCamDevice) {
+	if (camDevice) {
 #ifndef SINGLE_PARAMETER_GROUP
 		main = web->MakeGroup("Device");
 #endif
-		fCamDevice->AddParameters(main, id);
-		if (fCamDevice->Sensor()) {
+		camDevice->AddParameters(main, id);
+		if (camDevice->Sensor()) {
 #ifndef SINGLE_PARAMETER_GROUP
 			main = web->MakeGroup("Sensor");
 #endif
-			fCamDevice->Sensor()->AddParameters(main, id);
+			camDevice->Sensor()->AddParameters(main, id);
 		}
 	}
 
@@ -260,9 +262,9 @@ VideoProducer::NodeRegistered()
 	 * which the Media Kit returns when enumerating node capabilities.
 	 * This caused the "Video format not available (0x0)" diagnostic error.
 	 */
-	if (fCamDevice) {
+	if (camDevice) {
 		uint32 width = 0, height = 0;
-		if (fCamDevice->SuggestVideoFrame(width, height) == B_OK) {
+		if (camDevice->SuggestVideoFrame(width, height) == B_OK) {
 			fOutput.format.u.raw_video.display.line_width = width;
 			fOutput.format.u.raw_video.display.line_count = height;
 			// FIX: Set bytes_per_row to avoid "bytes_per_row=0" warning
@@ -421,6 +423,19 @@ VideoProducer::OfflineTime()
 }
 
 
+void
+VideoProducer::SetCamDevice(CamDevice* dev)
+{
+	// The generator reads the pointer under fLock, take it here too. Only
+	// the pointer is cleared: the reference stays until the node is deleted,
+	// as a node thread may still be using the camera it copied.
+	BAutolock _lock(fLock);
+	__atomic_store_n(&fCamDevice, dev, __ATOMIC_RELEASE);
+	if (dev != NULL)
+		fDeviceReference.SetTo(dev);
+}
+
+
 status_t
 VideoProducer::DeleteHook(BMediaNode * node)
 {
@@ -441,7 +456,7 @@ VideoProducer::DeleteHook(BMediaNode * node)
 	{
 		BAutolock lock(fLock);
 		dev = fCamDevice;
-		fCamDevice = NULL;
+		__atomic_store_n(&fCamDevice, (CamDevice*)NULL, __ATOMIC_RELEASE);
 	}
 	if (dev != NULL && dev->VideoNode() == node)
 		dev->SetVideoNode(NULL);
@@ -456,6 +471,7 @@ status_t
 VideoProducer::FormatSuggestionRequested(
 		media_type type, int32 quality, media_format *format)
 {
+	CamDevice* camDevice = _CamDevice();
 	if (type != B_MEDIA_RAW_VIDEO)
 		return B_MEDIA_BAD_FORMAT;
 	if (format == NULL)
@@ -469,7 +485,7 @@ VideoProducer::FormatSuggestionRequested(
 
 	*format = fOutput.format;
 	uint32 width, height;
-	if (fCamDevice && fCamDevice->SuggestVideoFrame(width, height) == B_OK) {
+	if (camDevice && camDevice->SuggestVideoFrame(width, height) == B_OK) {
 		format->u.raw_video.display.line_width = width;
 		format->u.raw_video.display.line_count = height;
 	}
@@ -481,6 +497,7 @@ VideoProducer::FormatSuggestionRequested(
 status_t
 VideoProducer::FormatProposal(const media_source &output, media_format *format)
 {
+	CamDevice* camDevice = _CamDevice();
 	status_t err;
 
 	fprintf(stderr, "\n=== FormatProposal START ===\n");
@@ -540,9 +557,9 @@ VideoProducer::FormatProposal(const media_source &output, media_format *format)
 	// Copy our output format as base, then adjust resolution
 	*format = fOutput.format;
 
-	if (err == B_OK && fCamDevice) {
+	if (err == B_OK && camDevice) {
 	fprintf(stderr, "Calling AcceptVideoFrame(%u, %u)\n", width, height);
-		err = fCamDevice->AcceptVideoFrame(width, height);
+		err = camDevice->AcceptVideoFrame(width, height);
 	fprintf(stderr, "AcceptVideoFrame result: %s\n", strerror(err));
 		if (err >= B_OK) {
 			format->u.raw_video.display.line_width = width;
@@ -651,6 +668,7 @@ VideoProducer::PrepareToConnect(const media_source &source,
 		const media_destination &destination, media_format *format,
 		media_source *out_source, char *out_name)
 {
+	CamDevice* camDevice = _CamDevice();
 	status_t err;
 
 	fprintf(stderr, "\n=== PrepareToConnect START ===\n");
@@ -712,11 +730,11 @@ VideoProducer::PrepareToConnect(const media_source &source,
 		format->u.raw_video.display.line_count = 0;
 	}
 #endif
-	if (fCamDevice) {
+	if (camDevice) {
 	fprintf(stderr, "Calling AcceptVideoFrame(%u, %u)\n",
 				format->u.raw_video.display.line_width,
 				format->u.raw_video.display.line_count);
-		err = fCamDevice->AcceptVideoFrame(
+		err = camDevice->AcceptVideoFrame(
 			format->u.raw_video.display.line_width,
 			format->u.raw_video.display.line_count);
 	fprintf(stderr, "AcceptVideoFrame result: %s (%d)\n", strerror(err), err);
@@ -769,6 +787,7 @@ VideoProducer::Connect(status_t error, const media_source &source,
 		const media_destination &destination, const media_format &format,
 		char *io_name)
 {
+	CamDevice* camDevice = _CamDevice();
 	syslog(LOG_INFO, "Producer: Connect called! error=%d format=%ux%u\n",
 		error, format.u.raw_video.display.line_width, format.u.raw_video.display.line_count);
 	fprintf(stderr, "\n=== Connect START ===\n");
@@ -792,15 +811,15 @@ VideoProducer::Connect(status_t error, const media_source &source,
 		return;
 	}
 
-	if (!fCamDevice) {
+	if (!camDevice) {
 		PRINTF(0, ("Connect: No camera device\n"));
 	fprintf(stderr, "ERROR: No camera device\n");
 	fprintf(stderr, "=== Connect END (no device) ===\n\n");
 		return;
 	}
 
-	BAutolock lock(fCamDevice->Locker());
-	if (!fCamDevice->IsPlugged()) {
+	BAutolock lock(camDevice->Locker());
+	if (!camDevice->IsPlugged()) {
 		PRINTF(0, ("Connect: Device unplugged\n"));
 	fprintf(stderr, "ERROR: Device unplugged\n");
 	fprintf(stderr, "=== Connect END (unplugged) ===\n\n");
@@ -923,6 +942,7 @@ void
 VideoProducer::Disconnect(const media_source &source,
 		const media_destination &destination)
 {
+	CamDevice* camDevice = _CamDevice();
 	PRINTF(1, ("Disconnect()\n"));
 
 	if (!fConnected) {
@@ -946,7 +966,7 @@ VideoProducer::Disconnect(const media_source &source,
 
 	// If stalled the orphan generator may still hold fLock and use
 	// the group, so do not lock or free here, leak is safer.
-	if (fCamDevice != NULL && fCamDevice->IsStalled()) {
+	if (camDevice != NULL && camDevice->IsStalled()) {
 		fConnected = false;
 		return;
 	}
@@ -1025,6 +1045,7 @@ status_t
 VideoProducer::GetParameterValue(
 	int32 id, bigtime_t *last_change, void *value, size_t *size)
 {
+	CamDevice* camDevice = _CamDevice();
 	status_t err;
 
 	// Caller provides buffers, check before use.
@@ -1050,13 +1071,13 @@ VideoProducer::GetParameterValue(
 			return B_OK;
 	}
 
-	if (fCamDevice) {
-		BAutolock lock(fCamDevice->Locker());
-		err = fCamDevice->GetParameterValue(id, last_change, value, size);
+	if (camDevice) {
+		BAutolock lock(camDevice->Locker());
+		err = camDevice->GetParameterValue(id, last_change, value, size);
 		if (err >= B_OK)
 			return err;
-		if (fCamDevice->Sensor()) {
-			err = fCamDevice->Sensor()->GetParameterValue(id, last_change, value, size);
+		if (camDevice->Sensor()) {
+			err = camDevice->Sensor()->GetParameterValue(id, last_change, value, size);
 			if (err >= B_OK)
 				return err;
 		}
@@ -1225,24 +1246,25 @@ VideoProducer::StartControlPanel(BMessenger *out_messenger)
 void
 VideoProducer::HandleStart(bigtime_t performance_time)
 {
+	CamDevice* camDevice = _CamDevice();
 	/* Start producing frames, even if the output hasn't been connected yet. */
 	syslog(LOG_INFO, "Producer: HandleStart called! perf_time=%lld running=%d connected=%d enabled=%d device=%p\n",
 		performance_time, (int)fRunning.load(), (int)fConnected.load(),
-		(int)fEnabled.load(), fCamDevice);
+		(int)fEnabled.load(), camDevice);
 
 	if (fRunning) {
 		syslog(LOG_INFO, "Producer: HandleStart - already running, return\n");
 		return;
 	}
 
-	if (!fCamDevice) {
+	if (!camDevice) {
 		syslog(LOG_ERR, "Producer: HandleStart - NO CAMERA DEVICE!\n");
 		return;
 	}
 
 	// FIX-T10: refuse to start on a stalled device instead of spinning a
 	// generator that fast-fails FillFrameBuffer forever.
-	if (fCamDevice->IsStalled()) {
+	if (camDevice->IsStalled()) {
 		syslog(LOG_ERR, "Producer: HandleStart - device stalled, "
 			"reconnect the camera\n");
 		return;
@@ -1272,8 +1294,8 @@ VideoProducer::HandleStart(bigtime_t performance_time)
 	{
 		status_t startErr;
 		{
-			BAutolock lock(fCamDevice->Locker());
-			startErr = fCamDevice->StartTransfer();
+			BAutolock lock(camDevice->Locker());
+			startErr = camDevice->StartTransfer();
 		}
 		startedTransfer = startErr == B_OK;
 		if (startErr < B_OK && startErr != EALREADY) {
@@ -1298,7 +1320,7 @@ VideoProducer::HandleStart(bigtime_t performance_time)
 		fFrameSync = -1;	// FIX: do not leave a deleted id for the guards
 		fThread = -1;
 		if (startedTransfer)
-			fCamDevice->StopTransfer();
+			camDevice->StopTransfer();
 		return;
 	}
 	syslog(LOG_INFO, "Producer: HandleStart - thread spawned: %d\n", fThread);
@@ -1312,7 +1334,7 @@ VideoProducer::HandleStart(bigtime_t performance_time)
 		delete_sem(fFrameSync);
 		fFrameSync = -1;
 		if (startedTransfer)
-			fCamDevice->StopTransfer();
+			camDevice->StopTransfer();
 		return;
 	}
 	syslog(LOG_INFO, "Producer: HandleStart COMPLETE! fRunning=true\n");
@@ -1322,6 +1344,7 @@ VideoProducer::HandleStart(bigtime_t performance_time)
 void
 VideoProducer::HandleStop(void)
 {
+	CamDevice* camDevice = _CamDevice();
 	syslog(LOG_INFO, "Producer: HandleStop called, fRunning=%d\n",
 		(int)fRunning.load());
 
@@ -1354,8 +1377,8 @@ VideoProducer::HandleStop(void)
 		// later teardown. Mark the device stalled so it is not reused.
 		syslog(LOG_ERR, "Producer: HandleStop - frame generator wedged, "
 			"abandoning thread and marking device stalled\n");
-		if (fCamDevice)
-			fCamDevice->MarkStalled();
+		if (camDevice)
+			camDevice->MarkStalled();
 	} else if (waitResult != B_OK) {
 		syslog(LOG_ERR, "Producer: HandleStop - wait failed: %s\n", strerror(waitResult));
 	} else {
@@ -1366,9 +1389,9 @@ VideoProducer::HandleStop(void)
 	// cannot spawn a second generator over the orphan.
 	fThread = -1;
 
-	if (fCamDevice) {
-		BAutolock lock(fCamDevice->Locker());
-		fCamDevice->StopTransferLocked();
+	if (camDevice) {
+		BAutolock lock(camDevice->Locker());
+		camDevice->StopTransferLocked();
 	}
 
 	syslog(LOG_INFO, "Producer: HandleStop COMPLETE\n");
