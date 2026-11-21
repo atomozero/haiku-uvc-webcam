@@ -16,6 +16,10 @@
 #include "AddOn.h"
 
 #include <image.h>
+#include <Application.h>
+#include <Roster.h>
+#include <DormantNodeManager.h>
+#include <MediaMisc.h>
 #include "Producer.h"
 #include "AudioProducer.h"
 #include "CamRoster.h"
@@ -26,6 +30,7 @@
 
 WebCamMediaAddOn::WebCamMediaAddOn(image_id imid)
 	: BMediaAddOn(imid),
+	fStaysLoaded(false),
 	fInitStatus(B_NO_INIT),
 	fRoster(NULL)
 {
@@ -111,10 +116,41 @@ WebCamMediaAddOn::InitCheck(const char **out_failure_text)
 }
 
 
+/*!	The media add-on server unloads an add-on that has no node, which for
+	us is whenever no camera was plugged in when the media services started.
+	The USB roster of the add-on went with it, and a camera plugged in later
+	was never seen until the media services restarted. In the add-on server
+	the add-on keeps one use of itself with the dormant node manager, which
+	it never gives back (as the bluetooth_audio add-on does). The first call
+	to CountFlavors() comes after the server gave the add-on its ID.
+*/
+void
+WebCamMediaAddOn::_StayLoaded()
+{
+	if (fStaysLoaded || AddonID() <= 0 || be_app == NULL)
+		return;
+
+	app_info info;
+	if (be_app->GetAppInfo(&info) != B_OK
+		|| strcasecmp(info.signature, B_MEDIA_ADDON_SERVER_SIGNATURE) != 0) {
+		// In an application the add-on goes when its node does.
+		fStaysLoaded = true;
+		return;
+	}
+
+	BMediaAddOn* addOn = gDormantNodeManager->GetAddOn(AddonID());
+	if (addOn == this)
+		fStaysLoaded = true;
+	else if (addOn != NULL)
+		gDormantNodeManager->PutAddOn(AddonID());
+}
+
+
 int32
 WebCamMediaAddOn::CountFlavors()
 {
 	PRINT((CH "()" CT));
+	_StayLoaded();
 	if (!fRoster)
 		return 0;
 	if (fInitStatus < B_OK)

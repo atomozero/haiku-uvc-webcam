@@ -45,6 +45,9 @@ public:
 		void			FillDefaultFlavorInfo(flavor_info* info);
 
 private:
+	void				_StayLoaded();
+
+	bool				fStaysLoaded;
 	uint32				fInternalIDCounter;
 	status_t			fInitStatus;
 	flavor_info			fDefaultFlavorInfo;
