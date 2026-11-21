@@ -123,6 +123,13 @@ VideoProducer::VideoProducer(
 
 VideoProducer::~VideoProducer()
 {
+	// BMediaEventLooper wants this from the derived destructor: its own
+	// destructor runs when this node is half gone, and the control thread
+	// still dispatched events meanwhile (a NULL time source in
+	// BMediaEventLooper::ControlLoop() crashed media_addon_server when it
+	// released the node at quit).
+	Quit();
+
 	/* Clean up after ourselves, in case the application didn't make us
 	 * do so. */
 	if (fConnected)

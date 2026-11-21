@@ -97,6 +97,9 @@ AudioProducer::AudioProducer(
 
 AudioProducer::~AudioProducer()
 {
+	// See ~VideoProducer(): the control thread must be gone first.
+	Quit();
+
 	if (fInitStatus == B_OK) {
 		if (fConnected)
 			Disconnect(fOutput.source, fOutput.destination);
