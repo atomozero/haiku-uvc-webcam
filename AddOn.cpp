@@ -14,6 +14,8 @@
 #include <unistd.h>
 
 #include "AddOn.h"
+
+#include <image.h>
 #include "Producer.h"
 #include "AudioProducer.h"
 #include "CamRoster.h"
@@ -66,9 +68,7 @@ WebCamMediaAddOn::WebCamMediaAddOn(image_id imid)
 	fDefaultAudioFlavorInfo.name = (char *)"USB Web Camera Audio";
 	fDefaultAudioFlavorInfo.info = (char *)"USB Web Camera Microphone";
 	fDefaultAudioFlavorInfo.kinds = B_BUFFER_PRODUCER | B_CONTROLLABLE | B_PHYSICAL_INPUT;
-	// Global: the node lives in media_addon_server, never in the team of
-	// the application (see the video flavor below).
-	fDefaultAudioFlavorInfo.flavor_flags = B_FLAVOR_IS_GLOBAL;
+	fDefaultAudioFlavorInfo.flavor_flags = 0;
 	fDefaultAudioFlavorInfo.internal_id = 0;  // Set per-device
 	fDefaultAudioFlavorInfo.possible_count = 0;
 	fDefaultAudioFlavorInfo.in_format_count = 0;
@@ -410,13 +410,7 @@ WebCamMediaAddOn::FillDefaultFlavorInfo(flavor_info* info)
 	info->name = (char *)"USB Web Camera";
 	info->info = (char *)"USB Web Camera";
 	info->kinds = B_BUFFER_PRODUCER | B_CONTROLLABLE | B_PHYSICAL_INPUT;
-	// Global: a camera has one owner, media_addon_server. Instantiated
-	// in the team of an application (BMediaRoster::InstantiateDormantNode()
-	// without B_FLAVOR_IS_GLOBAL), the add-on built a second camera there
-	// that could not open the device, and was unloaded with libturbojpeg
-	// while the instantiating thread still had a TLS destructor of that
-	// library to run at its exit: the application crashed.
-	info->flavor_flags = B_FLAVOR_IS_GLOBAL;
+	info->flavor_flags = 0;
 	info->internal_id = atomic_add((int32*)&fInternalIDCounter, 1);
 	/* FIX BUG 8: Set possible_count = 0 (unlimited) to bypass Media Kit's
 	 * stale in_use_count tracking. The Media Kit increments in_use_count when
@@ -435,8 +429,40 @@ WebCamMediaAddOn::FillDefaultFlavorInfo(flavor_info* info)
 }
 
 
+
+/*!	libturbojpeg keeps a per-thread error string, and the thread-local
+	storage of a shared library on Haiku/ARM (emutls) registers a pthread key
+	destructor that lives in the library. When the add-on is unloaded (a node
+	refused or released, a flavor rescan in an application) the library went
+	with it, and the next thread that had decoded or set up a decoder crashed
+	at its exit, in __pthread_key_call_destructors(): BubiCam, and
+	media_addon_server when BubiCam asked it for a node. The library takes
+	one more reference here and stays loaded until the team quits.
+*/
+static void
+_PinTurboJPEG()
+{
+	static int32 sPinned = 0;
+	if (atomic_test_and_set(&sPinned, 1, 0) != 0)
+		return;
+
+	image_info info;
+	int32 cookie = 0;
+	while (get_next_image_info(B_CURRENT_TEAM, &cookie, &info) == B_OK) {
+		const char* name = strrchr(info.name, '/');
+		name = name != NULL ? name + 1 : info.name;
+		if (strncmp(name, "libturbojpeg.so", 15) == 0) {
+			if (load_add_on(info.name) < 0)
+				atomic_set(&sPinned, 0);
+			return;
+		}
+	}
+	atomic_set(&sPinned, 0);
+}
+
 BMediaAddOn *
 make_media_addon(image_id id)
 {
+	_PinTurboJPEG();
 	return new WebCamMediaAddOn(id);
 }
