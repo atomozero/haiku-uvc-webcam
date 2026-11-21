@@ -645,6 +645,62 @@ VideoProducer::DisposeOutputCookie(int32 cookie)
 
 
 status_t
+VideoProducer::ChangeFrameSize(uint32 width, uint32 height)
+{
+	if (width == 0 || height == 0 || width > 8192 || height > 8192)
+		return B_BAD_VALUE;
+
+	media_format format;
+	media_source source;
+	media_destination destination;
+	{
+		BAutolock lock(fLock);
+		if (!fConnected)
+			return B_NOT_ALLOWED;
+		format = fOutput.format;
+		source = fOutput.source;
+		destination = fOutput.destination;
+	}
+	format.u.raw_video.display.line_width = width;
+	format.u.raw_video.display.line_count = height;
+	format.u.raw_video.display.bytes_per_row = width * 4;
+
+	// Not under fLock: the consumer answers on its own thread, and the
+	// frame generator holds fLock while it waits for a frame.
+	status_t status = ChangeFormat(source, destination, &format);
+	if (status != B_OK) {
+		syslog(LOG_WARNING, "Producer: the consumer refused %ux%u: %s\n",
+			width, height, strerror(status));
+		return status;
+	}
+
+	BAutolock lock(fLock);
+	size_t oldSize = (size_t)4 * fConnectedFormat.display.line_width
+		* fConnectedFormat.display.line_count;
+	size_t newSize = (size_t)4 * width * height;
+	fOutput.format = format;
+	fConnectedFormat = format.u.raw_video;
+
+	// The buffers of a smaller size still fit; a bigger one needs new ones.
+	if (newSize > oldSize && fBufferGroup != NULL) {
+		BBufferGroup* group = new (std::nothrow) BBufferGroup(newSize, 8);
+		if (group == NULL || group->InitCheck() != B_OK) {
+			delete group;
+			syslog(LOG_ERR, "Producer: no buffers for %ux%u\n", width,
+				height);
+			return B_NO_MEMORY;
+		}
+		delete fBufferGroup;
+		fBufferGroup = group;
+	}
+
+	syslog(LOG_INFO, "Producer: the consumer takes %ux%u now\n", width,
+		height);
+	return B_OK;
+}
+
+
+status_t
 VideoProducer::SetBufferGroup(const media_source &for_source,
 		BBufferGroup *group)
 {

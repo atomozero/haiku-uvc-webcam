@@ -12,6 +12,7 @@
 #include "UVCDescriptors.h"
 #include "CamDebug.h"
 #include "CamConfig.h"
+#include "Producer.h"
 
 #include <new>
 #include <stdio.h>
@@ -4053,7 +4054,43 @@ UVCCamDevice::_HandleResolutionChange(uint32 width, uint32 height)
 	BRect current = VideoFrame();
 	uint32 curWidth = (uint32)(current.Width() + 1);
 	uint32 curHeight = (uint32)(current.Height() + 1);
+	bool renegotiate = false;
 	if (IsConsumerConnected() && (width != curWidth || height != curHeight)) {
+		// First ask the consumer to take the new size. A lower frame rate
+		// alone does not help a camera that loses data at its peak rate
+		// (the AUKEY PC-LM1E at 1280x720 on 944 bytes per microframe).
+		VideoProducer* producer = dynamic_cast<VideoProducer*>(VideoNode());
+		if (producer != NULL) {
+			if (wasTransferring) {
+				result = StopTransfer();
+				if (result != B_OK)
+					return result;
+				snooze(100000);
+			}
+			result = AcceptVideoFrame(width, height);
+			if (result == B_OK) {
+				result = producer->ChangeFrameSize(width, height);
+				if (result != B_OK)
+					AcceptVideoFrame(curWidth, curHeight);
+			}
+			if (result == B_OK) {
+				syslog(LOG_INFO, "UVCCamDevice[%s]: %ux%u agreed with the "
+					"connected application\n", LogTag(), width, height);
+				renegotiate = true;
+				BAutolock lock(Locker());
+				fFallbackFpsSteps = 0;
+			} else if (wasTransferring) {
+				// Back to the old size; the frame rate fallback below
+				// restarts the stream.
+				StartTransfer();
+			}
+		}
+	}
+	if (renegotiate) {
+		// The transfer is stopped and the new size applied: go on below
+		// with the statistics, the deframer and the restart.
+	} else if (IsConsumerConnected()
+		&& (width != curWidth || height != curHeight)) {
 		bool lower = (uint64)width * height < (uint64)curWidth * curHeight;
 		bool changed = false;
 		{
@@ -4105,7 +4142,7 @@ UVCCamDevice::_HandleResolutionChange(uint32 width, uint32 height)
 	// Step 1: Stop transfer if running
 	// Use full StopTransfer (including idle alternate) to cleanly reset
 	// the USB endpoint state before reconfiguring at a new resolution
-	if (wasTransferring) {
+	if (wasTransferring && !renegotiate) {
 		syslog(LOG_INFO, "UVCCamDevice: Stopping transfer for resolution change\n");
 		result = StopTransfer();
 		if (result != B_OK) {
@@ -4126,7 +4163,8 @@ UVCCamDevice::_HandleResolutionChange(uint32 width, uint32 height)
 	syslog(LOG_INFO, "UVCCamDevice: Applying resolution %ux%u\n",
 		newWidth, newHeight);
 
-	result = AcceptVideoFrame(newWidth, newHeight);
+	if (!renegotiate)
+		result = AcceptVideoFrame(newWidth, newHeight);
 	if (result != B_OK) {
 		syslog(LOG_ERR, "UVCCamDevice: Failed to apply resolution %ux%u: %s\n",
 			width, height, strerror(result));

@@ -38,6 +38,10 @@ virtual	status_t		InitCheck() const { return fInitStatus; }
 		// is deleted on hot-unplug. Returns B_TIMED_OUT when the thread
 		// was abandoned (device is then expected to be stalled/leaked).
 		status_t		JoinFrameGenerator(bigtime_t timeout = 2000000);
+		// Asks the connected consumer to take frames of another size
+		// (ChangeFormat()), and sends them from then on. Fails when nothing
+		// is connected or the consumer refuses.
+		status_t		ChangeFrameSize(uint32 width, uint32 height);
 
 
 /* BMediaNode */
