@@ -181,7 +181,11 @@ UVCCamDevice::_ValidateFrame(CamFrame* f, int32 w, int32 h)
 		case FRAME_VALID:
 			fValidationStats.frames_valid++;
 			fValidationStats.last_valid_frame_time = system_time();
-			fConsecutiveBadFrames = 0;
+			// An MJPEG frame with its markers can still be broken inside
+			// (data lost in the middle): the decoder tells, see
+			// _MJPEGDecoded().
+			if (!fIsMJPEG)
+				fConsecutiveBadFrames = 0;
 			break;
 		case FRAME_INCOMPLETE:
 			fValidationStats.frames_incomplete++;
@@ -228,6 +232,32 @@ UVCCamDevice::_ValidateFrame(CamFrame* f, int32 w, int32 h)
 	fEvalWindowErrors += deltaError;
 	_EvaluatePacketLoss();
 
+	_CheckConsecutiveBadFrames();
+
+	return validation;
+}
+
+
+/*!	Counts the outcome of decoding an MJPEG frame that had its markers:
+	at 800x600 and above, frames that lose data in the middle all failed
+	to decode while their markers looked right, and the fallback never
+	went below the resolution that broke them.
+*/
+void
+UVCCamDevice::_MJPEGDecoded(bool ok)
+{
+	if (ok)
+		fConsecutiveBadFrames = 0;
+	else {
+		fConsecutiveBadFrames++;
+		_CheckConsecutiveBadFrames();
+	}
+}
+
+
+void
+UVCCamDevice::_CheckConsecutiveBadFrames()
+{
 	// Auto-downgrade resolution on too many consecutive bad frames
 	if (fConsecutiveBadFrames == kMaxConsecutiveBadFrames) {
 		int32 maxLevel = _GetMaxResolutionLevel();
@@ -246,8 +276,6 @@ UVCCamDevice::_ValidateFrame(CamFrame* f, int32 w, int32 h)
 		}
 		fConsecutiveBadFrames = 0;  // Reset to allow retry
 	}
-
-	return validation;
 }
 
 
@@ -1231,6 +1259,7 @@ UVCCamDevice::_DecompressMJPEGtoRGB32(unsigned char* dst,
 			syslog(LOG_WARNING, "MJPEG: Header decode failed #%d: %s\n",
 				(int)headerErrors, tjGetErrorStr2(fJpegDecompressor));
 		}
+		_MJPEGDecoded(false);
 		return;
 	}
 
@@ -1291,6 +1320,7 @@ UVCCamDevice::_DecompressMJPEGtoRGB32(unsigned char* dst,
 
 	if (result == 0) {
 		atomic_add(&fMjpegSuccess, 1);
+		_MJPEGDecoded(true);
 
 		/* Clear resolution transition state on first successful frame */
 		if (fResolutionTransitionStart > 0) {
@@ -1316,6 +1346,7 @@ UVCCamDevice::_DecompressMJPEGtoRGB32(unsigned char* dst,
 				(int)decodeErrors, (int)width, (int)height,
 				tjGetErrorStr2(fJpegDecompressor), jpegSize);
 		}
+		_MJPEGDecoded(false);
 	}
 }
 

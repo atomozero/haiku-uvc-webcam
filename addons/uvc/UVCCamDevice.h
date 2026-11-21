@@ -360,6 +360,8 @@ public:
 									bigtime_t *stamp = NULL);
 			// FillFrameBuffer stages, split for readability.
 			status_t			_HandleFillTimeout(status_t err);
+		void				_MJPEGDecoded(bool ok);
+		void				_CheckConsecutiveBadFrames();
 			frame_validation_result	_ValidateFrame(CamFrame* f,
 									int32 w, int32 h);
 			void				_ConvertFrame(BBuffer* buffer,
