@@ -16,10 +16,7 @@
 #include "AddOn.h"
 
 #include <image.h>
-#include <Application.h>
-#include <Roster.h>
 #include <DormantNodeManager.h>
-#include <MediaMisc.h>
 #include "Producer.h"
 #include "AudioProducer.h"
 #include "CamRoster.h"
@@ -116,27 +113,26 @@ WebCamMediaAddOn::InitCheck(const char **out_failure_text)
 }
 
 
-/*!	The media add-on server unloads an add-on that has no node, which for
-	us is whenever no camera was plugged in when the media services started.
-	The USB roster of the add-on went with it, and a camera plugged in later
-	was never seen until the media services restarted. In the add-on server
-	the add-on keeps one use of itself with the dormant node manager, which
-	it never gives back (as the bluetooth_audio add-on does). The first call
-	to CountFlavors() comes after the server gave the add-on its ID.
+/*!	The add-on keeps one use of itself with the dormant node manager, which
+	it never gives back (as the bluetooth_audio add-on does), so it stays
+	loaded until the team quits:
+	- the media add-on server unloads an add-on that has no node, which for
+	  us is whenever no camera was plugged in when the media services
+	  started; its USB roster went with it, and a camera plugged in later was
+	  never seen until the media services restarted;
+	- libturbojpeg, loaded with the add-on, keeps its error string in
+	  thread-local storage, emulated on ARM (emutls), whose pthread key
+	  destructor lives in the library: unloaded with the add-on, it left the
+	  next thread that had used a decoder to crash at its exit (BubiCam,
+	  whose instantiating thread ends after the node it asked for failed).
+	The ID is known from the first call to CountFlavors(), GetFlavorAt() or
+	InstantiateNodeFor().
 */
 void
 WebCamMediaAddOn::_StayLoaded()
 {
-	if (fStaysLoaded || AddonID() <= 0 || be_app == NULL)
+	if (fStaysLoaded || AddonID() <= 0)
 		return;
-
-	app_info info;
-	if (be_app->GetAppInfo(&info) != B_OK
-		|| strcasecmp(info.signature, B_MEDIA_ADDON_SERVER_SIGNATURE) != 0) {
-		// In an application the add-on goes when its node does.
-		fStaysLoaded = true;
-		return;
-	}
 
 	BMediaAddOn* addOn = gDormantNodeManager->GetAddOn(AddonID());
 	if (addOn == this)
@@ -193,6 +189,7 @@ WebCamMediaAddOn::CountFlavors()
 status_t
 WebCamMediaAddOn::GetFlavorAt(int32 n, const flavor_info **out_info)
 {
+	_StayLoaded();
 	PRINT((CH "(%d, ) roster %p is %" B_PRIx32 CT, n, fRoster, fInitStatus));
 
 	if (!fRoster)
@@ -300,6 +297,7 @@ BMediaNode *
 WebCamMediaAddOn::InstantiateNodeFor(
 		const flavor_info *info, BMessage* /*_config*/, status_t* /*_out_error*/)
 {
+	_StayLoaded();
 	PRINT((CH "()" CT));
 	CamDevice *cam = NULL;
 
@@ -466,39 +464,9 @@ WebCamMediaAddOn::FillDefaultFlavorInfo(flavor_info* info)
 
 
 
-/*!	libturbojpeg keeps a per-thread error string, and the thread-local
-	storage of a shared library on Haiku/ARM (emutls) registers a pthread key
-	destructor that lives in the library. When the add-on is unloaded (a node
-	refused or released, a flavor rescan in an application) the library went
-	with it, and the next thread that had decoded or set up a decoder crashed
-	at its exit, in __pthread_key_call_destructors(): BubiCam, and
-	media_addon_server when BubiCam asked it for a node. The library takes
-	one more reference here and stays loaded until the team quits.
-*/
-static void
-_PinTurboJPEG()
-{
-	static int32 sPinned = 0;
-	if (atomic_test_and_set(&sPinned, 1, 0) != 0)
-		return;
-
-	image_info info;
-	int32 cookie = 0;
-	while (get_next_image_info(B_CURRENT_TEAM, &cookie, &info) == B_OK) {
-		const char* name = strrchr(info.name, '/');
-		name = name != NULL ? name + 1 : info.name;
-		if (strncmp(name, "libturbojpeg.so", 15) == 0) {
-			if (load_add_on(info.name) < 0)
-				atomic_set(&sPinned, 0);
-			return;
-		}
-	}
-	atomic_set(&sPinned, 0);
-}
 
 BMediaAddOn *
 make_media_addon(image_id id)
 {
-	_PinTurboJPEG();
 	return new WebCamMediaAddOn(id);
 }
