@@ -15,6 +15,9 @@
 #include "Producer.h"
 
 #include <new>
+#include <FindDirectory.h>
+#include <Path.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <Autolock.h>
 #include <stdlib.h>
@@ -4505,6 +4508,22 @@ UVCCamDevice::_ShouldUseHighBandwidth()
 			syslog(LOG_WARNING, "UVCCamDevice: This may cause 'Bandwidth error' on Haiku XHCI!\n");
 		}
 		return true;
+	}
+
+	// The same from a settings file, for media_addon_server, whose
+	// environment cannot be set: ~/config/settings/webcam_high_bandwidth.
+	{
+		static int32 sSettingAnnounced = 0;
+		BPath settingPath;
+		if (find_directory(B_USER_SETTINGS_DIRECTORY, &settingPath) == B_OK
+			&& settingPath.Append("webcam_high_bandwidth") == B_OK
+			&& access(settingPath.Path(), F_OK) == 0) {
+			if (atomic_test_and_set(&sSettingAnnounced, 1, 0) == 0) {
+				syslog(LOG_WARNING, "UVCCamDevice: high-bandwidth "
+					"alternates allowed by %s\n", settingPath.Path());
+			}
+			return true;
+		}
 	}
 
 	// If we've already tested and it worked, continue using it
