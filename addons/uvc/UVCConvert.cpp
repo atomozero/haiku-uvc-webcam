@@ -1274,6 +1274,7 @@ UVCCamDevice::_DecompressMJPEGtoRGB32(unsigned char* dst,
 				jpegSize, hex);
 		}
 		_MJPEGDecoded(false);
+		_ResetJPEGDecoder();
 		return;
 	}
 
@@ -1361,7 +1362,26 @@ UVCCamDevice::_DecompressMJPEGtoRGB32(unsigned char* dst,
 				tjGetErrorStr2(fJpegDecompressor), jpegSize);
 		}
 		_MJPEGDecoded(false);
+		_ResetJPEGDecoder();
 	}
+}
+
+
+/*!	After an error on a broken frame (cut short, no scan) the libturbojpeg
+	decompressor stayed in a state where it refused every later frame, good
+	ones included ("Bogus DQT index 15", "Bogus marker length" on headers
+	that are fine): the AUKEY PC-LM1E picture froze for good after the
+	first broken frame, with v0.8.1 too. A new decompressor after each
+	error.
+*/
+void
+UVCCamDevice::_ResetJPEGDecoder()
+{
+	tjhandle old = fJpegDecompressor;
+	fJpegDecompressor = _TurboJPEGInit();
+	_TurboJPEGDestroy(old);
+	if (fJpegDecompressor == NULL)
+		syslog(LOG_ERR, "MJPEG: no new decompressor, MJPEG disabled\n");
 }
 
 
