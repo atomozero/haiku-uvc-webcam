@@ -561,11 +561,12 @@ UVCCamDevice::AudioPumpThread()
 	if (fAudioIsoIn == NULL || fAudioBuffer == NULL || fAudioRingBuffer == NULL)
 		return B_ERROR;
 
-	// Audio USB class sends 1 packet per 1ms USB frame.
-	// With EHCI, not all packet slots get filled. Using fewer packets
-	// per transfer means more frequent transfers and better data capture.
-	// 4 packets = 4ms per transfer - minimizes empty slots.
-	const uint32 kPacketsPerTransfer = 4;
+	// Audio USB class sends 1 packet per 1ms USB frame. 16 packets = 16 ms
+	// per transfer (the whole fAudioBuffer): each transfer is a hole in the
+	// isochronous schedule while the next one is queued, and with transfers
+	// of 4 packets the microphone's churn also cost the video stream of the
+	// same camera twice as many broken frames (AUKEY PC-LM1E on an AC100).
+	const uint32 kPacketsPerTransfer = 16;
 	usb_iso_packet_descriptor packetDescs[kPacketsPerTransfer];
 
 	// Use the endpoint's maxPacketSize for USB slot allocation.
