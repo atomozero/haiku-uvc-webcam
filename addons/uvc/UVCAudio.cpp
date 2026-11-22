@@ -5,6 +5,9 @@
  * UVCCamDevice audio streaming methods, split from UVCCamDevice.cpp (RF-05).
  */
 
+#include <FindDirectory.h>
+#include <Path.h>
+#include <unistd.h>
 #include "UVCCamDevice.h"
 #include "UVCDeframer.h"
 #include "UVCQuirks.h"
@@ -36,6 +39,19 @@ UVCCamDevice::StartAudioTransfer()
 	if (!fHasAudio) {
 		syslog(LOG_ERR, "UVCCamDevice::StartAudioTransfer: No audio interface\n");
 		return B_ERROR;
+	}
+
+	// Debug: ~/config/settings/webcam_no_audio leaves the microphone idle,
+	// to see what its transfers do to the video stream.
+	{
+		BPath settingPath;
+		if (find_directory(B_USER_SETTINGS_DIRECTORY, &settingPath) == B_OK
+			&& settingPath.Append("webcam_no_audio") == B_OK
+			&& access(settingPath.Path(), F_OK) == 0) {
+			syslog(LOG_WARNING, "UVCCamDevice: microphone left idle (%s)\n",
+				settingPath.Path());
+			return B_NOT_ALLOWED;
+		}
 	}
 
 	if (fAudioTransferRunning)

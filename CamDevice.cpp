@@ -1332,12 +1332,12 @@ CamDevice::DataPumpThread()
 bool
 CamDevice::_IsoStreamRun(const BUSBEndpoint* endpoint, uint32 packetSize)
 {
-	// 6 transfers of 64 packets (8 ms each) in flight: 48 ms queued. With
-	// 16 ms (4 of 32) the kernel sometimes requeued a transfer after its
-	// first microframes had passed, and the controller never ran them (ehci
-	// counted 3.5 % of the transactions "not run" on an AC100).
-	status_t status = endpoint->StartIsochronousStream(packetSize, 64, 6,
-		2 * 1024 * 1024);
+	// 4 transfers of 32 packets (4 ms each) in flight: 16 ms queued. Six of
+	// 64 made the EHCI driver of an AC100 stop running the endpoint after a
+	// few seconds, and wedged the camera and its hub; six of 32 lost more
+	// frames than four.
+	status_t status = endpoint->StartIsochronousStream(packetSize, 32, 4,
+		1024 * 1024);
 	if (status != B_OK) {
 		syslog(LOG_INFO, "CamDevice[%s]: no isochronous stream (%s), "
 			"reading transfer by transfer\n", LogTag(), strerror(status));
