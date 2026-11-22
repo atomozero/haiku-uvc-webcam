@@ -247,6 +247,7 @@ UVCCamDevice::_ValidateFrame(CamFrame* f, int32 w, int32 h)
 void
 UVCCamDevice::_MJPEGDecoded(bool ok)
 {
+	fLastMJPEGDecoded = ok;
 	if (ok)
 		fConsecutiveBadFrames = 0;
 	else {
@@ -400,6 +401,12 @@ UVCCamDevice::FillFrameBuffer(BBuffer* buffer, bigtime_t* stamp)
 		fDeframer->RecycleFrame(f);
 	else
 		delete f;
+
+	// An MJPEG frame that did not decode is not sent: the buffer holds the
+	// dark pre-fill or a partly decoded picture, which flashed in the
+	// application. It keeps showing the previous frame instead.
+	if (fIsMJPEG && !fLastMJPEGDecoded)
+		return B_BAD_DATA;
 
 	return B_OK;
 }
@@ -1212,6 +1219,7 @@ UVCCamDevice::_DecompressMJPEGtoRGB32(unsigned char* dst,
                                        int32 width, int32 height)
 {
 	atomic_add(&fMjpegAttempts, 1);
+	fLastMJPEGDecoded = false;
 
 	// FIX: a 1-byte frame reached jpegStart[1] out of bounds below.
 	if (!fJpegDecompressor || !dst || !src || srcSize < 2 || width <= 0 || height <= 0)

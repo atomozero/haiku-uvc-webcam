@@ -650,6 +650,7 @@ UVCCamDevice::UVCCamDevice(CamDeviceAddon& _addon, BUSBDevice* _device)
 	fAudioRingSem(-1),
 	// Frame validation state (Feature 1)
 	fConsecutiveBadFrames(0),
+	fLastMJPEGDecoded(false),
 	// Processing Unit controls (Feature 2)
 	fProcessingUnitID(0),
 	fControlsInitialized(false),

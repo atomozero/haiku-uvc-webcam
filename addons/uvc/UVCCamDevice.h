@@ -641,6 +641,7 @@ private:
 	static	tjhandle			_TurboJPEGInit();
 	static	void				_TurboJPEGDestroy(tjhandle handle);
 		tjhandle			fJpegDecompressor;
+		bool				fLastMJPEGDecoded;
 		// Serialise turbojpeg use, the handle is shared.
 		BLocker				fJpegLock;
 			bool				fIsMJPEG;
