@@ -1234,6 +1234,20 @@ CamDevice::DataPumpThread()
 		// controller chains them on the endpoint (EHCI per-pipe anchor), and
 		// they complete in that order, 8 ms apart, which is also the order
 		// in which the readers take the delivery lock below.
+		// Best: a stream, the kernel keeps the transfers queued itself
+		// (usb_raw isochronous streams, from air/OS). The readers below are
+		// the fallback for a system without them.
+		{
+			const BUSBEndpoint* streamEndpoint = NULL;
+			{
+				BAutolock lock(fLocker);
+				streamEndpoint = fIsoIn;
+			}
+			if (streamEndpoint != NULL
+				&& _IsoStreamRun(streamEndpoint, packetSize))
+				return B_OK;
+		}
+
 		// On the heap: a reader wedged in the kernel is left behind with its
 		// state, which it uses again whenever its transfer returns.
 		IsoPumpState* state = new(std::nothrow) IsoPumpState;
@@ -1311,6 +1325,94 @@ CamDevice::DataPumpThread()
 
 
 #ifdef SUPPORT_ISO
+/*!	Reads the isochronous stream that usb_raw keeps queued for the
+	endpoint, and hands its packets on. Returns false when no stream could
+	be started (an older usb_raw), true once the stream is done.
+*/
+bool
+CamDevice::_IsoStreamRun(const BUSBEndpoint* endpoint, uint32 packetSize)
+{
+	// 32 packets of 4 ms each, 4 in flight: 16 ms always queued.
+	status_t status = endpoint->StartIsochronousStream(packetSize, 32, 4,
+		1024 * 1024);
+	if (status != B_OK) {
+		syslog(LOG_INFO, "CamDevice[%s]: no isochronous stream (%s), "
+			"reading transfer by transfer\n", LogTag(), strerror(status));
+		return false;
+	}
+	syslog(LOG_INFO, "CamDevice[%s]: isochronous stream started, "
+		"packets of %" B_PRIu32 " bytes\n", LogTag(), packetSize);
+
+	const size_t kReadSize = 256 * 1024;
+	uint8* buffer = (uint8*)malloc(kReadSize);
+	if (buffer == NULL) {
+		endpoint->StopIsochronousStream();
+		return true;
+	}
+
+	int32 gaps = 0;
+	int32 errors = 0;
+	int32 timeouts = 0;
+	bigtime_t lastReport = system_time();
+	while (atomic_get(&fTransferEnabled)) {
+		ssize_t length = endpoint->ReadIsochronousStream(buffer, kReadSize,
+			200000);
+		if (length == B_TIMED_OUT) {
+			// The camera sends nothing while it is set up: keep reading,
+			// the stream ends by itself after five seconds unread only.
+			if (++timeouts == 25) {
+				syslog(LOG_WARNING, "CamDevice[%s]: no isochronous data for "
+					"5 s\n", LogTag());
+			}
+			continue;
+		}
+		if (length < 0) {
+			syslog(LOG_INFO, "CamDevice[%s]: isochronous stream ended: %s\n",
+				LogTag(), strerror(length));
+			break;
+		}
+		timeouts = 0;
+
+		size_t offset = 0;
+		int32 delivered = 0;
+		while (offset + sizeof(usb_stream_packet_header) <= (size_t)length) {
+			usb_stream_packet_header header;
+			memcpy(&header, buffer + offset, sizeof(header));
+			offset += sizeof(header);
+			if (offset + header.length > (size_t)length)
+				break;
+			if ((header.flags & B_USB_STREAM_PACKET_GAP) != 0)
+				gaps++;
+			if ((header.flags & B_USB_STREAM_PACKET_ERROR) != 0)
+				errors++;
+			else if (fDataInput != NULL && header.length > 0) {
+				fDataInput->Write(buffer + offset, header.length);
+				delivered++;
+			}
+			offset += header.length;
+		}
+		if (delivered > 0)
+			atomic_add(&fPacketSuccessCount, delivered);
+
+		bigtime_t now = system_time();
+		if (now - lastReport > 30000000) {
+			if (gaps > 0 || errors > 0) {
+				syslog(LOG_WARNING, "CamDevice[%s]: isochronous stream: "
+					"%" B_PRId32 " gaps, %" B_PRId32 " packets with errors "
+					"in 30 s\n", LogTag(), gaps, errors);
+			}
+			gaps = 0;
+			errors = 0;
+			lastReport = now;
+		}
+	}
+
+	endpoint->StopIsochronousStream();
+	free(buffer);
+	return true;
+}
+
+
 /*static*/ status_t
 CamDevice::_IsoReaderEntry(void* data)
 {

@@ -566,6 +566,8 @@ public:
 		IsoPumpState*	state;
 		uint8*			buffer;
 	};
+	bool				_IsoStreamRun(const BUSBEndpoint* endpoint,
+							uint32 packetSize);
 	static status_t		_IsoReaderEntry(void* data);
 	void				_IsoReaderLoop(IsoPumpState* state, uint8* ownBuffer);
 	void				_IsoReaderRun(IsoPumpState* state, uint8* ownBuffer,
