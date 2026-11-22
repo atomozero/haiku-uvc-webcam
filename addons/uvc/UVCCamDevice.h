@@ -361,6 +361,10 @@ public:
 			// FillFrameBuffer stages, split for readability.
 			status_t			_HandleFillTimeout(status_t err);
 		void				_MJPEGDecoded(bool ok);
+		void				_AudioDeliverPacket(uint8* packetData, size_t packetLen,
+								uint32 bytesPerPacket);
+		bool				_AudioStreamRun(const BUSBEndpoint* isoIn,
+								uint32 bytesPerPacket);
 		void				_ResetJPEGDecoder();
 		void				_CheckConsecutiveBadFrames();
 			frame_validation_result	_ValidateFrame(CamFrame* f,

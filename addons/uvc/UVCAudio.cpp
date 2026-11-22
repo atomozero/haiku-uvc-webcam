@@ -555,6 +555,143 @@ UVCCamDevice::_audio_pump_thread_(void* data)
 }
 
 
+/*!	Puts one packet of the microphone into the ring the AudioProducer reads:
+	trimmed to whole sample frames, reduced to 16-bit samples.
+*/
+void
+UVCCamDevice::_AudioDeliverPacket(uint8* packetData, size_t packetLen,
+	uint32 bytesPerPacket)
+{
+	// Validate packet length against buffer size
+	if (packetLen > bytesPerPacket)
+		packetLen = bytesPerPacket;
+
+	// Ensure packet length is aligned to sample frame boundary
+	// (channels * bytes per sample). Unaligned data causes distortion.
+	uint32 subFrame = fAudioSubFrameSize >= 2 && fAudioSubFrameSize <= 4
+		? fAudioSubFrameSize : 2;
+	uint32 frameSize = fAudioChannels * subFrame;
+	if (frameSize > 0)
+		packetLen -= packetLen % frameSize;
+
+	// The node delivers 16-bit samples. Microphones with 24 or 32 bit
+	// subframes (little endian) keep their 16 most significant bits;
+	// reading them as 16-bit samples gave noise. In place: each
+	// sample moves down, never over one still to be read.
+	if (subFrame > 2) {
+		size_t samples = packetLen / subFrame;
+		for (size_t s = 0; s < samples; s++) {
+			const uint8* in = packetData + s * subFrame + subFrame - 2;
+			packetData[s * 2] = in[0];
+			packetData[s * 2 + 1] = in[1];
+		}
+		packetLen = samples * 2;
+	}
+
+	// Calculate space in ring buffer
+	int32 head = atomic_get(&fAudioRingHead);
+	int32 tail = atomic_get(&fAudioRingTail);
+
+	// Validate pointers are within bounds
+	if (head < 0 || (size_t)head >= fAudioRingSize
+		|| tail < 0 || (size_t)tail >= fAudioRingSize) {
+		atomic_set(&fAudioRingHead, 0);
+		atomic_set(&fAudioRingTail, 0);
+		return;
+	}
+
+	ssize_t space;
+	if (head >= tail)
+		space = (ssize_t)fAudioRingSize - (head - tail) - 1;
+	else
+		space = tail - head - 1;
+
+	if (space < 0)
+		space = 0;
+
+	if ((size_t)space < packetLen) {
+		static int32 sOverflowLog = 0;
+		if (++sOverflowLog <= 5 || (sOverflowLog % 100) == 0)
+			syslog(LOG_WARNING,
+				"UVCCamDevice: Audio ring buffer overflow #%d "
+				"(need %zu, have %zu)\n",
+				(int)sOverflowLog, packetLen, space);
+		return;
+	}
+
+	// Copy to ring buffer (handle wraparound)
+	size_t firstChunk = fAudioRingSize - head;
+	if (firstChunk >= packetLen) {
+		memcpy(fAudioRingBuffer + head, packetData, packetLen);
+	} else {
+		memcpy(fAudioRingBuffer + head, packetData, firstChunk);
+		memcpy(fAudioRingBuffer, packetData + firstChunk,
+			packetLen - firstChunk);
+	}
+
+	atomic_set(&fAudioRingHead, (head + packetLen) % fAudioRingSize);
+
+	// Signal consumer that data is available
+	release_sem_etc(fAudioRingSem, 1, B_DO_NOT_RESCHEDULE);
+}
+
+
+/*!	Reads the microphone from an isochronous stream that usb_raw keeps
+	queued for its endpoint. Returns false when no stream could be started.
+	Transfer by transfer, each one left a hole in the schedule while the
+	next was queued, and the churn disturbed the video stream of the same
+	camera.
+*/
+bool
+UVCCamDevice::_AudioStreamRun(const BUSBEndpoint* isoIn,
+	uint32 bytesPerPacket)
+{
+	// 16 packets of 1 ms, 4 in flight: 64 ms always queued.
+	if (isoIn->StartIsochronousStream(bytesPerPacket, 16, 4, 256 * 1024)
+			!= B_OK)
+		return false;
+	syslog(LOG_INFO, "UVCCamDevice: microphone isochronous stream started\n");
+
+	const size_t kReadSize = 64 * 1024;
+	uint8* buffer = (uint8*)malloc(kReadSize);
+	if (buffer == NULL) {
+		isoIn->StopIsochronousStream();
+		return true;
+	}
+
+	while (fAudioTransferRunning) {
+		ssize_t length = isoIn->ReadIsochronousStream(buffer, kReadSize,
+			100000);
+		if (length == B_TIMED_OUT)
+			continue;
+		if (length < 0) {
+			syslog(LOG_INFO, "UVCCamDevice: microphone stream ended: %s\n",
+				strerror(length));
+			break;
+		}
+
+		size_t offset = 0;
+		while (offset + sizeof(usb_stream_packet_header) <= (size_t)length) {
+			usb_stream_packet_header header;
+			memcpy(&header, buffer + offset, sizeof(header));
+			offset += sizeof(header);
+			if (offset + header.length > (size_t)length)
+				break;
+			if ((header.flags & B_USB_STREAM_PACKET_ERROR) == 0
+				&& header.length > 0) {
+				_AudioDeliverPacket(buffer + offset, header.length,
+					bytesPerPacket);
+			}
+			offset += header.length;
+		}
+	}
+
+	isoIn->StopIsochronousStream();
+	free(buffer);
+	return true;
+}
+
+
 int32
 UVCCamDevice::AudioPumpThread()
 {
@@ -584,6 +721,12 @@ UVCCamDevice::AudioPumpThread()
 		"rate=%u, ch=%u\n",
 		(unsigned)fAudioMaxPacketSize, (unsigned)bytesPerPacket,
 		(unsigned)fAudioSampleRate, (unsigned)fAudioChannels);
+
+	{
+		const BUSBEndpoint* isoIn = fAudioIsoIn;
+		if (isoIn != NULL && _AudioStreamRun(isoIn, bytesPerPacket))
+			return B_OK;
+	}
 
 	// Retry configuration (similar to video transfer retry logic)
 	const uint32 kMaxRetries = 3;
@@ -703,77 +846,7 @@ UVCCamDevice::AudioPumpThread()
 					packetData[4], packetData[5], packetData[6], packetData[7]);
 			}
 
-			// Validate packet length against buffer size
-			if (packetLen > bytesPerPacket)
-				packetLen = bytesPerPacket;
-
-			// Ensure packet length is aligned to sample frame boundary
-			// (channels * bytes per sample). Unaligned data causes distortion.
-			uint32 subFrame = fAudioSubFrameSize >= 2 && fAudioSubFrameSize <= 4
-				? fAudioSubFrameSize : 2;
-			uint32 frameSize = fAudioChannels * subFrame;
-			if (frameSize > 0)
-				packetLen -= packetLen % frameSize;
-
-			// The node delivers 16-bit samples. Microphones with 24 or 32 bit
-			// subframes (little endian) keep their 16 most significant bits;
-			// reading them as 16-bit samples gave noise. In place: each
-			// sample moves down, never over one still to be read.
-			if (subFrame > 2) {
-				size_t samples = packetLen / subFrame;
-				for (size_t s = 0; s < samples; s++) {
-					const uint8* in = packetData + s * subFrame + subFrame - 2;
-					packetData[s * 2] = in[0];
-					packetData[s * 2 + 1] = in[1];
-				}
-				packetLen = samples * 2;
-			}
-
-			// Calculate space in ring buffer
-			int32 head = atomic_get(&fAudioRingHead);
-			int32 tail = atomic_get(&fAudioRingTail);
-
-			// Validate pointers are within bounds
-			if (head < 0 || (size_t)head >= fAudioRingSize
-				|| tail < 0 || (size_t)tail >= fAudioRingSize) {
-				atomic_set(&fAudioRingHead, 0);
-				atomic_set(&fAudioRingTail, 0);
-				continue;
-			}
-
-			ssize_t space;
-			if (head >= tail)
-				space = (ssize_t)fAudioRingSize - (head - tail) - 1;
-			else
-				space = tail - head - 1;
-
-			if (space < 0)
-				space = 0;
-
-			if ((size_t)space < packetLen) {
-				static int32 sOverflowLog = 0;
-				if (++sOverflowLog <= 5 || (sOverflowLog % 100) == 0)
-					syslog(LOG_WARNING,
-						"UVCCamDevice: Audio ring buffer overflow #%d "
-						"(need %zu, have %zu)\n",
-						(int)sOverflowLog, packetLen, space);
-				continue;
-			}
-
-			// Copy to ring buffer (handle wraparound)
-			size_t firstChunk = fAudioRingSize - head;
-			if (firstChunk >= packetLen) {
-				memcpy(fAudioRingBuffer + head, packetData, packetLen);
-			} else {
-				memcpy(fAudioRingBuffer + head, packetData, firstChunk);
-				memcpy(fAudioRingBuffer, packetData + firstChunk,
-					packetLen - firstChunk);
-			}
-
-			atomic_set(&fAudioRingHead, (head + packetLen) % fAudioRingSize);
-
-			// Signal consumer that data is available
-			release_sem_etc(fAudioRingSem, 1, B_DO_NOT_RESCHEDULE);
+			_AudioDeliverPacket(packetData, packetLen, bytesPerPacket);
 		}
 	}
 
