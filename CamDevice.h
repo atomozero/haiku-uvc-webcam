@@ -537,6 +537,42 @@ public:
 	virtual status_t	DataPumpThread();
 	static int32		_DataPumpThread(void *_this);
 
+	// Isochronous readers, more than one transfer in flight (see
+	// DataPumpThread()).
+	struct IsoPumpState {
+		BLocker			lock;
+			// delivery and failure accounting, in completion order
+		int				consecutiveFailures;
+		int32			transferAttempts;
+		int				packets;
+		uint32			packetSize;
+		size_t			bufferLength;
+		int32			quit;
+
+						IsoPumpState()
+							:
+							lock("iso delivery"),
+							consecutiveFailures(0),
+							transferAttempts(0),
+							packets(0),
+							packetSize(0),
+							bufferLength(0),
+							quit(0)
+						{
+						}
+	};
+	struct IsoReaderArgs {
+		CamDevice*		device;
+		IsoPumpState*	state;
+		uint8*			buffer;
+	};
+	static status_t		_IsoReaderEntry(void* data);
+	void				_IsoReaderLoop(IsoPumpState* state, uint8* ownBuffer);
+	void				_IsoReaderRun(IsoPumpState* state, uint8* ownBuffer,
+							usb_iso_packet_descriptor* packetDescriptors,
+							int numPacketDescriptors,
+							const int kPumpGiveUpFailures);
+
 	// Reconfiguration worker thread (for safe resolution changes)
 	virtual status_t	ReconfigThread();
 	static int32		_ReconfigThread(void *_this);

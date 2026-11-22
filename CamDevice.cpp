@@ -1197,17 +1197,11 @@ CamDevice::DataPumpThread()
 		// Strategy: Start with buffer size from _SelectBestAlternate (conservative)
 		// If transfers succeed, we could grow. If they fail, we shrink further.
 		//
-		// P25 mitigation: Haiku's BUSBInterface::IsochronousTransfer is
-		// blocking and supports only one transfer in flight at a time
-		// (unlike Linux uvcvideo's URB queues). Each kernel round-trip
-		// loses the microframes in between, so we batch as many packets as
-		// possible per call to minimise the gap. 64 microframes = ~8 ms at
-		// USB 2.0 HS rate, well below a 30 fps frame interval (~33 ms).
-		// A proper fix requires queueing multiple transfers in the kernel.
+		// Each transfer takes up to 64 microframes = 8 ms at USB 2.0 high
+		// speed; several readers keep transfers queued (see below).
 
 		const int kMaxPacketDescriptors = 64;  // Array size (max possible)
 		const int kMinPacketDescriptors = 2;   // Minimum viable
-		usb_iso_packet_descriptor packetDescriptors[kMaxPacketDescriptors];
 
 		// Use native MaxPacketSize from device
 		uint32 packetSize = (fIsoMaxPacketSize > 0) ? fIsoMaxPacketSize : 256;
@@ -1224,246 +1218,88 @@ CamDevice::DataPumpThread()
 		syslog(LOG_INFO, "ISO Transfer: buffer=%zu, packets=%d, slotSize=%u\n",
 			fBufferLen, numPacketDescriptors, packetSize);
 
-		// Initialize packet descriptors
-		for (int i = 0; i < kMaxPacketDescriptors; i++)
-			packetDescriptors[i].request_length = packetSize;
-
 		// Statistics tracking
 		atomic_set(&fPacketSuccessCount, 0);
 		atomic_set(&fPacketErrorCount, 0);
 		fLastStatsReport = system_time();
 		fTransferStartTime = system_time();
 
-		int consecutiveFailures = 0;
-		int32 transferAttempts = 0;
-		// After this many back-to-back failures the recovery attempts (endpoint
-		// stall clear at 200, subclass alternate cycle at 300) are considered
-		// exhausted and the pump gives up on a wedged controller.
-		const int kPumpGiveUpFailures = 500;
+		// P25: more than one transfer in flight. Haiku's
+		// BUSBEndpoint::IsochronousTransfer() blocks until its transfer is
+		// done; with one reader the endpoint had nothing queued while the
+		// data was handed on and the next transfer scheduled, and the camera
+		// was read for about half of the time (it loses what its buffer
+		// cannot keep: the end of frames, most of a 800x600 one). Readers
+		// with buffers of their own keep transfers queued back to back; the
+		// controller chains them on the endpoint (EHCI per-pipe anchor), and
+		// they complete in that order, 8 ms apart, which is also the order
+		// in which the readers take the delivery lock below.
+		// On the heap: a reader wedged in the kernel is left behind with its
+		// state, which it uses again whenever its transfer returns.
+		IsoPumpState* state = new(std::nothrow) IsoPumpState;
+		if (state == NULL)
+			return B_NO_MEMORY;
+		state->packets = numPacketDescriptors;
+		state->packetSize = packetSize;
+		state->bufferLength = fBufferLen;
 
-		while (atomic_get(&fTransferEnabled)) {
-			ssize_t len = -1;
+		static const int kReaders = 3;
+		uint8* readerBuffers[kReaders] = { NULL };
+		IsoReaderArgs* readerArgs[kReaders] = { NULL };
+		thread_id readers[kReaders];
+		for (int k = 0; k < kReaders; k++)
+			readers[k] = -1;
 
-			// Take the endpoint and buffer under the lock, transfer without
-			// it. The endpoint and the buffer only change on this thread
-			// (recovery in OnConsecutiveTransferFailures) or while the pump
-			// is stopped (Start/StopTransfer, the reconfig worker), so they
-			// stay valid during the transfer. Holding fLocker across the
-			// blocking transfer made every stop wait for it, forever when
-			// the camera wedged.
-			const BUSBEndpoint* endpoint = NULL;
-			uint8* buffer = NULL;
-			size_t bufferLen = 0;
-			{
-				BAutolock lock(fLocker);
-				if (!lock.IsLocked())
-					break;
-				endpoint = fIsoIn;
-				buffer = fBuffer;
-				bufferLen = fBufferLen;
-			}
-			if (endpoint == NULL || buffer == NULL || bufferLen == 0)
+		thread_info selfInfo;
+		get_thread_info(find_thread(NULL), &selfInfo);
+		for (int k = 1; k < kReaders; k++) {
+			readerBuffers[k] = (uint8*)malloc(state->bufferLength);
+			readerArgs[k] = new(std::nothrow) IsoReaderArgs;
+			if (readerBuffers[k] == NULL || readerArgs[k] == NULL)
 				break;
-
-			// The kernel does not write the descriptors back when it cannot
-			// queue the transfer: start from failed, empty packets so the
-			// previous transfer's data is never handed on twice.
-			for (int i = 0; i < numPacketDescriptors; i++) {
-				packetDescriptors[i].actual_length = 0;
-				packetDescriptors[i].status = B_ERROR;
-			}
-
-			len = endpoint->IsochronousTransfer(buffer, bufferLen,
-				packetDescriptors, numPacketDescriptors);
-
-			// Throttled logging: first 5, then based on time/count threshold
-			transferAttempts++;
-			bigtime_t now = system_time();
-			bool shouldLog = (transferAttempts <= 5)
-				|| (transferAttempts % kLogThrottleInterval == 0)
-				|| (now - fLastLogTime > kLogTimeInterval);
-
-			if (shouldLog) {
-				fLastLogTime = now;
-				syslog(LOG_INFO, "ISO xfer #%d: len=%zd, pkt[0]=%d/%u\n",
-					(int)transferAttempts, len,
-					packetDescriptors[0].actual_length,
-					packetDescriptors[0].request_length);
-			}
-
-			// Handle transfer errors
-			if (len < 0 && ClassifyUSBError(len) == USB_ERROR_DISCONNECTED) {
-				// The camera is gone: stop instead of failing ~500 more times.
-				syslog(LOG_INFO, "CamDevice[%s]: device disconnected, "
-					"stopping the data pump\n", LogTag());
+			readerArgs[k]->device = this;
+			readerArgs[k]->state = state;
+			readerArgs[k]->buffer = readerBuffers[k];
+			readers[k] = spawn_thread(_IsoReaderEntry, "USB Webcam ISO reader",
+				selfInfo.priority, readerArgs[k]);
+			if (readers[k] < B_OK) {
+				readers[k] = -1;
 				break;
 			}
-			if (len < 0) {
-				consecutiveFailures++;
-				// The subclass may run its own recovery as the count climbs
-				// (UVCCamDevice cycles the streaming alternate at 300). For that
-				// — and the escalation below — to fire, the counter must keep
-				// climbing while errors persist rather than being reset.
-				OnConsecutiveTransferFailures(consecutiveFailures);
-
-				if (consecutiveFailures == 10) {
-					syslog(LOG_WARNING, "USB: 10 consecutive transfer failures (err=%zd)\n", len);
-				}
-
-				if (consecutiveFailures == 200) {
-					// Controller/endpoint may be stalled. Make one endpoint-stall
-					// recovery attempt (the subclass tries an alternate cycle at
-					// 300) before giving up below.
-					syslog(LOG_ERR, "USB: 200 consecutive failures, "
-						"clearing endpoint stall\n");
-					{
-						BAutolock lock(fLocker);
-						if (fIsoIn != NULL) {
-							fIsoIn->ClearStall();
-							syslog(LOG_INFO, "USB: Endpoint stall cleared, "
-								"resuming after 500ms\n");
-						}
-					}
-					snooze(500000);
-				} else if (consecutiveFailures >= kPumpGiveUpFailures) {
-					// Recovery did not help and every transfer is still failing:
-					// the controller is wedged (a known Haiku EHCI limitation with
-					// some devices). Stop driving it instead of hammering it
-					// thousands of times a second — which floods the syslog and can
-					// keep the controller from recovering. Mark the device stalled
-					// so StartTransfer refuses until re-enumeration, then exit the
-					// pump thread cleanly, matching the wedged-device strategy.
-					syslog(LOG_ERR, "USB: %d consecutive failures after recovery; "
-						"marking device stalled and stopping the data pump\n",
-						consecutiveFailures);
-					MarkStalled();
-					atomic_set(&fTransferEnabled, 0);
-					break;
-				} else if (consecutiveFailures >= 50
-						&& (consecutiveFailures % 50) == 0) {
-					// Periodic light backoff so a persistently failing controller
-					// is not polled in a tight busy-loop. The counter is NOT reset
-					// here, so the escalations above still fire.
-					snooze(10000);
-				}
-				// Don't return or continue - fall through to process any completed packets!
-			} else {
-				// Success - notify subclass to reset failure tracking
-				if (consecutiveFailures > 0) {
-					OnTransferSuccess();
-				}
-				consecutiveFailures = 0;
-			}
-
-			//PRINT((CH ": got %d bytes" CT, len));
-#ifdef DEBUG_WRITE_DUMP
-			write(fDumpFD, fBuffer, len);
-#endif
-#ifdef DEBUG_READ_DUMP
-			if ((len = read(fDumpFD, fBuffer, fBufferLen)) < fBufferLen)
-				lseek(fDumpFD, 0LL, SEEK_SET);
-#endif
-
-			// REMOVED: Don't skip on len <= 0
-			// Even when transfer returns error, individual packets may have completed.
-			// Process packet descriptors regardless of overall transfer status.
-
-#ifndef DEBUG_DISCARD_DATA
-			if (fDataInput) {
-				// PHASE 4 FIX: Use fixed packet offsets (not sequential)
-				// EHCI places data at packet_index * request_length
-
-				// CRITICAL FIX: EHCI kernel calculates slot size as DataLength/packet_count
-				// We must ensure: fBufferLen = slotSize * numPacketDescriptors
-				// So: slotSize = fBufferLen / numPacketDescriptors
-				// This MUST match request_length if buffer was properly sized
-				size_t slotSize = bufferLen / numPacketDescriptors;
-
-				// Verify alignment and log packet info (first few times)
-				static int logCount = 0;
-				if (logCount < 5) {
-					logCount++;
-					size_t reqLen = packetDescriptors[0].request_length;
-					syslog(LOG_INFO, "ISO #%d: bufLen=%zu, slots=%d, slotSize=%zu, reqLen=%zu\n",
-						logCount, bufferLen, numPacketDescriptors, slotSize, reqLen);
-
-					// Log first few packet actual_lengths
-					syslog(LOG_INFO, "  actual_len: [%d, %d, %d, %d, %d, %d, %d, %d]\n",
-						packetDescriptors[0].actual_length,
-						numPacketDescriptors > 1 ? packetDescriptors[1].actual_length : -1,
-						numPacketDescriptors > 2 ? packetDescriptors[2].actual_length : -1,
-						numPacketDescriptors > 3 ? packetDescriptors[3].actual_length : -1,
-						numPacketDescriptors > 4 ? packetDescriptors[4].actual_length : -1,
-						numPacketDescriptors > 5 ? packetDescriptors[5].actual_length : -1,
-						numPacketDescriptors > 6 ? packetDescriptors[6].actual_length : -1,
-						numPacketDescriptors > 7 ? packetDescriptors[7].actual_length : -1);
-				}
-
-			// Batch packet accounting locally, publish once.
-			int32 packetSuccess = 0;
-			int32 packetErrors = 0;
-			for (int i = 0; i < numPacketDescriptors; i++) {
-				// Calculate offset matching kernel's layout (i * DataLength/packet_count)
-				size_t packetOffset = i * slotSize;
-
-				// PHASE 3: Check if this packet succeeded
-				if (packetDescriptors[i].status != B_OK) {
-					packetErrors++;
-					// Skip failed packets - data is invalid
-					continue;
-				}
-
-				// Direct access to struct member (no copy)
-				int actual_length = packetDescriptors[i].actual_length;
-
-				// Bounds check
-				if (actual_length > 0 && packetOffset + actual_length <= bufferLen) {
-					fDataInput->Write(&buffer[packetOffset], actual_length);
-					packetSuccess++;
-				}
-			}
-			// Publish once per transfer, not per packet.
-			if (packetSuccess > 0)
-				atomic_add(&fPacketSuccessCount, packetSuccess);
-			if (packetErrors > 0)
-				atomic_add(&fPacketErrorCount, packetErrors);
-
-				// Periodic statistics reporting (every 30 seconds)
-				bigtime_t now = system_time();
-				if (now - fLastStatsReport > 30000000) {  // 30 seconds
-					int32 success = atomic_get(&fPacketSuccessCount);
-					int32 errors = atomic_get(&fPacketErrorCount);
-					int32 totalPackets = success + errors;
-					float lossPercent = totalPackets > 0
-						? (100.0f * errors / totalPackets)
-						: 0.0f;
-
-					// Calculate throughput
-					bigtime_t elapsed = now - fTransferStartTime;
-					float elapsedSec = elapsed / 1000000.0f;
-					float packetsPerSec = elapsedSec > 0 ? totalPackets / elapsedSec : 0;
-
-					WEBCAM_VERBOSE("USB Stats[%s]: success=%d errors=%d loss=%.1f%% rate=%.0f pkt/s\n",
-						LogTag(), success, errors, lossPercent, packetsPerSec);
-
-					// Warn if packet loss is high (>5% is concerning for video)
-					if (lossPercent > 5.0f) {
-						syslog(LOG_WARNING, "USB: HIGH packet loss (%.1f%%) - may cause grey frames\n",
-							lossPercent);
-					}
-
-					fLastStatsReport = now;
-				}
-			} else {
-				// Data dropped: no consumer connected (isochronous mode)
-				if (fDroppedFramesLogged < 5) {
-					syslog(LOG_WARNING, "Dropping isochronous data (no consumer)\n");
-					fDroppedFramesLogged++;
-				}
-			}
-#endif
-			//snooze(2000);
+			resume_thread(readers[k]);
+			// One at a time into the kernel, so that they are queued in
+			// this order.
+			snooze(1000);
 		}
+
+		_IsoReaderLoop(state, NULL);
+
+		// The others leave after their transfer, 8 ms at most: wait well
+		// under the 3 s StopTransfer() gives the pump. One that does not
+		// return is wedged in the kernel and keeps its buffer and the
+		// state.
+		atomic_set(&state->quit, 1);
+		bool wedged = false;
+		for (int k = 1; k < kReaders; k++) {
+			status_t waitErr = B_OK;
+			if (readers[k] >= 0) {
+				status_t result;
+				waitErr = wait_for_thread_etc(readers[k], B_RELATIVE_TIMEOUT,
+					500000, &result);
+			}
+			if (waitErr == B_TIMED_OUT) {
+				wedged = true;
+				continue;
+			}
+			free(readerBuffers[k]);
+			delete readerArgs[k];
+		}
+		if (wedged) {
+			syslog(LOG_ERR, "CamDevice[%s]: an ISO reader is wedged, "
+				"marking the device stalled\n", LogTag());
+			MarkStalled();
+		} else
+			delete state;
 	}
 #endif
 	else {
@@ -1472,6 +1308,279 @@ CamDevice::DataPumpThread()
 	}
 	return B_OK;
 }
+
+
+#ifdef SUPPORT_ISO
+/*static*/ status_t
+CamDevice::_IsoReaderEntry(void* data)
+{
+	IsoReaderArgs* args = (IsoReaderArgs*)data;
+	args->device->_IsoReaderLoop(args->state, args->buffer);
+	return B_OK;
+}
+
+
+/*!	One reader of the isochronous stream: transfers into \a ownBuffer (into
+	fBuffer when NULL), then hands the packets on under the delivery lock of
+	\a state, which also holds the failure accounting all readers share.
+*/
+void
+CamDevice::_IsoReaderLoop(IsoPumpState* state, uint8* ownBuffer)
+{
+	// After this many back-to-back failures the recovery attempts (endpoint
+	// stall clear at 200, stream restart at 300) are considered exhausted
+	// and the pump gives up on a wedged controller.
+	const int kPumpGiveUpFailures = 500;
+	const int numPacketDescriptors = state->packets;
+	usb_iso_packet_descriptor packetDescriptors[64];
+	for (int i = 0; i < numPacketDescriptors; i++)
+		packetDescriptors[i].request_length = state->packetSize;
+
+	_IsoReaderRun(state, ownBuffer, packetDescriptors, numPacketDescriptors,
+		kPumpGiveUpFailures);
+	// One reader leaving takes the others along.
+	atomic_set(&state->quit, 1);
+}
+
+
+void
+CamDevice::_IsoReaderRun(IsoPumpState* state, uint8* ownBuffer,
+	usb_iso_packet_descriptor* packetDescriptors, int numPacketDescriptors,
+	const int kPumpGiveUpFailures)
+{
+	while (atomic_get(&fTransferEnabled) && !atomic_get(&state->quit)) {
+		ssize_t len = -1;
+
+		// Take the endpoint and buffer under the lock, transfer without
+		// it. The endpoint and the buffer only change while the pump is
+		// stopped (Start/StopTransfer, the reconfig worker), so they stay
+		// valid during the transfer. Holding fLocker across the
+		// blocking transfer made every stop wait for it, forever when
+		// the camera wedged.
+		const BUSBEndpoint* endpoint = NULL;
+		uint8* buffer = NULL;
+		size_t bufferLen = 0;
+		{
+			BAutolock lock(fLocker);
+			if (!lock.IsLocked())
+				break;
+			endpoint = fIsoIn;
+			buffer = ownBuffer != NULL ? ownBuffer : fBuffer;
+			bufferLen = fBufferLen;
+		}
+		// A reader's own buffer is only good for the size it was made
+		// for: the stream restarts when that changes.
+		if (endpoint == NULL || buffer == NULL || bufferLen == 0
+			|| bufferLen != state->bufferLength)
+			break;
+
+		// The kernel does not write the descriptors back when it cannot
+		// queue the transfer: start from failed, empty packets so the
+		// previous transfer's data is never handed on twice.
+		for (int i = 0; i < numPacketDescriptors; i++) {
+			packetDescriptors[i].actual_length = 0;
+			packetDescriptors[i].status = B_ERROR;
+		}
+
+		len = endpoint->IsochronousTransfer(buffer, bufferLen,
+			packetDescriptors, numPacketDescriptors);
+
+		// In completion order: the transfers are 8 ms apart.
+		BAutolock delivery(state->lock);
+		if (!atomic_get(&fTransferEnabled))
+			break;
+		int& consecutiveFailures = state->consecutiveFailures;
+		int32& transferAttempts = state->transferAttempts;
+
+		// Throttled logging: first 5, then based on time/count threshold
+		transferAttempts++;
+		bigtime_t now = system_time();
+		bool shouldLog = (transferAttempts <= 5)
+			|| (transferAttempts % kLogThrottleInterval == 0)
+			|| (now - fLastLogTime > kLogTimeInterval);
+
+		if (shouldLog) {
+			fLastLogTime = now;
+			syslog(LOG_INFO, "ISO xfer #%d: len=%zd, pkt[0]=%d/%u\n",
+				(int)transferAttempts, len,
+				packetDescriptors[0].actual_length,
+				packetDescriptors[0].request_length);
+		}
+
+		// Handle transfer errors
+		if (len < 0 && ClassifyUSBError(len) == USB_ERROR_DISCONNECTED) {
+			// The camera is gone: stop instead of failing ~500 more times.
+			syslog(LOG_INFO, "CamDevice[%s]: device disconnected, "
+				"stopping the data pump\n", LogTag());
+			break;
+		}
+		if (len < 0) {
+			consecutiveFailures++;
+			// The subclass may run its own recovery as the count climbs
+			// (UVCCamDevice cycles the streaming alternate at 300). For that
+			// — and the escalation below — to fire, the counter must keep
+			// climbing while errors persist rather than being reset.
+			OnConsecutiveTransferFailures(consecutiveFailures);
+
+			if (consecutiveFailures == 10) {
+				syslog(LOG_WARNING, "USB: 10 consecutive transfer failures (err=%zd)\n", len);
+			}
+
+			if (consecutiveFailures == 200) {
+				// Controller/endpoint may be stalled. Make one endpoint-stall
+				// recovery attempt (the subclass tries an alternate cycle at
+				// 300) before giving up below.
+				syslog(LOG_ERR, "USB: 200 consecutive failures, "
+					"clearing endpoint stall\n");
+				{
+					BAutolock lock(fLocker);
+					if (fIsoIn != NULL) {
+						fIsoIn->ClearStall();
+						syslog(LOG_INFO, "USB: Endpoint stall cleared, "
+							"resuming after 500ms\n");
+					}
+				}
+				snooze(500000);
+			} else if (consecutiveFailures >= kPumpGiveUpFailures) {
+				// Recovery did not help and every transfer is still failing:
+				// the controller is wedged (a known Haiku EHCI limitation with
+				// some devices). Stop driving it instead of hammering it
+				// thousands of times a second — which floods the syslog and can
+				// keep the controller from recovering. Mark the device stalled
+				// so StartTransfer refuses until re-enumeration, then exit the
+				// pump thread cleanly, matching the wedged-device strategy.
+				syslog(LOG_ERR, "USB: %d consecutive failures after recovery; "
+					"marking device stalled and stopping the data pump\n",
+					consecutiveFailures);
+				MarkStalled();
+				atomic_set(&fTransferEnabled, 0);
+				break;
+			} else if (consecutiveFailures >= 50
+					&& (consecutiveFailures % 50) == 0) {
+				// Periodic light backoff so a persistently failing controller
+				// is not polled in a tight busy-loop. The counter is NOT reset
+				// here, so the escalations above still fire.
+				snooze(10000);
+			}
+			// Don't return or continue - fall through to process any completed packets!
+		} else {
+			// Success - notify subclass to reset failure tracking
+			if (consecutiveFailures > 0) {
+				OnTransferSuccess();
+			}
+			consecutiveFailures = 0;
+		}
+
+		//PRINT((CH ": got %d bytes" CT, len));
+#ifdef DEBUG_WRITE_DUMP
+		write(fDumpFD, fBuffer, len);
+#endif
+#ifdef DEBUG_READ_DUMP
+		if ((len = read(fDumpFD, fBuffer, fBufferLen)) < fBufferLen)
+			lseek(fDumpFD, 0LL, SEEK_SET);
+#endif
+
+		// REMOVED: Don't skip on len <= 0
+		// Even when transfer returns error, individual packets may have completed.
+		// Process packet descriptors regardless of overall transfer status.
+
+#ifndef DEBUG_DISCARD_DATA
+		if (fDataInput) {
+			// PHASE 4 FIX: Use fixed packet offsets (not sequential)
+			// EHCI places data at packet_index * request_length
+
+			// CRITICAL FIX: EHCI kernel calculates slot size as DataLength/packet_count
+			// We must ensure: fBufferLen = slotSize * numPacketDescriptors
+			// So: slotSize = fBufferLen / numPacketDescriptors
+			// This MUST match request_length if buffer was properly sized
+			size_t slotSize = bufferLen / numPacketDescriptors;
+
+			// Verify alignment and log packet info (first few times)
+			static int logCount = 0;
+			if (logCount < 5) {
+				logCount++;
+				size_t reqLen = packetDescriptors[0].request_length;
+				syslog(LOG_INFO, "ISO #%d: bufLen=%zu, slots=%d, slotSize=%zu, reqLen=%zu\n",
+					logCount, bufferLen, numPacketDescriptors, slotSize, reqLen);
+
+				// Log first few packet actual_lengths
+				syslog(LOG_INFO, "  actual_len: [%d, %d, %d, %d, %d, %d, %d, %d]\n",
+					packetDescriptors[0].actual_length,
+					numPacketDescriptors > 1 ? packetDescriptors[1].actual_length : -1,
+					numPacketDescriptors > 2 ? packetDescriptors[2].actual_length : -1,
+					numPacketDescriptors > 3 ? packetDescriptors[3].actual_length : -1,
+					numPacketDescriptors > 4 ? packetDescriptors[4].actual_length : -1,
+					numPacketDescriptors > 5 ? packetDescriptors[5].actual_length : -1,
+					numPacketDescriptors > 6 ? packetDescriptors[6].actual_length : -1,
+					numPacketDescriptors > 7 ? packetDescriptors[7].actual_length : -1);
+			}
+
+		// Batch packet accounting locally, publish once.
+		int32 packetSuccess = 0;
+		int32 packetErrors = 0;
+		for (int i = 0; i < numPacketDescriptors; i++) {
+			// Calculate offset matching kernel's layout (i * DataLength/packet_count)
+			size_t packetOffset = i * slotSize;
+
+			// PHASE 3: Check if this packet succeeded
+			if (packetDescriptors[i].status != B_OK) {
+				packetErrors++;
+				// Skip failed packets - data is invalid
+				continue;
+			}
+
+			// Direct access to struct member (no copy)
+			int actual_length = packetDescriptors[i].actual_length;
+
+			// Bounds check
+			if (actual_length > 0 && packetOffset + actual_length <= bufferLen) {
+				fDataInput->Write(&buffer[packetOffset], actual_length);
+				packetSuccess++;
+			}
+		}
+		// Publish once per transfer, not per packet.
+		if (packetSuccess > 0)
+			atomic_add(&fPacketSuccessCount, packetSuccess);
+		if (packetErrors > 0)
+			atomic_add(&fPacketErrorCount, packetErrors);
+
+			// Periodic statistics reporting (every 30 seconds)
+			bigtime_t now = system_time();
+			if (now - fLastStatsReport > 30000000) {  // 30 seconds
+				int32 success = atomic_get(&fPacketSuccessCount);
+				int32 errors = atomic_get(&fPacketErrorCount);
+				int32 totalPackets = success + errors;
+				float lossPercent = totalPackets > 0
+					? (100.0f * errors / totalPackets)
+					: 0.0f;
+
+				// Calculate throughput
+				bigtime_t elapsed = now - fTransferStartTime;
+				float elapsedSec = elapsed / 1000000.0f;
+				float packetsPerSec = elapsedSec > 0 ? totalPackets / elapsedSec : 0;
+
+				WEBCAM_VERBOSE("USB Stats[%s]: success=%d errors=%d loss=%.1f%% rate=%.0f pkt/s\n",
+					LogTag(), success, errors, lossPercent, packetsPerSec);
+
+				// Warn if packet loss is high (>5% is concerning for video)
+				if (lossPercent > 5.0f) {
+					syslog(LOG_WARNING, "USB: HIGH packet loss (%.1f%%) - may cause grey frames\n",
+						lossPercent);
+				}
+
+				fLastStatsReport = now;
+			}
+		} else {
+			// Data dropped: no consumer connected (isochronous mode)
+			if (fDroppedFramesLogged < 5) {
+				syslog(LOG_WARNING, "Dropping isochronous data (no consumer)\n");
+				fDroppedFramesLogged++;
+			}
+		}
+#endif
+	}
+}
+#endif
 
 
 int32

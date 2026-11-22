@@ -4451,77 +4451,15 @@ UVCCamDevice::OnConsecutiveTransferFailures(uint32 count)
 	_OnHighBandwidthFailure();
 
 	// At 300 consecutive failures, suspect EHCI host system error
-	// (controller may have entered error state). Try to recover by
-	// cycling the streaming alternate: drop to alt 0 (idle) then back
-	// to the streaming alternate. This re-initializes the isochronous
-	// endpoint without requiring a full controller reset.
-	if (count == 300 && !fEHCIRecoveryInProgress.load()) {
-		fEHCIRecoveryInProgress.store(true);
+	// (controller may have entered error state).
+	if (count == 300) {
+		// Restart the stream from the reconfig worker: it stops every
+		// reader, idles the streaming interface and starts again. Cycling
+		// the alternate here, on one reader, destroyed the endpoint under
+		// the transfers the other readers had in flight.
 		syslog(LOG_ERR, "UVCCamDevice[%s]: 300+ consecutive failures - "
-			"attempting EHCI recovery via alternate cycle\n", LogTag());
-
-		// Snapshot under lock, cycle outside so the USB
-		// wait never blocks reader threads.
-		uint8 streamAlt = 0;
-		BUSBDevice* device = NULL;
-		uint32 streamingIndex = 0;
-		{
-			BAutolock lock(Locker());
-			if (lock.IsLocked() && fDevice != NULL) {
-				streamAlt = (uint8)fCurrentVideoAlternate;
-				device = fDevice;
-				streamingIndex = fStreamingIndex;
-			}
-		}
-		if (streamAlt > 0 && device != NULL) {
-			const BUSBConfiguration* cfg = device->ActiveConfiguration();
-			if (cfg != NULL) {
-				BUSBInterface* iface = const_cast<BUSBInterface*>(
-					cfg->InterfaceAt(streamingIndex));
-				if (iface != NULL)
-					iface->SetAlternate(0);
-			}
-			snooze(100000);
-			// Re-fetch after SetAlternate, old pointers dangle.
-			cfg = device->ActiveConfiguration();
-			if (cfg != NULL) {
-				BUSBInterface* iface = const_cast<BUSBInterface*>(
-					cfg->InterfaceAt(streamingIndex));
-				if (iface != NULL) {
-					iface->SetAlternate(streamAlt);
-					syslog(LOG_INFO, "UVCCamDevice[%s]: EHCI recovery alt cycle "
-						"complete (alt %u -> 0 -> %u)\n", LogTag(), streamAlt, streamAlt);
-				}
-			}
-			// Refresh endpoint, SetAlternate recreates it.
-			BAutolock relock(Locker());
-			if (relock.IsLocked() && fDevice != NULL) {
-				const BUSBConfiguration* freshCfg
-					= fDevice->ActiveConfiguration();
-				if (freshCfg != NULL) {
-					const BUSBInterface* freshIface
-						= freshCfg->InterfaceAt(streamingIndex);
-					const BUSBInterface* activeAlt = freshIface != NULL
-						? freshIface->AlternateAt(streamAlt) : NULL;
-					if (activeAlt != NULL) {
-						for (uint32 i = 0;
-							i < activeAlt->CountEndpoints(); i++) {
-							const BUSBEndpoint* endpoint
-								= activeAlt->EndpointAt(i);
-							if (endpoint != NULL
-								&& endpoint->IsIsochronous()
-								&& endpoint->IsInput()) {
-								fIsoIn = endpoint;
-								fIsoMaxPacketSize
-									= endpoint->MaxPacketSize() & 0x7FF;
-								break;
-							}
-						}
-					}
-				}
-			}
-		}
-		fEHCIRecoveryInProgress.store(false);
+			"restarting the stream\n", LogTag());
+		RequestStreamRestart();
 	}
 }
 
