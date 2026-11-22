@@ -26,6 +26,9 @@ UVCDeframer::UVCDeframer(CamDevice* device)
 	fFramesIncomplete(0),
 	fFIDChanges(0),
 	fQueueOverflows(0),
+	fFrameBroken(false),
+	fNextFrameBroken(false),
+	fFramesBroken(0),
 	fPacketsThisFrame(0),
 	fTotalBytesThisFrame(0),
 	fFramesTruncated(0),
@@ -110,6 +113,17 @@ UVCDeframer::Flush()
 
 
 // Drop oldest queued frame, caller holds fLocker.
+//!	Recycles the frame being assembled, which the camera marked broken.
+void
+UVCDeframer::_DropBrokenFrame()
+{
+	if (fCurrentFrame != NULL) {
+		RecycleFrame(fCurrentFrame);
+		fCurrentFrame = NULL;
+	}
+}
+
+
 void
 UVCDeframer::_DropOldestFrame()
 {
@@ -158,15 +172,16 @@ UVCDeframer::Write(const void* buffer, size_t size)
 
 	int payloadSize = size - buf[0];
 
-	// Header-only packet
-	if (payloadSize == 0)
+	// Header-only packet: it can still carry the error bit, for the frame
+	// of its FID (the current one, or the next when the FID toggled).
+	if (payloadSize == 0) {
+		if ((buf[1] & 0x40) != 0) {
+			if ((buf[1] & 0x01) == fID)
+				fFrameBroken = true;
+			else
+				fNextFrameBroken = true;
+		}
 		return size;
-
-	// Check for UVC error bit (bit 6 of header byte 1)
-	if (buf[1] & 0x40) {
-		static int32 sUvcErrors = 0;
-		if (++sUvcErrors <= 10)
-			syslog(LOG_WARNING, "UVCDeframer: UVC error bit set in header\n");
 	}
 
 	// P29: validate header layout against PTS/SCR flag bits. Previously this
@@ -259,12 +274,16 @@ UVCDeframer::Write(const void* buffer, size_t size)
 				fFrameCount++;
 				fFramesCompleted++;
 
-				// Bound the queue, drop oldest when full.
-				if (fFrames.CountItems() >= MAXFRAMEBUF)
-					_DropOldestFrame();
-				fFrames.AddItem(fCurrentFrame);
-				release_sem(fFrameSem);
-				fCurrentFrame = NULL;
+				if (fFrameBroken) {
+					_DropBrokenFrame();
+				} else {
+					// Bound the queue, drop oldest when full.
+					if (fFrames.CountItems() >= MAXFRAMEBUF)
+						_DropOldestFrame();
+					fFrames.AddItem(fCurrentFrame);
+					release_sem(fFrameSem);
+					fCurrentFrame = NULL;
+				}
 			}
 		} else if (fCurrentFrame != NULL) {
 			// YUY2: abandon partial data, a new frame starts.
@@ -273,6 +292,8 @@ UVCDeframer::Write(const void* buffer, size_t size)
 		}
 
 		// Reset counters for new frame (both YUY2 and MJPEG)
+		fFrameBroken = fNextFrameBroken;
+		fNextFrameBroken = false;
 		fPacketsThisFrame = 1;
 		fTotalBytesThisFrame = 0;  // Reset byte counter for new frame
 	}
@@ -292,6 +313,20 @@ UVCDeframer::Write(const void* buffer, size_t size)
 		fCurrentFrame = AllocFrame();
 		if (fCurrentFrame == NULL)
 			return size;
+	}
+
+	// The error bit (bit 6 of the second header byte) says the camera could
+	// not send this frame whole (its buffer overflowed, for one): the frame
+	// is dropped when it ends, instead of reaching the decoder. The AUKEY
+	// PC-LM1E sets it on frames it cut at 640x480.
+	if ((buf[1] & 0x40) != 0) {
+		fFrameBroken = true;
+		fFramesBroken++;
+		if (fFramesBroken <= 10 || (fFramesBroken % 100) == 0) {
+			syslog(LOG_WARNING, "UVCDeframer[%s]: frame %d marked broken by "
+				"the camera (%d so far)\n", fLogTag, (int)fFrameCount,
+				(int)fFramesBroken);
+		}
 	}
 
 	// Track total payload bytes received (before truncation)
@@ -452,12 +487,17 @@ UVCDeframer::Write(const void* buffer, size_t size)
 		}
 
 		if (fCurrentFrame != NULL) {
-			fFrames.AddItem(fCurrentFrame);
-			release_sem(fFrameSem);
-			fCurrentFrame = NULL;
+			if (fFrameBroken)
+				_DropBrokenFrame();
+			else {
+				fFrames.AddItem(fCurrentFrame);
+				release_sem(fFrameSem);
+				fCurrentFrame = NULL;
+			}
 		}
 
 		// Reset for next frame
+		fFrameBroken = false;
 		fPacketsThisFrame = 0;
 	}
 

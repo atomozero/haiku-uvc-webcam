@@ -60,6 +60,7 @@ public:
 			const char*			LogTag() const { return fLogTag; };
 
 private:
+			void				_DropBrokenFrame();
 	void						_DropOldestFrame();
 	void						_PrintBuffer(const void* buffer, size_t size);
 
@@ -76,6 +77,9 @@ private:
 	int32						fFramesIncomplete;
 	int32						fFIDChanges;
 	int32						fQueueOverflows;
+	bool						fFrameBroken;
+	bool						fNextFrameBroken;
+	int32						fFramesBroken;
 	int32						fPacketsThisFrame;
 	size_t						fTotalBytesThisFrame;  // Total payload bytes (including truncated)
 	// FIX-M2: payload bytes dropped past the accumulation cap.
