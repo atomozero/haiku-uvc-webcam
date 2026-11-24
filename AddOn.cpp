@@ -142,6 +142,17 @@ WebCamMediaAddOn::_StayLoaded()
 }
 
 
+/*
+ * The microphone of a camera is a USB Audio Class interface, which the
+ * system's usb_audio driver publishes as a multi_audio node. A second node
+ * here would claim the same interface: whichever driver sets its alternate
+ * last leaves the other with stale endpoints. So the add-on publishes video
+ * only; the audio node code stays until it is taken out with the move onto
+ * the RenkuOS usb_webcam.
+ */
+static const bool kPublishAudio = false;
+
+
 int32
 WebCamMediaAddOn::CountFlavors()
 {
@@ -171,7 +182,7 @@ WebCamMediaAddOn::CountFlavors()
 		if (streams > 127)
 			streams = 127;
 		videoFlavors += streams;
-		if (uvcCam != NULL && uvcCam->HasAudio())
+		if (kPublishAudio && uvcCam != NULL && uvcCam->HasAudio())
 			audioFlavors++;
 	}
 	fRoster->Unlock();
@@ -263,7 +274,7 @@ WebCamMediaAddOn::GetFlavorAt(int32 n, const flavor_info **out_info)
 
 	// Then: audio flavors (one per audio-capable camera).
 	int32 audioIndex = n - videoWalker;
-	if (audioIndex < 0) {
+	if (!kPublishAudio || audioIndex < 0) {
 		fRoster->Unlock();
 		return B_BAD_INDEX;
 	}
